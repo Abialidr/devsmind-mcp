@@ -71,139 +71,194 @@ export function handleRule(opts: { path?: string }) {
 
   // ── Rule output ────────────────────────────────────────────────
   const rule = `
-## DevsMind — Team AI Brain
+## DevsMind — Team AI Brain Instructions
 
-> This project uses the **devsmind** MCP server as a shared team brain.
+> This project utilizes the **devsmind** MCP server as a shared team brain.
 > Always use it when coding in this workspace.
 
-# 🛑 CRITICAL MANDATORY FIRST STEP 🛑
+# 🛑 CRITICAL MANDATORY INSTRUCTIONS 🛑
 BEFORE answering ANY user request or searching the codebase, you MUST read and understand the project context embedded below. Do not attempt to run any project setup or configuration discovery calls, as you already possess this information from this rule.
 
 ### Brain Location
-
 \`\`\`
 DEVMIND_PATH = ${devmindDir}
 \`\`\`
 
 ### Project Context
-- **Project**: ${projectName}
-- **Mode**: ${mode}
+- **Project Name**: ${projectName}
+- **Setup Mode**: ${mode}
 - **Tech Stack**: ${techLine}
-- **Session timeout**: ${timeout} minutes
-${notes ? `- **Notes**: ${notes}` : ''}
+- **Session Timeout**: ${timeout} minutes
+${notes ? `- **Developer Notes**: ${notes}` : ''}
 
 ### Tracked Repositories
 ${repoLines}
 
 ### When to Use DevsMind Tools
 
-| Trigger | Tool to call |
-|---------|-------------|
-| **Searching, explaining, or resolving conceptual queries (e.g., "login", "payments")** | \`search_nodes\` first (to find matching node candidates, instead of filesystem grep) |
-| **Working on, debugging, or editing a specific function, class, or service** | \`get_node_summary\` (first), then \`get_node_history\` and \`get_node_graph\` (to inspect changes/connections) |
-| **After making actual edits/modifications to a function/class/service** | \`update_history\` (called once changes are completed, **NOT** after every chat message unless code edits occurred) |
+| Trigger / Action | Tool to call | Protocol & Details |
+|------------------|--------------|-------------------|
+| **Searching for code modules, logic flow, or conceptual topics (e.g., "auth", "pricing")** | \`search_nodes\` | Call this first to locate potential node candidates. Do not start with filesystem grep. |
+| **Explaining, reading, debugging, or modifying a specific function, class, or service** | \`get_node_summary\` | Fetch details. If it exists, call \`get_node_history\` (to see past decisions) and \`get_node_graph\` (to inspect dependencies). |
+| **Finishing code changes in a function/class** | \`update_history\` | Call this once the changes are completed to record your snapshot and reasoning. (Apply 1h session rule automatically). |
+| **Function/class is renamed** | \`rename_node\` | Rename the old ID to the new ID. This preserves all historical entries and connection points. |
+| **Function/class is deleted/removed** | \`deprecate_node\` | Never run delete queries. Instead, call \`deprecate_node\` to clear active connections but preserve reasoning/history. |
 
-### 🛑 CRITICAL INSTRUCTIONS FOR NODE ANALYSIS & HISTORY 🛑
-1. **Never guess connections or history**: If a user asks about a function, class, or service, you MUST call \`get_node_summary\` and \`get_node_graph\` to inspect its connections. Do not rely solely on directory listing or grep search.
-2. **Always review context**: Check the node's history (\`get_node_history\`) before refactoring or fixing bugs to see why previous changes were made.
-3. **When to run \`update_history\`**: Run \`update_history\` ONLY after code files/functions/classes have been modified. You do not need to call it after every message if no code edits occurred.
-4. **Search nodes first for conceptual questions**: If the user asks a conceptual question (e.g., "login", "payments") and you don't know the exact symbol names yet, you MUST use \`search_nodes\` first to find candidates rather than using raw filesystem grep/list_dir. Inspect candidates with \`get_node_summary\` and \`get_node_graph\` before viewing their source code.
-5. **Actively maintain the graph precision & handle renames**: You MUST keep the node graph accurate. 
-   - If you discover a missing node or outdated connection while coding, immediately add it using \`add_node\` and \`add_connection\`.
-   - **Rename Protocol**: If you find a new node at a file location where a different node used to be (e.g. during refactoring or renaming a function), do NOT just delete and re-add. First check if it is a rename of the existing node (e.g. same logic/file/location but different name). If it is a rename, use \`rename_node\` to update the ID and name (preserving its change history and connections).
-   - **Deletion Protocol**: Do not delete any nodes yourself. DevsMind dynamically marks nodes as deprecated when files change or when running recheck commands to preserve their history.
+### 🛑 CRITICAL PROTOCOLS FOR CODE DEVELOPMENT & DOCUMENTATION 🛑
+
+1. **Zero Hallucination on Architecture**: Never guess which files or functions depend on each other. You MUST call \`get_node_summary\` and \`get_node_graph\` (default depth: 6) to verify callers and dependencies before modifying any signature.
+2. **Context-Aware Refactoring**: Always review past history snapshots (\`get_node_history\`) for a function before altering its logic. This prevents repeating past design mistakes or re-introducing resolved bugs.
+3. **Resurrecting Deprecated Nodes**: If you re-write or re-introduce a function that was previously marked as deprecated, simply calling \`update_history\` or \`add_node\` will automatically mark the node as active (\`deprecated = 0\`).
+4. **Surgical Token Management**: Avoid reading entire files or directories. Use DevsMind tools to retrieve just the active node structure and code snippets.
+5. **No Independent Deletions**: Under no circumstances should you attempt to delete nodes or history from the database. Let DevsMind handle it via \`deprecate_node\` or CLI pruning commands.
 
 ### Tool Reference
 
 **\`search_nodes\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-query: "<search query>"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "query": "<search query>"
+}
 \`\`\`
 Searches node names, identifiers, or reasoning logs matching the query.
 
 **\`get_node_summary\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-node_id: "<function or class name>"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "node_id": "<function or class name>"
+}
 \`\`\`
 Returns file location, history count, connections, and last change timestamp.
 
 **\`get_node_history\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-node_id: "<function or class name>"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "node_id": "<function or class name>"
+}
 \`\`\`
 Returns the full version history of a code node, including all past code snapshots and change reasoning.
 
 **\`get_node_graph\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-node_id: "<starting function or class name>"
-max_depth: 6
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "node_id": "<starting function or class name>",
+  "max_depth": 6
+}
 \`\`\`
 Returns a localized node dependency graph up to a specified depth (default 6), showing connected nodes and relationships.
 
-**\`rename_node\`**
+**\`add_node\`**
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "node_id": "<node identifier>",
+  "name": "<display name>",
+  "type": "<taxonomy type (e.g. function, class, route_handler)>",
+  "file_path": "<source file path>"
+}
 \`\`\`
-devmind_path: "${devmindDir}"
-old_node_id: "<current unique node ID>"
-new_node_id: "<new unique node ID>"
-new_name: "<optional new display name>"
+Registers a new code entity in the graph.
+
+**\`add_connection\`**
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "source_node_id": "<calling node>",
+  "target_node_id": "<called node>"
+}
+\`\`\`
+Links two structures together as a dependency relationship (\`source\` uses/calls \`target\`).
+
+**\`rename_node\`**
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "old_node_id": "<current unique node ID>",
+  "new_node_id": "<new unique node ID>",
+  "new_name": "<optional new display name>"
+}
 \`\`\`
 Rename a code node ID, automatically updating all its associations (incoming/outgoing connections and history logs) to prevent losing context.
 
-**\`get_recent_changes\`**
+**\`deprecate_node\`**
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "node_id": "<node ID to deprecate>"
+}
 \`\`\`
-devmind_path: "${devmindDir}"
-hours: 24
+Mark a code node as deprecated, removing all its connections while retaining its code and reasoning logs in the database. Use this if a function/class is deleted/removed.
+
+**\`get_recent_changes\`**
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "hours": 24
+}
 \`\`\`
 Get team modifications and history updates over the last N hours.
 
 **\`get_developer_activity\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-developer: "<developer name or email>"
-limit: 50
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "developer": "<developer name or email>",
+  "limit": 50
+}
 \`\`\`
 List recent history logs and changes made by a specific developer.
 
 **\`get_changes_by_requirement\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-requirement_id: "<ticket or requirement ID>"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "requirement_id": "<ticket or requirement ID>"
+}
 \`\`\`
 List all modifications linked to a specific requirement, ticket, or issue ID.
 
 **\`search_decisions\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-query: "<decision keyword>"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "query": "<decision keyword>"
+}
 \`\`\`
 Search reasoning logs for specific architectural or implementation decisions.
 
 **\`get_orphaned_nodes\`**
-\`\`\`
-devmind_path: "${devmindDir}"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}"
+}
 \`\`\`
 Find disconnected code nodes in the graph that have no incoming or outgoing connections.
 
 **\`get_visualizer_url\`**
-\`\`\`
-devmind_path: "${devmindDir}"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}"
+}
 \`\`\`
 Get local URLs to open the interactive 2D and 3D code graph visualizer pages.
 
 **\`update_history\`**
-\`\`\`
-devmind_path: "${devmindDir}"
-node_id: "<identifier>"
-file_path: "<relative path to file>"
-code_snapshot: "<full function/class source>"
-reasoning:
-  what_changed: "<what you changed>"
-  why: "<reason>"
-  goal: "<what this achieves>"
+\`\`\`json
+{
+  "devmind_path": "${devmindDir}",
+  "node_id": "<identifier>",
+  "file_path": "<relative path to file>",
+  "code_snapshot": "<full function/class source>",
+  "reasoning": {
+    "what_changed": "<what you changed>",
+    "why": "<reason>",
+    "goal": "<what this achieves>"
+  }
+}
 \`\`\`
 Records a code change. Apply the 1-hour session boundary rule automatically.
 

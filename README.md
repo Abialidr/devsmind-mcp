@@ -228,6 +228,7 @@ DevsMind tools are designed with **layered granularity**. The AI only pulls the 
 *   `add_connection`: Links two structures together as a dependency relationship (`source` uses/calls `target`).
 *   `update_history`: Registers a code snapshot and writes history logs (respects the 1h session boundary rule).
 *   `rename_node`: Re-keys a node identifier and updates all associated records (connections and history) seamlessly.
+*   `deprecate_node`: Marks a code node as deprecated, removing its connection mappings while retaining its coding snapshots and reasoning logs in the database.
 
 ### 🧹 Category 5: Optimization & Maintenance
 *   `recheck_graph`: Scans the graph to verify file existence and deprecates language primitives, builtins, and nodes associated with missing/deleted files, retaining nodes with active histories.

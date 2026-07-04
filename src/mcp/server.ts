@@ -369,6 +369,18 @@ function createMcpServer(): Server {
           }
         },
         {
+          name: 'deprecate_node',
+          description: 'Mark a code node as deprecated, removing all its connection mappings while retaining its entry and evolution history in the database. Use this if a function/class is deleted/removed from the codebase.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              node_id: { type: 'string', description: 'Unique identifier for the node to deprecate' }
+            },
+            required: ['devmind_path', 'node_id']
+          }
+        },
+        {
           name: 'get_recent_changes',
           description: 'Get team modifications and history updates over the last N hours.',
           inputSchema: {
@@ -781,6 +793,16 @@ function createMcpServer(): Server {
           db.renameNode(oldNodeId, newNodeId, newName);
           return {
             content: [{ type: 'text', text: JSON.stringify({ success: true, old_node_id: oldNodeId, new_node_id: newNodeId }) }]
+          };
+        }
+
+        case 'deprecate_node': {
+          const devmindPath = String(args.devmind_path);
+          const nodeId = String(args.node_id);
+          const db = getDatabase(devmindPath);
+          db.deprecateNode(nodeId);
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ success: true, deprecated: nodeId }) }]
           };
         }
 
