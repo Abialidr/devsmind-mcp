@@ -1,4 +1,4 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+﻿import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -17,25 +17,49 @@ import {
 } from '../db/indexer';
 import { scanRepoFiles } from '../utils/scanner';
 
-// ─── Port: devs→D(4)E(5)=45 + mind→M(13)=13 → 4513 ─────────────────────────
+// â”€â”€â”€ Port: devsâ†’D(4)E(5)=45 + mindâ†’M(13)=13 â†’ 4513 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export const DEVSMIND_PORT = 4513;
 
 // Cache database connections by their resolved path to avoid re-opening constantly
 const dbCache = new Map<string, DevMindDatabase>();
 
-function getDatabase(devmindPath: string): DevMindDatabase {
-  const resolved = path.resolve(devmindPath);
-  if (!fs.existsSync(resolved)) {
-    throw new Error(`Cannot open database because the directory does not exist: "${resolved}". Please check your rule settings and ensure the path is not mangled (use forward slashes "/" to prevent escape sequence issues).`);
+// Walk up from a start directory to find a .devmind folder containing config.json
+function findDevmindDir(startDir: string): string | null {
+  let current = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(current, '.devmind');
+    if (fs.existsSync(path.join(candidate, 'config.json'))) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
   }
-  const dbFile = path.join(resolved, 'brain.db');
+}
 
+// Resolve devmind_path from args, falling back to auto-detect from cwd
+function resolveDevmindPath(rawPath: unknown): string {
+  const given = rawPath != null && String(rawPath) !== 'undefined' ? String(rawPath).trim() : '';
+  if (given) {
+    const resolved = path.resolve(given);
+    if (fs.existsSync(resolved)) return resolved;
+    // Try forward-slash variant (AI sometimes sends forward slashes on Windows)
+    const normalized = path.resolve(given.replace(/\//g, path.sep));
+    if (fs.existsSync(normalized)) return normalized;
+    throw new Error(`devmind_path does not exist: "${resolved}". Make sure you pass the exact DEVMIND_PATH from your workspace rules.`);
+  }
+  // Not provided â€” auto-detect from where devsmind start was run
+  const autoDetected = findDevmindDir(process.cwd());
+  if (autoDetected) return autoDetected;
+  throw new Error(`devmind_path was not provided and no .devmind directory was found by walking up from: "${process.cwd()}". Pass devmind_path explicitly.`);
+}
+
+function getDatabase(devmindPath: string): DevMindDatabase {
+  const dbFile = path.join(devmindPath, 'brain.db');
   if (!dbCache.has(dbFile)) {
-    // silent — db opened on demand
     dbCache.set(dbFile, new DevMindDatabase(dbFile));
   }
   return dbCache.get(dbFile)!;
 }
+
 
 function cleanup() {
   for (const [dbPath, db] of dbCache.entries()) {
@@ -50,7 +74,7 @@ function cleanup() {
 
 /**
  * Creates and wires up a DevsMind MCP Server instance.
- * Stateless — every call receives devmind_path and opens the db from there.
+ * Stateless â€” every call receives devmind_path and opens the db from there.
  */
 function createMcpServer(): Server {
   const server = new Server(
@@ -58,7 +82,7 @@ function createMcpServer(): Server {
     { capabilities: { tools: {} } }
   );
 
-  // ── Tool Definitions ────────────────────────────────────────────────────────
+  // â”€â”€ Tool Definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: [
@@ -85,7 +109,7 @@ function createMcpServer(): Server {
         {
           name: 'get_node_code',
           description:
-            'Returns only the latest code snapshot stored for a node. Token-efficient alternative to get_node_history when you only need the current code. Returns null if no snapshot exists — in that case you MUST read the file, then call update_history to store the code so future agents benefit from the cache.',
+            'Returns only the latest code snapshot stored for a node. Token-efficient alternative to get_node_history when you only need the current code. Returns null if no snapshot exists â€” in that case you MUST read the file, then call update_history to store the code so future agents benefit from the cache.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -173,11 +197,11 @@ function createMcpServer(): Server {
                   'VUE: vue_component | vue_composable | vue_directive | vue_store_module\n\n' +
                   'ANGULAR: ng_component | ng_service | ng_directive | ng_pipe | ng_module | ng_guard | ng_interceptor | ng_resolver\n\n' +
                   'SVELTE: svelte_component | svelte_store | svelte_action\n\n' +
-                  'ORM — PRISMA: prisma_model | prisma_query | prisma_migration\n' +
-                  'ORM — TYPEORM: typeorm_entity | typeorm_repository | typeorm_migration\n' +
-                  'ORM — MONGOOSE: mongoose_model | mongoose_schema\n' +
-                  'ORM — SQLALCHEMY: sqlalchemy_model | sqlalchemy_query\n' +
-                  'ORM — SEQUELIZE: sequelize_model | sequelize_migration\n\n' +
+                  'ORM â€” PRISMA: prisma_model | prisma_query | prisma_migration\n' +
+                  'ORM â€” TYPEORM: typeorm_entity | typeorm_repository | typeorm_migration\n' +
+                  'ORM â€” MONGOOSE: mongoose_model | mongoose_schema\n' +
+                  'ORM â€” SQLALCHEMY: sqlalchemy_model | sqlalchemy_query\n' +
+                  'ORM â€” SEQUELIZE: sequelize_model | sequelize_migration\n\n' +
                   'REST/API: api_endpoint | rest_controller\n' +
                   'GRAPHQL: graphql_resolver | graphql_query | graphql_mutation | graphql_subscription | graphql_schema | graphql_directive\n' +
                   'GRPC/PROTO: grpc_service | grpc_method | proto_message\n' +
@@ -204,7 +228,7 @@ function createMcpServer(): Server {
             required: ['devmind_path', 'node_id', 'file_path', 'code_snapshot', 'reasoning']
           }
         },
-        // ── Indexing tools ─────────────────────────────────────────────
+        // â”€â”€ Indexing tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         {
           name: 'index_start',
           description:
@@ -289,11 +313,11 @@ function createMcpServer(): Server {
                   'VUE: vue_component | vue_composable | vue_directive | vue_store_module\n\n' +
                   'ANGULAR: ng_component | ng_service | ng_directive | ng_pipe | ng_module | ng_guard | ng_interceptor | ng_resolver\n\n' +
                   'SVELTE: svelte_component | svelte_store | svelte_action\n\n' +
-                  'ORM — PRISMA: prisma_model | prisma_query | prisma_migration\n' +
-                  'ORM — TYPEORM: typeorm_entity | typeorm_repository | typeorm_migration\n' +
-                  'ORM — MONGOOSE: mongoose_model | mongoose_schema\n' +
-                  'ORM — SQLALCHEMY: sqlalchemy_model | sqlalchemy_query\n' +
-                  'ORM — SEQUELIZE: sequelize_model | sequelize_migration\n\n' +
+                  'ORM â€” PRISMA: prisma_model | prisma_query | prisma_migration\n' +
+                  'ORM â€” TYPEORM: typeorm_entity | typeorm_repository | typeorm_migration\n' +
+                  'ORM â€” MONGOOSE: mongoose_model | mongoose_schema\n' +
+                  'ORM â€” SQLALCHEMY: sqlalchemy_model | sqlalchemy_query\n' +
+                  'ORM â€” SEQUELIZE: sequelize_model | sequelize_migration\n\n' +
                   'REST/API: api_endpoint | rest_controller\n' +
                   'GRAPHQL: graphql_resolver | graphql_query | graphql_mutation | graphql_subscription | graphql_schema | graphql_directive\n' +
                   'GRPC/PROTO: grpc_service | grpc_method | proto_message\n' +
@@ -477,7 +501,7 @@ function createMcpServer(): Server {
     };
   });
 
-  // ── Tool Execution ───────────────────────────────────────────────────────────
+  // â”€â”€ Tool Execution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
@@ -488,7 +512,7 @@ function createMcpServer(): Server {
     try {
       switch (name) {
         case 'get_node_summary': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const db = getDatabase(devmindPath);
 
@@ -524,7 +548,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_node_code': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const db = getDatabase(devmindPath);
           const result = db.getLatestCode(nodeId);
@@ -548,7 +572,7 @@ function createMcpServer(): Server {
         }
 
         case 'update_history': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const filePath = String(args.file_path);
           const codeSnapshot = String(args.code_snapshot);
@@ -610,9 +634,9 @@ function createMcpServer(): Server {
           };
         }
 
-        // ── Indexing tool handlers ─────────────────────────────────────
+        // â”€â”€ Indexing tool handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         case 'index_start': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const { repos, total_files } = scanRepoFiles(devmindPath);
           const pad = createScratchpad(devmindPath, total_files);
 
@@ -632,46 +656,46 @@ function createMcpServer(): Server {
                 repos: repoSummaries,
                 total_files,
                 instructions: [
-                  '⚠️⚠️⚠️ CRITICAL INSTRUCTION FOR THE INDEXING AGENT — MUST READ ⚠️⚠️⚠️',
+                  'âš ï¸âš ï¸âš ï¸ CRITICAL INSTRUCTION FOR THE INDEXING AGENT â€” MUST READ âš ï¸âš ï¸âš ï¸',
                   'YOU MUST EXPLICITLY CALL THE "add_node" AND "add_connection" MCP TOOLS FOR EVERY NODE/CONNECTION YOU EXTRACT.',
                   'DO NOT JUST PRINT THE RESULTS AS TEXT IN THE CHAT WINDOW. PRINTING RESULTS WITHOUT CALLING THE MCP TOOLS DOES NOT WRITE THEM TO THE DATABASE AND MAKES THE ENTIRE INDEXING RUN A WASTE OF TIME AND TOKENS.',
                   'IF YOU ENCOUNTER CONTEXT RESETS, RESUME WORK BY CALLING "index_continue" AND CONTINUOUSLY COMMIT PROGRESS BY CALLING "index_checkpoint" EVERY 10 FILES.',
                   '',
-                  '📋 CODE EXCLUSION & PRECISION RULES:',
+                  'ðŸ“‹ CODE EXCLUSION & PRECISION RULES:',
                   '1. EXCLUDE Language Globals / Built-ins: Do NOT call add_node/add_connection for Promise, Map, Set, JSON, console, Error, Object, Array, RegExp, Date, Math, etc.',
                   '2. EXCLUDE Primitive/Native Types: Do NOT call add_node/add_connection for string, number, boolean, any, void, unknown, never, null, undefined, dict, list, etc.',
                   '3. EXCLUDE External / Third-party Modules: Do NOT call add_node/add_connection for lodash, express, react, @nestjs/common, etc.',
                   '4. INTERNAL ENTITIES ONLY: Only create nodes and connections for constructs defined inside this codebase.',
                   '',
-                  '📋 GENERAL STEPS:',
-                  '1. For each file in each repo: read it, extract ALL nodes — functions, methods, classes, interfaces, types, enums, constants, exported variables, decorators, DTO classes, schema definitions, route handlers, components, hooks, guards, resolvers, etc.',
+                  'ðŸ“‹ GENERAL STEPS:',
+                  '1. For each file in each repo: read it, extract ALL nodes â€” functions, methods, classes, interfaces, types, enums, constants, exported variables, decorators, DTO classes, schema definitions, route handlers, components, hooks, guards, resolvers, etc.',
                   '2. Call add_node for every entity found. Choose the most specific type from the taxonomy (e.g. nest_guard, react_hook, typeorm_entity, graphql_resolver). Fall back to universal types (function, class, interface, enum) only when no framework-specific type applies.',
                   '   TAXONOMY QUICK REFERENCE:',
-                  '   • Universal:     function | method | class | abstract_class | interface | type_alias | enum | constant | variable | module | namespace | decorator',
-                  '   • NestJS:        nest_module | nest_controller | nest_service | nest_provider | nest_guard | nest_interceptor | nest_pipe | nest_filter | nest_decorator | nest_middleware | nest_gateway | nest_resolver | nest_schema | nest_dto',
-                  '   • Express/Koa:   route_handler | middleware | router',
-                  '   • Spring(Java):  spring_controller | spring_service | spring_repository | spring_component | spring_bean | spring_config | spring_entity',
-                  '   • Django/FastAPI: django_view | django_model | django_serializer | django_form | django_signal | fastapi_router | fastapi_dependency',
-                  '   • Go:            go_handler | go_middleware | go_struct | go_interface | go_func',
-                  '   • Rust:          rust_struct | rust_impl | rust_trait | rust_enum | rust_fn | rust_macro',
-                  '   • React:         react_component | react_hook | react_context | react_hoc | react_page',
-                  '   • Next.js:       next_page | next_layout | next_api_route | next_server_action | next_middleware',
-                  '   • Vue:           vue_component | vue_composable | vue_directive | vue_store_module',
-                  '   • Angular:       ng_component | ng_service | ng_directive | ng_pipe | ng_module | ng_guard | ng_interceptor | ng_resolver',
-                  '   • Svelte:        svelte_component | svelte_store | svelte_action',
-                  '   • ORM/Prisma:    prisma_model | prisma_query | prisma_migration',
-                  '   • ORM/TypeORM:   typeorm_entity | typeorm_repository | typeorm_migration',
-                  '   • ORM/Mongoose:  mongoose_model | mongoose_schema',
-                  '   • GraphQL:       graphql_resolver | graphql_query | graphql_mutation | graphql_subscription | graphql_schema | graphql_directive',
-                  '   • gRPC:          grpc_service | grpc_method | proto_message',
-                  '   • WebSocket:     ws_gateway | ws_handler',
-                  '   • MQ:            mq_producer | mq_consumer | mq_handler',
-                  '   • Auth/Config:   config_loader | env_config | feature_flag | auth_guard | auth_strategy | jwt_util | permission_policy',
-                  '   • Observability: logger | metric | trace_span',
-                  '   • CLI:           cli_command | cli_option',
-                  '   • Scripts:       build_script | migration_script | seed_script',
-                  '   • Tests:         test_suite | test_case | test_helper | mock | fixture',
-                  '   • Utility:       util_function | helper | transformer | validator | formatter',
+                  '   â€¢ Universal:     function | method | class | abstract_class | interface | type_alias | enum | constant | variable | module | namespace | decorator',
+                  '   â€¢ NestJS:        nest_module | nest_controller | nest_service | nest_provider | nest_guard | nest_interceptor | nest_pipe | nest_filter | nest_decorator | nest_middleware | nest_gateway | nest_resolver | nest_schema | nest_dto',
+                  '   â€¢ Express/Koa:   route_handler | middleware | router',
+                  '   â€¢ Spring(Java):  spring_controller | spring_service | spring_repository | spring_component | spring_bean | spring_config | spring_entity',
+                  '   â€¢ Django/FastAPI: django_view | django_model | django_serializer | django_form | django_signal | fastapi_router | fastapi_dependency',
+                  '   â€¢ Go:            go_handler | go_middleware | go_struct | go_interface | go_func',
+                  '   â€¢ Rust:          rust_struct | rust_impl | rust_trait | rust_enum | rust_fn | rust_macro',
+                  '   â€¢ React:         react_component | react_hook | react_context | react_hoc | react_page',
+                  '   â€¢ Next.js:       next_page | next_layout | next_api_route | next_server_action | next_middleware',
+                  '   â€¢ Vue:           vue_component | vue_composable | vue_directive | vue_store_module',
+                  '   â€¢ Angular:       ng_component | ng_service | ng_directive | ng_pipe | ng_module | ng_guard | ng_interceptor | ng_resolver',
+                  '   â€¢ Svelte:        svelte_component | svelte_store | svelte_action',
+                  '   â€¢ ORM/Prisma:    prisma_model | prisma_query | prisma_migration',
+                  '   â€¢ ORM/TypeORM:   typeorm_entity | typeorm_repository | typeorm_migration',
+                  '   â€¢ ORM/Mongoose:  mongoose_model | mongoose_schema',
+                  '   â€¢ GraphQL:       graphql_resolver | graphql_query | graphql_mutation | graphql_subscription | graphql_schema | graphql_directive',
+                  '   â€¢ gRPC:          grpc_service | grpc_method | proto_message',
+                  '   â€¢ WebSocket:     ws_gateway | ws_handler',
+                  '   â€¢ MQ:            mq_producer | mq_consumer | mq_handler',
+                  '   â€¢ Auth/Config:   config_loader | env_config | feature_flag | auth_guard | auth_strategy | jwt_util | permission_policy',
+                  '   â€¢ Observability: logger | metric | trace_span',
+                  '   â€¢ CLI:           cli_command | cli_option',
+                  '   â€¢ Scripts:       build_script | migration_script | seed_script',
+                  '   â€¢ Tests:         test_suite | test_case | test_helper | mock | fixture',
+                  '   â€¢ Utility:       util_function | helper | transformer | validator | formatter',
                   '3. Call add_connection for every call/use relationship (source USES target). Only map to internal nodes.',
                   '4. Call index_checkpoint every 10 files with updated progress.',
                   '5. When all files are indexed, call index_complete.',
@@ -683,7 +707,7 @@ function createMcpServer(): Server {
         }
 
         case 'index_checkpoint': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const pad = updateScratchpad(devmindPath, {
             last_file_indexed: args.last_file_indexed ? String(args.last_file_indexed) : undefined,
             files_done: typeof args.files_done === 'number' ? args.files_done : 0,
@@ -704,7 +728,7 @@ function createMcpServer(): Server {
         }
 
         case 'index_continue': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const pad = readScratchpad(devmindPath);
           if (!pad) {
             return {
@@ -738,13 +762,13 @@ function createMcpServer(): Server {
         }
 
         case 'index_complete': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const pad = completeScratchpad(devmindPath);
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
-                message: '✅ Indexing complete! Full graph is now available.',
+                message: 'âœ… Indexing complete! Full graph is now available.',
                 summary: {
                   files_indexed: pad.files_done,
                   nodes_created: pad.nodes_created,
@@ -758,7 +782,7 @@ function createMcpServer(): Server {
         }
 
         case 'add_node': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
           db.upsertNode({
             id: String(args.node_id),
@@ -773,7 +797,7 @@ function createMcpServer(): Server {
         }
 
         case 'add_connection': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
           db.addConnection(String(args.source_node_id), String(args.target_node_id));
           return {
@@ -782,7 +806,7 @@ function createMcpServer(): Server {
         }
 
         case 'recheck_graph': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const workspaceRoot = String(args.workspace_root);
           const db = getDatabase(devmindPath);
           const result = db.pruneSpuriousNodes(workspaceRoot);
@@ -791,7 +815,7 @@ function createMcpServer(): Server {
               type: 'text',
               text: JSON.stringify({
                 success: true,
-                message: `✅ Graph recheck completed. Pruned ${result.prunedCount} spurious node(s) and their connections.`,
+                message: `âœ… Graph recheck completed. Pruned ${result.prunedCount} spurious node(s) and their connections.`,
                 pruned_count: result.prunedCount,
                 pruned_nodes: result.prunedNodes
               }, null, 2)
@@ -800,7 +824,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_node_history': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const db = getDatabase(devmindPath);
           const history = db.getFullHistory(nodeId);
@@ -810,7 +834,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_node_graph': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const maxDepth = args.max_depth ? Number(args.max_depth) : 6;
           const db = getDatabase(devmindPath);
@@ -821,7 +845,7 @@ function createMcpServer(): Server {
         }
 
         case 'search_nodes': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const query = String(args.query);
           const db = getDatabase(devmindPath);
           const results = db.searchNodes(query);
@@ -831,7 +855,7 @@ function createMcpServer(): Server {
         }
 
         case 'rename_node': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const oldNodeId = String(args.old_node_id);
           const newNodeId = String(args.new_node_id);
           const newName = args.new_name ? String(args.new_name) : undefined;
@@ -843,7 +867,7 @@ function createMcpServer(): Server {
         }
 
         case 'deprecate_node': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const db = getDatabase(devmindPath);
           db.deprecateNode(nodeId);
@@ -853,7 +877,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_recent_changes': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const hours = args.hours ? Number(args.hours) : 24;
           const db = getDatabase(devmindPath);
           const changes = db.getRecentChanges(hours);
@@ -863,7 +887,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_developer_activity': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const developer = String(args.developer);
           const limit = args.limit ? Number(args.limit) : 50;
           const db = getDatabase(devmindPath);
@@ -874,7 +898,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_changes_by_requirement': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const requirementId = String(args.requirement_id);
           const db = getDatabase(devmindPath);
           const changes = db.getChangesByRequirement(requirementId);
@@ -884,7 +908,7 @@ function createMcpServer(): Server {
         }
 
         case 'search_decisions': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const query = String(args.query);
           const db = getDatabase(devmindPath);
           const decisions = db.searchDecisions(query);
@@ -894,7 +918,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_orphaned_nodes': {
-          const devmindPath = String(args.devmind_path);
+          const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
           const nodes = db.getOrphanedNodes();
           return {
@@ -903,7 +927,7 @@ function createMcpServer(): Server {
         }
 
         case 'get_visualizer_url': {
-          const devmindPath = path.resolve(String(args.devmind_path));
+          const devmindPath = path.resolve(resolveDevmindPath(args.devmind_path));
           const devmindPathEscaped = encodeURIComponent(devmindPath);
           return {
             content: [{
@@ -931,7 +955,7 @@ function createMcpServer(): Server {
   return server;
 }
 
-// ── Graceful shutdown helpers ─────────────────────────────────────────────────
+// â”€â”€ Graceful shutdown helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function registerShutdownHandlers(httpServer?: http.Server) {
   const shutdown = () => {
     cleanup();
@@ -945,12 +969,12 @@ function registerShutdownHandlers(httpServer?: http.Server) {
   process.on('SIGTERM', shutdown);
 }
 
-// ── HTTP mode (default) — port 4500 ──────────────────────────────────────────
+// â”€â”€ HTTP mode (default) â€” port 4500 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * Start DevsMind as an HTTP MCP server on port 4500.
  * IDEs connect via: http://localhost:4500/mcp
  *
- * Port mnemonic: devs→45 (D=4,E=5)  +  mind→13 (M=13)  =  4513
+ * Port mnemonic: devsâ†’45 (D=4,E=5)  +  mindâ†’13 (M=13)  =  4513
  */
 export async function runHttpMcpServer(port: number = DEVSMIND_PORT): Promise<void> {
   const app = express();
@@ -1020,7 +1044,7 @@ export async function runHttpMcpServer(port: number = DEVSMIND_PORT): Promise<vo
     }
   });
 
-  // MCP endpoint — stateless: each request gets its own server + transport pair
+  // MCP endpoint â€” stateless: each request gets its own server + transport pair
   app.all('/mcp', async (req, res) => {
     try {
       const server = createMcpServer();
@@ -1051,19 +1075,19 @@ export async function runHttpMcpServer(port: number = DEVSMIND_PORT): Promise<vo
     httpServer.once('error', reject);
   });
 
-  console.log(`🧠 DevsMind running  →  http://localhost:${port}/mcp`);
+  console.log(`ðŸ§  DevsMind running  â†’  http://localhost:${port}/mcp`);
   console.log(`   press Ctrl+C to stop`);
 
   registerShutdownHandlers(httpServer);
 }
 
-// ── Stdio mode — for direct IDE plugin injection ──────────────────────────────
+// â”€â”€ Stdio mode â€” for direct IDE plugin injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * Start DevsMind as a stdio MCP server.
  * Used when an IDE manages the process directly (e.g. Cursor stdio plugin mode).
  */
 export function runStdioMcpServer(): void {
-  // NOTE: do NOT write to stdout here — it is the JSON-RPC pipe.
+  // NOTE: do NOT write to stdout here â€” it is the JSON-RPC pipe.
 
   const server = createMcpServer();
 
@@ -1074,13 +1098,14 @@ export function runStdioMcpServer(): void {
   server.connect(transport).then(() => {
     // connected
   }).catch((err) => {
-    console.error(`❌ Stdio connection failed: ${(err as Error).message}`);
+    console.error(`âŒ Stdio connection failed: ${(err as Error).message}`);
     process.exit(1);
   });
 }
 
-// ── Backward-compat alias (used by existing CLI index.ts) ────────────────────
+// â”€â”€ Backward-compat alias (used by existing CLI index.ts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /** @deprecated Use runHttpMcpServer() or runStdioMcpServer() directly */
 export function runMcpServer(): void {
   runStdioMcpServer();
 }
+
