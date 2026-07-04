@@ -22,9 +22,9 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
                           │ devmind_path on every call
         ┌─────────────────┴─────────────────┐
         ▼                                   ▼
-  c:\work\Hanoot\.devmind\            c:\work\PayBridge\.devmind\
+  c:\work\my-project\.devmind\        c:\work\other-project\.devmind\
   brain.db                            brain.db
-  (Hanoot team brain)                 (PayBridge team brain)
+  (Project A team brain)              (Project B team brain)
 ```
 
 ---
@@ -53,25 +53,18 @@ Running `devsmind init` creates a `.devmind/` directory in your workspace. This 
 
 ### Flexibility: Where should the brain live?
 
-DevsMind supports three deployment topologies depending on your team's workflow:
+DevsMind supports two deployment topologies depending on your team's workflow:
 
-*   **Option A: Inside the workspace root (Recommended for Multi-Repo / Microservices)**
+*   **Option A: Inside the workspace/project root directory (Committed to Git, shared with team)**
     ```
-    c:\work\Hanoot\
-      ├── .devmind\              ← Brain lives here, committed to git
-      ├── backend-order-service\
-      ├── backend-user-service\
+    c:\work\my-project\
+      ├── .devmind\              ← Brain lives inside the project root directory
+      ├── backend-service\
       └── frontend-web\
     ```
-*   **Option B: Inside a single repo (Best for Mono-Apps / Solo projects)**
+*   **Option B: Standalone folder (Fully separated)**
     ```
-    c:\work\my-monolith\
-      ├── .devmind\              ← Brain lives inside the repo
-      └── src\
-    ```
-*   **Option C: Standalone folder (Fully separated)**
-    ```
-    c:\Users\Ali\brains\hanoot\
+    c:\Users\username\brains\my-project\
       └── .devmind\              ← Brain is kept separate from code folders
     ```
 
@@ -104,47 +97,22 @@ Open the generated `.devmind/.env` and update the local paths for each repositor
 
 ```bash
 # Example .devmind/.env
-REPO_ORDER_SERVICE=C:\work\Hanoot\backend-order-service
-REPO_FRONTEND=C:\work\Hanoot\frontend-web
+REPO_ORDER_SERVICE=C:\work\my-project\backend-service
+REPO_FRONTEND=C:\work\my-project\frontend-web
 ```
 
-### 4. Inject the AI Workspace Rule
-Add the Workspace Rule to your IDE config. (For example, append this to `.cursorrules`, Claude Project instructions, or your Antigravity agent settings):
+### 4. Get and Inject the AI Workspace Rule
+Instead of writing a custom prompt from scratch, DevsMind generates a fully customized Workspace Rule containing your project's unique configuration details.
 
-```markdown
-═══════════════════════════════════════════════════════
-DEVSMIND WORKSPACE RULE
-═══════════════════════════════════════════════════════
-
-DEVMIND_PATH = C:\work\Hanoot\.devmind
-(Replace this with the absolute path to your .devmind folder)
-
-SESSION START — Always execute this sequence first:
-  1. Call devsmind.get_project_context({ devmind_path: DEVMIND_PATH })
-  2. You now know the project's name, architecture, languages, repos, and conventions.
-  3. Do not guess or ask the developer about repository layout.
-
-AFTER EVERY MESSAGE WHERE YOU MODIFY OR WRITE CODE:
-  For every function, method, endpoint, schema, type, or class you changed/created:
-  Call devsmind.update_history({
-    devmind_path: DEVMIND_PATH,
-    node_id: "<unique-node-identifier>", // e.g. "CartService.applyPromoCode"
-    file_path: "<file-path-relative-to-repo>",
-    code_snapshot: "<current-full-code-of-this-node-only>",
-    reasoning: {
-      what_changed: "Brief description of the modified logic",
-      why: "The architectural/business driver for the change",
-      goal: "What requirement or feature is being completed",
-      requirement: "Ticket, issue, or request ID (e.g. HARR-234) if applicable",
-      previous_state: "What it looked like before and what the flaw was",
-      decision: "Why this design/implementation pattern was selected over alternatives",
-      developer: "Your name/git identity",
-      model: "Your model identifier (e.g. Gemini 3.5 Flash)"
-    },
-    type: "function" // optional taxonomy type
-  })
-═══════════════════════════════════════════════════════
+Run the following command in your terminal:
+```bash
+devsmind rule
 ```
+Or specify an explicit path:
+```bash
+devsmind rule --path C:\work\my-project\.devmind
+```
+This prints a tailored system instruction prompt. Copy and append it to your IDE's workspace rules (e.g. `.cursorrules`, Claude Project instructions, or Antigravity system settings) so your AI agent knows how to read, check, and update the brain during sessions.
 
 ### 5. Start the Server
 Start the MCP server on your machine:
