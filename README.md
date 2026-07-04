@@ -147,6 +147,13 @@ Index the entire workspace upfront so the AI knows every type, schema, and API c
 1. Run `/devsmind index` in your IDE chat or run `devsmind index` in the console.
 2. The AI will receive the file list, read the contents recursively, and call `add_node` and `add_connection` for all entities.
 3. It will save progress to a checkpoint scratchpad every 10 files, allowing safe resumption if the session resets.
+
+> 💡 **Model-Dependent Indexing**: The speed and quality of indexing depend on the selected AI model. A smarter, more capable model (e.g., Gemini 1.5 Pro, Claude 3.5 Sonnet) will take slightly longer to parse complex syntax and relationships but yields a much more accurate and comprehensive code graph.
+>
+> 🧹 **Pruning & Maintenance**: You don't have to re-index from scratch if files are modified or deleted. DevsMind includes built-in commands and tools to manage your graph:
+> *   `recheck_graph`: Checks file existence and prunes language primitives, built-ins, or nodes linked to deleted files (while preserving any nodes that have active history logs).
+> *   `delete_node` / `rename_node`: Directly update or remove nodes and connection mappings in the graph without reindexing.
+
 *   *Ideal for:* Production systems and team collaboration, preventing bugs where AI modifies variables used in undocumented parts of the system.
 
 ---
