@@ -78,34 +78,16 @@ Install the CLI and MCP server globally via npm:
 npm install -g devsmind
 ```
 
-### 2. Initialize the Brain
-Navigate to your project folder (or workspace root) and initialize:
+### 2. Initialize the Brain & Local Env
+Navigate to your project folder (or workspace root) and run:
 ```bash
 devsmind init
 ```
-This will guide you through interactive questions:
-*   Project Name
-*   Architecture (single app, monorepo, or microservices)
-*   Main languages and frameworks (NestJS, Express, FastAPI, Next.js, etc.)
-*   File naming conventions
-*   Configured repositories (if serving multiple code folders)
+This will guide you through interactive setup questions:
+*   **For new installations:** It prompts you for details (Project Name, Architecture, Frameworks, Naming Conventions, and Repo Paths) and automatically generates `.devmind/config.json` (committed), `.devmind/.env` (gitignored), and an empty `.devmind/brain.db`.
+*   **For resuming/joining developers:** If `.devmind/config.json` already exists (e.g., pulled from Git), running `devsmind init` will detect it. It will **not** overwrite the shared team configuration; instead, it will only prompt you for missing local details (your name/email and local machine paths for your repositories) and generate/update your local `.devmind/.env` automatically.
 
-It will generate `.devmind/config.json`, `.devmind/.env` (gitignored), and an empty `.devmind/brain.db`.
-
-> 🔄 **Resuming / Re-initializing**: If a `.devmind/` folder and `config.json` already exist (e.g., pulled from Git), running `devsmind init` will detect them. It will **not** overwrite the shared project configuration. Instead, it will only prompt for missing local details:
-> *   Your name and email (stored in `.env`).
-> *   Local repository paths (only prompted for developers using **Standalone Mode**, since paths vary per machine and are stored in the gitignored `.env` file).
-
-### 3. Set Up Local Paths
-Open the generated `.devmind/.env` and update the local paths for each repository. Because each developer stores code in different directories, this file is gitignored (for Standalone Mode users).
-
-```bash
-# Example .devmind/.env
-REPO_ORDER_SERVICE=C:\work\my-project\backend-service
-REPO_FRONTEND=C:\work\my-project\frontend-web
-```
-
-### 4. Get and Inject the AI Workspace Rule
+### 3. Get and Inject the AI Workspace Rule
 Instead of writing a custom prompt from scratch, DevsMind generates a fully customized Workspace Rule containing your project's unique configuration details.
 
 Run the following command in your terminal:
@@ -116,9 +98,9 @@ Or specify an explicit path:
 ```bash
 devsmind rule --path C:\work\my-project\.devmind
 ```
-This prints a tailored system instruction prompt. Copy and append it to your IDE's workspace rules (e.g. `.cursorrules`, Claude Project instructions, or Antigravity system settings) so your AI agent knows how to read, check, and update the brain during sessions.
+This prints a tailored system instruction prompt. Copy and append it to your IDE's workspace rules (e.g., `.cursorrules`, Claude Project instructions, or Antigravity system settings) so your AI agent knows how to read, check, and update the brain during sessions.
 
-### 5. Start the Server
+### 4. Start the Server
 Start the MCP server on your machine:
 ```bash
 devsmind start
