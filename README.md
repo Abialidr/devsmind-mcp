@@ -136,9 +136,14 @@ Index the entire workspace upfront so the AI knows every type, schema, and API c
 
 > 💡 **Model-Dependent Indexing**: The speed and quality of indexing depend on the selected AI model. A smarter, more capable model (e.g., Gemini 1.5 Pro, Claude 3.5 Sonnet) will take slightly longer to parse complex syntax and relationships but yields a much more accurate and comprehensive code graph.
 >
-> 🧹 **Pruning & Maintenance**: You don't have to re-index from scratch if files are modified or deleted. DevsMind includes built-in commands and tools to manage your graph:
-> *   `recheck_graph`: Checks file existence and prunes language primitives, built-ins, or nodes linked to deleted files (while preserving any nodes that have active history logs).
-> *   `delete_node` / `rename_node`: Directly update or remove nodes and connection mappings in the graph without reindexing.
+> 🧹 **Pruning & Maintenance**: During active development, DevsMind dynamically handles deletions and renames if function signatures match. For manual cleanup and auditing, you have access to specialized tools:
+> *   `recheck_graph`: Scans code files, cleans up language primitives, built-ins, or nodes associated with deleted files (while preserving any nodes with active history logs).
+> *   `get_orphaned_nodes`: Finds disconnected code nodes that have no incoming or outgoing connections to identify dead code or stale records.
+> 
+> ⚠️ **Preservation Over Deletion**: The AI agent will never delete historical context by itself; it preserves all evolution records.
+> *   `delete_node` is scheduled to be deprecated.
+> *   It will be replaced with a **deprecation mechanism** that keeps the node, its full coding history, and snapshots, but cuts its active connection links in the graph.
+> *   A future terminal utility function will be added, allowing users to manually prune deleted/deprecated nodes if they explicitly wish to reduce the database file size.
 
 *   *Ideal for:* Production systems and team collaboration, preventing bugs where AI modifies variables used in undocumented parts of the system.
 
@@ -220,7 +225,7 @@ DevsMind tools are designed with **layered granularity**. The AI only pulls the 
 *   `add_node`: Registers a new structure (function, class, endpoint, schema, variable, etc.) in the graph.
 *   `add_connection`: Links two structures together as a dependency relationship (`source` uses/calls `target`).
 *   `update_history`: Registers a code snapshot and writes history logs (respects the 1h session boundary rule).
-*   `delete_node`: Purges a node and all its incoming/outgoing connections from the graph.
+*   `delete_node`: Purges a node and all its incoming/outgoing connections from the graph. *(Deprecated — preservation mechanism is preferred to keep historical context).*
 *   `rename_node`: Re-keys a node identifier and updates all associated records (connections and history) seamlessly.
 
 ### 🧹 Category 5: Optimization & Maintenance
