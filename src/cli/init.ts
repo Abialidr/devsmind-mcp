@@ -143,10 +143,26 @@ function buildFileTree(dir: string, repoRoot: string): TreeEntry[] {
 }
 
 async function showIgnorePresets(excludedPaths: Set<string>, repoRoot: string) {
+  // Step A: Offer to use detected .gitignore patterns
+  const detectedPatterns = readGitIgnorePatterns(repoRoot);
+  if (detectedPatterns.length > 0) {
+    const preview = detectedPatterns.slice(0, 5).join(', ') + (detectedPatterns.length > 5 ? `, ... (+${detectedPatterns.length - 5} more)` : '');
+    const gitResponse = await prompts({
+      type: 'confirm',
+      name: 'useGitignore',
+      message: `Auto-ignore patterns from .gitignore? (${preview})`,
+      initial: true
+    });
+    if (gitResponse.useGitignore) {
+      for (const p of detectedPatterns) excludedPaths.add(p);
+    }
+  }
+
+  // Step B: Offer to add common non-code preset ignores
   const response = await prompts({
     type: 'confirm',
     name: 'usePresets',
-    message: 'Auto-ignore common configuration/non-code files? (lockfiles, tsconfig, eslint configs, etc.)',
+    message: 'Also auto-ignore common config/non-code files? (lockfiles, tsconfig, eslint configs, etc.)',
     initial: true
   });
 
@@ -166,7 +182,6 @@ async function showIgnorePresets(excludedPaths: Set<string>, repoRoot: string) {
       '.eslintrc',
       '.prettierrc'
     ];
-
     for (const file of commonIgnores) {
       if (fs.existsSync(path.join(repoRoot, file))) {
         excludedPaths.add(file);
@@ -206,8 +221,19 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
     }
 
     for (const entry of entries) {
+      // Check if this entry or any of its ancestor paths are excluded
       const isExcluded = excludedPaths.has(entry.relativePath);
-      const statusText = isExcluded ? '🚫 [EXCLUDED]' : '✅ [INCLUDED]';
+      const isInheritedExcluded = !isExcluded && Array.from(excludedPaths).some(p =>
+        entry.relativePath.startsWith(p + '/')
+      );
+      let statusText: string;
+      if (isExcluded) {
+        statusText = '🚫 [EXCLUDED]';
+      } else if (isInheritedExcluded) {
+        statusText = '🚫 [EXCLUDED via parent]';
+      } else {
+        statusText = '✅ [INCLUDED]';
+      }
       if (entry.isDir) {
         choices.push({
           title: `${statusText} Folder: ${entry.name}/`,
@@ -244,7 +270,9 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
     if (action === 'done') {
       browsing = false;
     } else if (action === 'up') {
-      currentDir = path.dirname(currentDir);
+      // Safety: never navigate above the repo root
+      const parent = path.dirname(currentDir);
+      currentDir = parent.startsWith(repoRoot) ? parent : repoRoot;
     } else if (action === 'browse') {
       currentDir = entry.fullPath;
     } else if (action === 'toggle') {
@@ -557,12 +585,7 @@ async function handleNewInit(cwd: string) {
       console.log(`\n📂 Exclusions setup for repository folder "${repoName}":`);
       
       const currentExcluded = new Set<string>();
-      // Pre-populate with auto-detected .gitignore patterns if they exist
-      const detectedIgnored = readGitIgnorePatterns(absoluteRepoPath);
-      for (const p of detectedIgnored) {
-        currentExcluded.add(p);
-      }
-
+      // showIgnorePresets will prompt user for .gitignore patterns AND common presets
       await showIgnorePresets(currentExcluded, absoluteRepoPath);
       await runFileBrowser(absoluteRepoPath, currentExcluded);
 
@@ -618,12 +641,7 @@ async function handleNewInit(cwd: string) {
       console.log(`\n📂 Exclusions setup for repository "${repoResponse.name}":`);
       
       const currentExcluded = new Set<string>();
-      // Pre-populate with auto-detected .gitignore patterns if they exist
-      const detectedIgnored = readGitIgnorePatterns(absoluteRepoPath);
-      for (const p of detectedIgnored) {
-        currentExcluded.add(p);
-      }
-
+      // showIgnorePresets will prompt user for .gitignore patterns AND common presets
       await showIgnorePresets(currentExcluded, absoluteRepoPath);
       await runFileBrowser(absoluteRepoPath, currentExcluded);
 
