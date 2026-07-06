@@ -255,11 +255,11 @@ function createMcpServer(): Server {
             required: ['devmind_path', 'node_id', 'file_path', 'code_snapshot', 'reasoning']
           }
         },
-        // â”€â”€ Indexing tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ────────────────── Indexing tools ─────────────────────────────────────────
         {
           name: 'index_start',
           description:
-            'Initialize an indexing session. Scans all configured repos, counts files, creates a scratchpad to track progress. Returns the full file list per repo so the AI can begin reading and indexing files.',
+            'Initialize an indexing session. Scans all configured repos, counts files, creates a scratchpad to track progress. Returns the full file list per repo so the AI can begin reading and indexing files. IMPORTANT: You must index natively in-chat using MCP tools. NEVER write or execute external scripts (like Python or custom scripts) to index files.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -293,7 +293,7 @@ function createMcpServer(): Server {
         {
           name: 'index_continue',
           description:
-            'Read the scratchpad and return exactly where indexing left off. Use this to resume after a context reset.',
+            'Read the scratchpad and return exactly where indexing left off. Use this to resume after a context reset. IMPORTANT: You must index natively in-chat using MCP tools. NEVER write or execute external scripts (like Python or custom scripts) to index files.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -675,7 +675,7 @@ function createMcpServer(): Server {
           };
         }
 
-        // â”€â”€ Indexing tool handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ————————————————————————————————— Indexing tool handlers —————————————————————————————————
         case 'index_start': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const { repos, total_files } = scanRepoFiles(devmindPath);
@@ -700,6 +700,8 @@ function createMcpServer(): Server {
                   'âš ï¸âš ï¸âš ï¸ CRITICAL INSTRUCTION FOR THE INDEXING AGENT â€” MUST READ âš ï¸âš ï¸âš ï¸',
                   'YOU MUST EXPLICITLY CALL THE "add_node" AND "add_connection" MCP TOOLS FOR EVERY NODE/CONNECTION YOU EXTRACT.',
                   'DO NOT JUST PRINT THE RESULTS AS TEXT IN THE CHAT WINDOW. PRINTING RESULTS WITHOUT CALLING THE MCP TOOLS DOES NOT WRITE THEM TO THE DATABASE AND MAKES THE ENTIRE INDEXING RUN A WASTE OF TIME AND TOKENS.',
+                  'NEVER WRITE OR EXECUTE EXTERNAL SCRIPTS (like Python, Node.js, Bash, etc.) to automate or lazy load indexing. You must read files and call the MCP tools step-by-step natively in the chat. This ensures progress is tracked in the SQLite scratchpad database and can be resumed/continued in subsequent chats if context limits are hit.',
+                  'ONCE YOU START INDEXING, DO NOT STOP or pause to ask for confirmation between checkpoints. Keep executing and indexing files continuously until the codebase is fully indexed or your context token limit is reached.',
                   'IF YOU ENCOUNTER CONTEXT RESETS, RESUME WORK BY CALLING "index_continue" AND CONTINUOUSLY COMMIT PROGRESS BY CALLING "index_checkpoint" EVERY 10 FILES.',
                   '',
                   'ðŸ“‹ CODE EXCLUSION & PRECISION RULES:',
@@ -805,11 +807,13 @@ function createMcpServer(): Server {
         case 'index_complete': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const pad = completeScratchpad(devmindPath);
+          const db = getDatabase(devmindPath);
+          db.vacuum();
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
-                message: 'âœ… Indexing complete! Full graph is now available.',
+                message: '✅ Indexing complete! Full graph is now available.',
                 summary: {
                   files_indexed: pad.files_done,
                   nodes_created: pad.nodes_created,
@@ -851,12 +855,13 @@ function createMcpServer(): Server {
           const workspaceRoot = String(args.workspace_root);
           const db = getDatabase(devmindPath);
           const result = db.pruneSpuriousNodes(workspaceRoot);
+          db.vacuum();
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
                 success: true,
-                message: `âœ… Graph recheck completed. Pruned ${result.prunedCount} spurious node(s) and their connections.`,
+                message: `✅ Graph recheck completed. Pruned ${result.prunedCount} spurious node(s) and their connections.`,
                 pruned_count: result.prunedCount,
                 pruned_nodes: result.prunedNodes
               }, null, 2)

@@ -2,7 +2,23 @@ import Database from 'better-sqlite3';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import { INIT_SCHEMA_SQL, DbNode, DbHistory, DbConnection } from './schema';
+
+function compressText(text: string): Buffer {
+  return zlib.deflateSync(Buffer.from(text, 'utf-8'));
+}
+
+function decompressText(val: any): string {
+  if (val instanceof Buffer || Buffer.isBuffer(val)) {
+    try {
+      return zlib.inflateSync(val).toString('utf-8');
+    } catch {
+      return val.toString('utf-8');
+    }
+  }
+  return String(val);
+}
 
 export interface ReasoningObject {
   what_changed: string;
@@ -57,6 +73,14 @@ export class DevMindDatabase {
 
   close() {
     this.db.close();
+  }
+
+  vacuum() {
+    try {
+      this.db.exec('VACUUM');
+    } catch (err) {
+      console.warn('⚠️ SQLite VACUUM failed:', err);
+    }
   }
 
   // --- Node Operations ---
@@ -183,7 +207,13 @@ export class DevMindDatabase {
       ORDER BY updated_at DESC
       LIMIT 1
     `);
-    return (stmt.get(nodeId) as DbHistory) || null;
+    const row = stmt.get(nodeId) as any;
+    if (!row) return null;
+    return {
+      ...row,
+      code_snapshot: decompressText(row.code_snapshot),
+      reasoning: decompressText(row.reasoning)
+    };
   }
 
   listHistory(nodeId: string): Omit<DbHistory, 'code_snapshot' | 'reasoning'>[] {
@@ -198,7 +228,13 @@ export class DevMindDatabase {
 
   getHistoryEntry(id: string): DbHistory | null {
     const stmt = this.db.prepare('SELECT * FROM history WHERE id = ?');
-    return (stmt.get(id) as DbHistory) || null;
+    const row = stmt.get(id) as any;
+    if (!row) return null;
+    return {
+      ...row,
+      code_snapshot: decompressText(row.code_snapshot),
+      reasoning: decompressText(row.reasoning)
+    };
   }
 
   getFullHistory(nodeId: string): DbHistory[] {
@@ -208,7 +244,12 @@ export class DevMindDatabase {
       WHERE node_id = ?
       ORDER BY updated_at DESC
     `);
-    return stmt.all(nodeId) as DbHistory[];
+    const rows = stmt.all(nodeId) as any[];
+    return rows.map(row => ({
+      ...row,
+      code_snapshot: decompressText(row.code_snapshot),
+      reasoning: decompressText(row.reasoning)
+    }));
   }
 
   getLatestCode(nodeId: string): { code_snapshot: string; updated_at: string } | null {
@@ -219,7 +260,12 @@ export class DevMindDatabase {
       ORDER BY updated_at DESC
       LIMIT 1
     `);
-    return (stmt.get(nodeId) as { code_snapshot: string; updated_at: string }) || null;
+    const row = stmt.get(nodeId) as any;
+    if (!row) return null;
+    return {
+      updated_at: row.updated_at,
+      code_snapshot: decompressText(row.code_snapshot)
+    };
   }
 
 
@@ -308,6 +354,8 @@ export class DevMindDatabase {
     const formattedReasoning = formatReasoning(reasoning);
     const nowStr = new Date().toISOString();
 
+    const compressedCode = compressText(code_snapshot);
+
     // 1-hour session boundary rule check
     const latest = this.getLatestHistory(node_id);
     if (latest) {
@@ -322,7 +370,7 @@ export class DevMindDatabase {
           SET code_snapshot = ?, reasoning = ?, updated_at = ?
           WHERE id = ?
         `);
-        updateStmt.run(code_snapshot, formattedReasoning, nowStr, latest.id);
+        updateStmt.run(compressedCode, formattedReasoning, nowStr, latest.id);
         
         return {
           ...latest,
@@ -341,7 +389,7 @@ export class DevMindDatabase {
       INSERT INTO history (id, node_id, session_id, created_at, updated_at, code_snapshot, reasoning)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
-    insertStmt.run(newId, node_id, sessionId, nowStr, nowStr, code_snapshot, formattedReasoning);
+    insertStmt.run(newId, node_id, sessionId, nowStr, nowStr, compressedCode, formattedReasoning);
 
     return {
       id: newId,
@@ -459,7 +507,12 @@ export class DevMindDatabase {
 
   getAllHistory(): DbHistory[] {
     const stmt = this.db.prepare('SELECT * FROM history ORDER BY updated_at DESC');
-    return stmt.all() as DbHistory[];
+    const rows = stmt.all() as any[];
+    return rows.map(row => ({
+      ...row,
+      code_snapshot: decompressText(row.code_snapshot),
+      reasoning: decompressText(row.reasoning)
+    }));
   }
 
   pruneSpuriousNodes(workspaceRoot: string): { prunedCount: number; prunedNodes: string[] } {

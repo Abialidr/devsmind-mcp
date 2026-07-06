@@ -91,6 +91,8 @@ export function handleRule(opts: { path?: string }) {
     `5. **Search before grep** — use ${bt}search_nodes${bt} before any filesystem search.`,
     `6. **Code snapshots — populate if missing** — always call ${bt}get_node_code${bt} before reading a source file. If no snapshot exists, read the file, then immediately call ${bt}update_history${bt} with the current code. Do not skip this — it caches the code for all future agents.`,
     `7. **Code snapshots — refresh if stale** — if you open a source file and notice the stored snapshot differs from the actual file, call ${bt}update_history${bt} with the fresh code before making any changes. Stale snapshots must be corrected first.`,
+    `8. **No external scripts for indexing** — When indexing a repository, NEVER write or run external scripts (like Python, Bash, or Node.js) to automate or lazy load indexing. You must perform the indexing natively step-by-step in the chat using the designated tools: ${bt}index_start${bt}, ${bt}index_checkpoint${bt}, ${bt}index_continue${bt}, and ${bt}index_complete${bt}. This ensures progress is tracked in the SQLite scratchpad database and allows indexing to be safely resumed across chat sessions if context limits are hit.`,
+    `9. **Continuous Indexing** — Once you start the codebase indexing process, do not stop, pause, or ask for user confirmation between checkpoints. Keep executing and indexing files continuously until the workspace is fully indexed, or until the chat session's context token limit is reached.`,
     '',
     '### Available Tools',
     '',

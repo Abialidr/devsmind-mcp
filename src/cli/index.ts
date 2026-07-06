@@ -5,6 +5,7 @@ import { handleInit } from './init';
 import { handleRule } from './rule';
 import { handleView } from './view';
 import { handlePrune } from './prune';
+import { runBackgroundIndexing } from './runner';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
 
 const program = new Command();
@@ -81,17 +82,47 @@ program
   .command('index')
   .description('Kick off the first-time graph indexing of all configured repos')
   .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
-  .action((opts: { path?: string }) => {
+  .option('--run', 'Start/resume background indexing using a local or cloud LLM')
+  .option('--provider <provider>', 'LLM provider: "gemini" or "ollama"', 'gemini')
+  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash" or "qwen2.5-coder")')
+  .option('--key <api_key>', 'Gemini API Key (overrides GEMINI_API_KEY environment variable)')
+  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .action(async (opts: {
+    path?: string;
+    run?: boolean;
+    provider: 'gemini' | 'ollama';
+    model?: string;
+    key?: string;
+    url?: string;
+  }) => {
     const devmindPath = opts.path ?? '.devmind';
     const resolved = require('path').resolve(devmindPath);
 
-    console.log(`\n🧠 DevsMind — Graph Indexing`);
-    console.log(`   Brain : ${resolved}`);
-    console.log(`\n📋 To index your codebase, tell your AI assistant:\n`);
-    console.log(`   "Call devsmind.index_start with devmind_path = ${resolved}"`);
-    console.log(`   "Then read every file it returns and call add_node + add_connection for each entity."`);
-    console.log(`   "Checkpoint every 10 files. Call index_complete when done."\n`);
-    console.log(`   Or simply type:  /devsmind index  in your IDE chat.\n`);
+    if (opts.run) {
+      try {
+        await runBackgroundIndexing({
+          devmindPath,
+          provider: opts.provider,
+          model: opts.model,
+          key: opts.key,
+          url: opts.url
+        });
+      } catch (err) {
+        console.error(`❌ Background indexing failed: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    } else {
+      console.log(`\n🧠 DevsMind — Graph Indexing`);
+      console.log(`   Brain : ${resolved}`);
+      console.log(`\n📋 To index your codebase, tell your AI assistant:\n`);
+      console.log(`   "Call devsmind.index_start with devmind_path = ${resolved}"`);
+      console.log(`   "Then read every file it returns and call add_node + add_connection for each entity."`);
+      console.log(`   "Checkpoint every 10 files. Call index_complete when done."`);
+      console.log(`   "NEVER use or write external scripts (like Python) to index files."\n`);
+      console.log(`   Or run it locally in the background using:\n`);
+      console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY`);
+      console.log(`   devsmind index --run --provider ollama --model qwen2.5-coder\n`);
+    }
   });
 
 program

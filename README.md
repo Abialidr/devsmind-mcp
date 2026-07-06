@@ -130,25 +130,65 @@ No upfront setup required. Just start writing code.
 
 ### Mode 2: Upfront Full Index (High Reliability)
 Index the entire workspace upfront so the AI knows every type, schema, and API contract from day one.
-1. Run `/devsmind index` in your IDE chat or run `devsmind index` in the console.
-2. The AI will receive the file list, read the contents recursively, and call `add_node` and `add_connection` for all entities.
-3. It will save progress to a checkpoint scratchpad every 10 files, allowing safe resumption if the session resets.
 
-> 💡 **Model-Dependent Indexing**: The speed and quality of indexing depend on the selected AI model. A smarter, more capable model (e.g., Gemini 1.5 Pro, Claude 3.5 Sonnet) will take slightly longer to parse complex syntax and relationships but yields a much more accurate and comprehensive code graph.
+You have two ways to run the upfront index:
+
+#### Option A: Background CLI Indexing (Recommended — Faster & Free)
+Run the indexer directly in your local terminal using a cloud model (Gemini) or a local offline model (Ollama). This uses **zero tokens** in your active IDE chat session and runs in the background.
+
+* **Using Gemini 2.5 Flash (Free Cloud Tier)**:
+  Obtain a free API key from [Google AI Studio](https://aistudio.google.com/) and run:
+  ```bash
+  devsmind index --run --provider gemini --key YOUR_API_KEY
+  ```
+  *(The runner automatically rate-limits itself to stay within the 15 RPM free tier limits).*
+
+* **Using Local Ollama (100% Offline & Free)**:
+  Make sure Ollama is running, pull the model (`ollama pull qwen2.5-coder`), and run:
+  ```bash
+  devsmind index --run --provider ollama --model qwen2.5-coder
+  ```
+
+* **Customizing Models & Settings**:
+  You can pass any model supported by the provider using the `--model` flag. For example:
+  * Run with the larger, smarter cloud model:
+    ```bash
+    devsmind index --run --provider gemini --model gemini-2.0-pro --key YOUR_API_KEY
+    ```
+  * Run with a different local Ollama model (e.g. `llama3.1`):
+    ```bash
+    devsmind index --run --provider ollama --model llama3.1
+    ```
+
+#### Option B: In-Chat Agent Indexing
+Tell your AI assistant inside your IDE chat:
+1. *"Call devsmind.index_start with devmind_path = <path>"*
+2. *"Then read every file it returns and call add_node + add_connection for each entity."*
+3. *"Checkpoint every 10 files. Call index_complete when done."*
+
+* **No External Scripts**: When indexing in-chat, the AI agent must perform the indexing natively using the MCP tools. It must **never** write or run custom external scripts (like Python or custom scripts), as this bypasses the tracking scratchpad and prevents proper resumption in new chat sessions if context limits are reached.
+
+---
+
+### 📋 Rules & Maintenance (Applies to both CLI and In-Chat Indexing)
+
+Regardless of whether you choose Option A (CLI) or Option B (In-Chat), the following rules and database maintenance procedures remain identical:
+
+> 💡 **Model-Dependent Indexing**: The speed and quality of indexing depend on the selected AI model. A smarter, more capable model (e.g., Gemini 2.0 Pro, Claude 3.5 Sonnet) will take slightly longer to parse complex syntax and relationships but yields a much more accurate and comprehensive code graph.
 >
 > 🧹 **Pruning & Maintenance**: During active development, DevsMind dynamically handles deprecations and renames if function signatures match. For manual cleanup and auditing, you have access to specialized tools:
-> *   `recheck_graph`: Scans code files, marks language primitives, built-ins, or nodes associated with deleted files as deprecated (removing their connections in the graph, but keeping their entries in the database).
-> *   `get_orphaned_nodes`: Finds disconnected code nodes that have no incoming or outgoing connections to identify dead code or stale records.
+> * `recheck_graph`: Scans code files, marks language primitives, built-ins, or nodes associated with deleted files as deprecated (removing their connections in the graph, but keeping their entries in the database).
+> * `get_orphaned_nodes`: Finds disconnected code nodes that have no incoming or outgoing connections to identify dead code or stale records.
 > 
 > ⚠️ **Preservation Over Deletion**: The AI agent will never delete historical context by itself; it preserves all evolution records. The `delete_node` MCP tool is removed.
-> *   Spurious or missing nodes are **deprecated** (keeping their code history and reasoning intact, but removing active connections in the graph).
-> *   An interactive terminal tool is provided to let users review, inspect, and prune nodes:
->     ```bash
->     devsmind prune
->     ```
->     This utility allows you to view node stats, inspect current code, page through chronological change history, and permanently delete individual nodes or clear all nodes/history as desired.
+> * Spurious or missing nodes are **deprecated** (keeping their code history and reasoning intact, but removing active connections in the graph).
+> * An interactive terminal tool is provided to let users review, inspect, and prune nodes:
+>   ```bash
+>   devsmind prune
+>   ```
+>   This utility allows you to view node stats, inspect current code, page through chronological change history, and permanently delete individual nodes or clear all nodes/history as desired.
 
-*   *Ideal for:* Production systems and team collaboration, preventing bugs where AI modifies variables used in undocumented parts of the system.
+* *Ideal for:* Production systems and team collaboration, preventing bugs where AI modifies variables used in undocumented parts of the system.
 
 ---
 
