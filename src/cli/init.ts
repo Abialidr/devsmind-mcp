@@ -193,6 +193,7 @@ async function showIgnorePresets(excludedPaths: Set<string>, repoRoot: string) {
 async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Promise<void> {
   let currentDir = repoRoot;
   let browsing = true;
+  let lastSelectedIndex = 0; // Remember cursor position across iterations
 
   while (browsing) {
     const relDir = path.relative(repoRoot, currentDir).replace(/\\/g, '/');
@@ -256,8 +257,16 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
       name: 'result',
       message: 'Select an entry to toggle or browse:',
       choices,
-      initial: 0
+      initial: Math.min(lastSelectedIndex, choices.length - 1)
     });
+
+    // Record the index of the selected choice so we can restore it next iteration
+    if (response.result !== undefined) {
+      const selectedIdx = choices.findIndex(
+        c => JSON.stringify(c.value) === JSON.stringify(response.result)
+      );
+      if (selectedIdx !== -1) lastSelectedIndex = selectedIdx;
+    }
 
     if (response.result === undefined) {
       console.log('⚠️  Selection cancelled. Keeping current exclusions.');
@@ -273,8 +282,10 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
       // Safety: never navigate above the repo root
       const parent = path.dirname(currentDir);
       currentDir = parent.startsWith(repoRoot) ? parent : repoRoot;
+      lastSelectedIndex = 0; // Reset cursor when changing directory
     } else if (action === 'browse') {
       currentDir = entry.fullPath;
+      lastSelectedIndex = 0; // Reset cursor when entering a subdirectory
     } else if (action === 'toggle') {
       if (excludedPaths.has(entry.relativePath)) {
         excludedPaths.delete(entry.relativePath);
