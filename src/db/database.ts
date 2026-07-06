@@ -165,11 +165,19 @@ export class DevMindDatabase {
   // --- Connection Operations ---
 
   addConnection(sourceNodeId: string, targetNodeId: string) {
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO node_connections (source_node_id, target_node_id)
-      VALUES (?, ?)
-    `);
-    stmt.run(sourceNodeId, targetNodeId);
+    try {
+      const stmt = this.db.prepare(`
+        INSERT OR IGNORE INTO node_connections (source_node_id, target_node_id)
+        VALUES (?, ?)
+      `);
+      stmt.run(sourceNodeId, targetNodeId);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('FOREIGN KEY')) {
+        // Ignore foreign key violations (e.g. target node defined in a file not indexed yet, or external library)
+        return;
+      }
+      throw err;
+    }
   }
 
   removeConnection(sourceNodeId: string, targetNodeId: string) {
