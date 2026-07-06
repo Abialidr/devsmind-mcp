@@ -410,6 +410,7 @@ export class DevMindDatabase {
     };
   }
 
+
   // --- Search Operations ---
 
   searchNodes(query: string): DbNode[] {

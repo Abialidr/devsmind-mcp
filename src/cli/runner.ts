@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
+import * as crypto from 'crypto';
 import { DevMindDatabase } from '../db/database';
-import { readScratchpad, createScratchpad, updateScratchpad, completeScratchpad } from '../db/indexer';
+import { readScratchpad, createScratchpad, writeScratchpad } from '../db/indexer';
 import { scanRepoFiles } from '../utils/scanner';
 
 interface ExtractedNode {
@@ -11,16 +12,11 @@ interface ExtractedNode {
   name: string;
   type: string;
   signature?: string;
-}
-
-interface ExtractedConnection {
-  source_node_id: string;
-  target_node_id: string;
+  code_snapshot?: string;
 }
 
 interface ExtractionResult {
   nodes?: ExtractedNode[];
-  connections?: ExtractedConnection[];
 }
 
 function makeHttpRequest(
@@ -74,6 +70,147 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ── Progress Display ─────────────────────────────────────────────────────
+
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const BAR_WIDTH = 28;
+const IS_TTY = !!process.stdout.isTTY;
+
+function fmtMs(ms: number): string {
+  if (ms < 1000) return '<1s';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  return `${m}m ${rs.toString().padStart(2, '0')}s`;
+}
+
+function makeBar(done: number, total: number): string {
+  const pct = total > 0 ? done / total : 0;
+  const filled = Math.round(BAR_WIDTH * pct);
+  return `[${'█'.repeat(filled)}${'░'.repeat(BAR_WIDTH - filled)}]`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? '…' + s.slice(-(max - 1)) : s;
+}
+
+class ProgressDisplay {
+  private isTTY = IS_TTY;
+  private lineCount = 0;
+  private spinIdx = 0;
+
+  // phase state
+  private phaseLabel = '';
+  private phaseNum = 0;
+  private totalPhases = 2;
+  private total = 0;
+  private done = 0;
+  private phaseStart = 0;
+  private itemStart = 0;
+  private times: number[] = [];
+  private currentItem = '';
+  private extraLine = '';
+
+  startPhase(phaseNum: number, label: string, total: number, alreadyDone = 0) {
+    this.phaseNum = phaseNum;
+    this.phaseLabel = label;
+    this.total = total;
+    this.done = alreadyDone;  // resume offset — show true overall progress
+    this.times = [];
+    this.phaseStart = Date.now();
+    this.currentItem = alreadyDone > 0 ? `Resuming from item ${alreadyDone + 1}…` : 'Starting…';
+    this.extraLine = '';
+    this.lineCount = 0;
+
+    if (!this.isTTY) {
+      console.log(`\n${'═'.repeat(52)}`);
+      console.log(` Phase ${phaseNum}/${this.totalPhases}: ${label}`);
+      console.log(`${'═'.repeat(52)}`);
+      if (alreadyDone > 0) {
+        console.log(` Resuming: ${alreadyDone}/${total} already done`);
+      }
+      console.log(` Remaining: ${total - alreadyDone} item(s) to process`);
+      console.log(`${'─'.repeat(52)}\n`);
+    } else {
+      const resumeTag = alreadyDone > 0 ? ` \x1B[90m(resuming from ${alreadyDone}/${total})\x1B[0m` : '';
+      process.stdout.write(`\n  \x1B[1m\x1B[36mPhase ${phaseNum}/${this.totalPhases}: ${label}\x1B[0m${resumeTag}\n\n`);
+      this._render();
+    }
+  }
+
+  beginItem(name: string) {
+    this.currentItem = name;
+    this.itemStart = Date.now();
+    this.spinIdx = (this.spinIdx + 1) % SPINNER_FRAMES.length;
+    if (this.isTTY) this._render();
+    else process.stdout.write(`  [${this.done + 1}/${this.total}] ${name} … `);
+  }
+
+  completeItem(extra = '') {
+    const t = Date.now() - this.itemStart;
+    this.times.push(t);
+    this.done++;
+    this.extraLine = extra;
+    if (this.isTTY) this._render();
+    else console.log(`done (${fmtMs(t)})  ${extra}`);
+  }
+
+  skipItem(reason: string) {
+    this.done++;
+    this.extraLine = reason;
+    if (this.isTTY) this._render();
+    else console.log(`skip — ${reason}`);
+  }
+
+  private _render() {
+    // Clear previously rendered block
+    if (this.lineCount > 0) {
+      process.stdout.write(`\x1B[${this.lineCount}A\x1B[0J`);
+    }
+
+    const pct = this.total > 0 ? (this.done / this.total) * 100 : 0;
+    const bar = makeBar(this.done, this.total);
+    const elapsed = Date.now() - this.phaseStart;
+    const avg = this.times.length > 0
+      ? this.times.reduce((a, b) => a + b, 0) / this.times.length
+      : 0;
+    const remaining = this.total - this.done;
+    const eta = avg > 0 && remaining > 0 ? avg * remaining : 0;
+
+    const spin = SPINNER_FRAMES[this.spinIdx];
+    const itemShort = truncate(this.currentItem, 56);
+    const pctStr = `${Math.round(pct)}%`.padStart(4);
+    const doneStr = `${this.done}/${this.total}`;
+
+    const lines: string[] = [
+      `  ${spin} ${bar}  ${doneStr.padEnd(9)} ${pctStr}`,
+      `  ⏱  Elapsed : \x1B[33m${fmtMs(elapsed)}\x1B[0m   ETA : \x1B[32m${eta > 0 ? '~' + fmtMs(eta) : remaining > 0 ? 'calculating…' : 'done!'}\x1B[0m`,
+      `  ⚡  Avg/item: \x1B[35m${avg > 0 ? fmtMs(avg) : '—'}\x1B[0m   ${this.extraLine ? '\x1B[90m' + truncate(this.extraLine, 30) + '\x1B[0m' : ''}`,
+      `  ▶  \x1B[90m${itemShort}\x1B[0m`,
+      ``
+    ];
+
+    process.stdout.write(lines.join('\n'));
+    this.lineCount = lines.length;
+  }
+
+  finishPhase(summary: string) {
+    if (this.isTTY && this.lineCount > 0) {
+      // Clear live block
+      process.stdout.write(`\x1B[${this.lineCount}A\x1B[0J`);
+      this.lineCount = 0;
+    }
+    const elapsed = Date.now() - this.phaseStart;
+    const avg = this.times.length > 0
+      ? this.times.reduce((a, b) => a + b, 0) / this.times.length
+      : 0;
+    const checkmark = '\x1B[32m✔\x1B[0m';
+    console.log(`  ${checkmark} ${summary}  \x1B[90m(total: ${fmtMs(elapsed)}, avg: ${avg > 0 ? fmtMs(avg) : '—'}/item)\x1B[0m`);
+  }
+}
+
+
 // Build standard taxonomy prompt text
 const TAXONOMY_PROMPT = `
 Choose node types from this taxonomy:
@@ -91,6 +228,241 @@ Choose node types from this taxonomy:
 - UTILITY: util_function | helper | validator | formatter
 `;
 
+// ── Vertex AI Authentication & Helper Functions ───────────────────────────
+
+function base64UrlEncode(obj: any): string {
+  return Buffer.from(JSON.stringify(obj))
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+function getAccessTokenFromServiceAccount(sa: { client_email: string; private_key: string; token_uri?: string }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      const header = { alg: 'RS256', typ: 'JWT' };
+      const now = Math.floor(Date.now() / 1000);
+      const payload = {
+        iss: sa.client_email,
+        scope: 'https://www.googleapis.com/auth/cloud-platform',
+        aud: sa.token_uri || 'https://oauth2.googleapis.com/token',
+        exp: now + 3600,
+        iat: now
+      };
+
+      const dataToSign = `${base64UrlEncode(header)}.${base64UrlEncode(payload)}`;
+      const signer = crypto.createSign('RSA-SHA256');
+      signer.update(dataToSign);
+      const signature = signer.sign(sa.private_key, 'base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+
+      const jwt = `${dataToSign}.${signature}`;
+      const tokenUri = sa.token_uri || 'https://oauth2.googleapis.com/token';
+      const body = `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`;
+      
+      const url = new URL(tokenUri);
+      const req = https.request(
+        {
+          hostname: url.hostname,
+          port: url.port || 443,
+          path: url.pathname + url.search,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(body)
+          }
+        },
+        (res) => {
+          let chunks = '';
+          res.on('data', (chunk) => {
+            chunks += chunk;
+          });
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                const parsed = JSON.parse(chunks);
+                if (parsed.access_token) {
+                  resolve(parsed.access_token);
+                } else {
+                  reject(new Error(`No access token in response: ${chunks}`));
+                }
+              } catch (e) {
+                reject(e);
+              }
+            } else {
+              reject(new Error(`Token request failed with status ${res.statusCode}: ${chunks}`));
+            }
+          });
+        }
+      );
+      
+      req.on('error', (err) => {
+        reject(err);
+      });
+      
+      req.write(body);
+      req.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+let cachedVertexToken: string | null = null;
+let vertexTokenExpiry = 0; // Epoch ms
+
+async function getVertexTokenCached(saData: any): Promise<string> {
+  const now = Date.now();
+  if (cachedVertexToken && vertexTokenExpiry > now + 300000) {
+    return cachedVertexToken;
+  }
+  const token = await getAccessTokenFromServiceAccount(saData);
+  cachedVertexToken = token;
+  vertexTokenExpiry = Date.now() + 3600 * 1000;
+  return token;
+}
+
+async function extractWithVertex(
+  model: string,
+  token: string,
+  projectId: string,
+  location: string,
+  filePath: string,
+  code: string
+): Promise<ExtractionResult> {
+  const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent`;
+  
+  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code file provided and extract all code structures (functions, methods, classes, controllers, services, interfaces, schema models, types) defined in the file.
+Return ONLY a valid JSON object matching the schema:
+{
+  "nodes": [
+    { 
+      "node_id": "fully_qualified_identifier (e.g. Class.method or function)", 
+      "name": "display_name", 
+      "type": "type_from_taxonomy", 
+      "signature": "param/return signature (optional)",
+      "code_snapshot": "the exact full source code block of this entity"
+    }
+  ]
+}
+${TAXONOMY_PROMPT}
+CRITICAL RULES:
+1. ONLY extract code structures defined in the file. Do NOT extract imports or third-party libraries as nodes.
+2. For each node, extract its exact code snippet as "code_snapshot".
+3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
+4. Be highly precise and return an empty JSON object if no code constructs are found.`;
+
+  const payload = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `File path: ${filePath}\n\nCode:\n${code}`
+          }
+        ]
+      }
+    ],
+    systemInstruction: {
+      parts: [
+        {
+          text: systemPrompt
+        }
+      ]
+    },
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  };
+
+  const responseText = await makeHttpRequest(
+    url,
+    'POST',
+    {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    JSON.stringify(payload)
+  );
+
+  const parsed = JSON.parse(responseText);
+  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    return {};
+  }
+  return JSON.parse(text) as ExtractionResult;
+}
+
+async function resolveConnectionsWithVertex(
+  model: string,
+  token: string,
+  projectId: string,
+  location: string,
+  sourceNodeId: string,
+  code: string,
+  candidateNodeIds: string[]
+): Promise<string[]> {
+  const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent`;
+  
+  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code of a specific code entity and identify which other known code entities from the provided candidate list it calls or references.
+Return ONLY a valid JSON object matching the schema:
+{
+  "connections": [
+    "target_node_id_1",
+    "target_node_id_2"
+  ]
+}
+CRITICAL RULES:
+1. ONLY return target node IDs that are present in the provided list of known candidates. Do NOT invent new node IDs.
+2. DO NOT include connections to third-party libraries, language built-ins, or the source node itself.
+3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
+4. If no connections are found, return an empty array.`;
+
+  const payload = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `Source Node ID: ${sourceNodeId}\n\nSource Code:\n${code}\n\nCandidate Target Node IDs in the Codebase:\n${JSON.stringify(candidateNodeIds, null, 2)}`
+          }
+        ]
+      }
+    ],
+    systemInstruction: {
+      parts: [
+        {
+          text: systemPrompt
+        }
+      ]
+    },
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  };
+
+  const responseText = await makeHttpRequest(
+    url,
+    'POST',
+    {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    JSON.stringify(payload)
+  );
+
+  const parsed = JSON.parse(responseText);
+  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    return [];
+  }
+  const result = JSON.parse(text) as LinkingResult;
+  return result.connections || [];
+}
+
 async function extractWithGemini(
   model: string,
   key: string,
@@ -99,21 +471,25 @@ async function extractWithGemini(
 ): Promise<ExtractionResult> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   
-  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code file provided and extract all code structures (functions, methods, classes, controllers, services, interfaces, schema models, types) and caller-callee connections between them.
+  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code file provided and extract all code structures (functions, methods, classes, controllers, services, interfaces, schema models, types) defined in the file.
 Return ONLY a valid JSON object matching the schema:
 {
   "nodes": [
-    { "node_id": "fully_qualified_identifier (e.g. Class.method or function)", "name": "display_name", "type": "type_from_taxonomy", "signature": "param/return signature (optional)" }
-  ],
-  "connections": [
-    { "source_node_id": "fully_qualified_caller", "target_node_id": "fully_qualified_callee" }
+    { 
+      "node_id": "fully_qualified_identifier (e.g. Class.method or function)", 
+      "name": "display_name", 
+      "type": "type_from_taxonomy", 
+      "signature": "param/return signature (optional)",
+      "code_snapshot": "the exact full source code block of this entity"
+    }
   ]
 }
 ${TAXONOMY_PROMPT}
 CRITICAL RULES:
 1. ONLY extract code structures defined in the file. Do NOT extract imports or third-party libraries as nodes.
-2. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
-3. Be highly precise and return an empty JSON object if no code constructs are found.`;
+2. For each node, extract its exact code snippet as "code_snapshot".
+3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
+4. Be highly precise and return an empty JSON object if no code constructs are found.`;
 
   const payload = {
     contents: [
@@ -160,20 +536,24 @@ async function extractWithOllama(
 ): Promise<ExtractionResult> {
   const endpoint = `${url.replace(/\/$/, '')}/api/chat`;
   
-  const systemPrompt = `You are a codebase indexing assistant. Analyze this source code file and extract code structures (functions, classes, methods, endpoints) and caller-callee connections.
+  const systemPrompt = `You are a codebase indexing assistant. Analyze this source code file and extract code structures (functions, classes, methods, endpoints).
 Return ONLY a valid JSON object matching the schema:
 {
   "nodes": [
-    { "node_id": "unique_string (e.g. Class.method or function)", "name": "display_name", "type": "type_from_taxonomy", "signature": "param/return signature (optional)" }
-  ],
-  "connections": [
-    { "source_node_id": "caller", "target_node_id": "callee" }
+    { 
+      "node_id": "unique_string (e.g. Class.method or function)", 
+      "name": "display_name", 
+      "type": "type_from_taxonomy", 
+      "signature": "param/return signature (optional)",
+      "code_snapshot": "the exact full source code block of this entity"
+    }
   ]
 }
 ${TAXONOMY_PROMPT}
 CRITICAL RULES:
 1. ONLY extract constructs defined in this file. Do NOT extract third-party libraries or imports.
-2. Return a clean, valid JSON object.`;
+2. For each node, extract its exact code snippet as "code_snapshot".
+3. Return a clean, valid JSON object.`;
 
   const userPrompt = `File path: ${filePath}\n\nCode:\n${code}`;
 
@@ -196,15 +576,136 @@ CRITICAL RULES:
 
   const parsed = JSON.parse(responseText);
   const text = parsed.message?.content;
-  if (!text) {
-    return {};
-  }
   return JSON.parse(text) as ExtractionResult;
+}
+
+interface LinkingResult {
+  connections?: string[];
+}
+
+async function resolveConnectionsWithGemini(
+  model: string,
+  key: string,
+  sourceNodeId: string,
+  code: string,
+  candidateNodeIds: string[]
+): Promise<string[]> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  
+  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code of a specific code entity and identify which other known code entities from the provided candidate list it calls or references.
+Return ONLY a valid JSON object matching the schema:
+{
+  "connections": [
+    "target_node_id_1",
+    "target_node_id_2"
+  ]
+}
+CRITICAL RULES:
+1. ONLY return target node IDs that are present in the provided list of known candidates. Do NOT invent new node IDs.
+2. DO NOT include connections to third-party libraries, language built-ins, or the source node itself.
+3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
+4. If no connections are found, return an empty array.`;
+
+  const payload = {
+    contents: [
+      {
+        parts: [
+          {
+            text: `Source Node ID: ${sourceNodeId}\n\nSource Code:\n${code}\n\nCandidate Target Node IDs in the Codebase:\n${JSON.stringify(candidateNodeIds, null, 2)}`
+          }
+        ]
+      }
+    ],
+    systemInstruction: {
+      parts: [
+        {
+          text: systemPrompt
+        }
+      ]
+    },
+    generationConfig: {
+      responseMimeType: 'application/json'
+    }
+  };
+
+  const responseText = await makeHttpRequest(
+    url,
+    'POST',
+    { 'Content-Type': 'application/json' },
+    JSON.stringify(payload)
+  );
+
+  const parsed = JSON.parse(responseText);
+  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    return [];
+  }
+  const result = JSON.parse(text) as LinkingResult;
+  return result.connections || [];
+}
+
+async function resolveConnectionsWithOllama(
+  url: string,
+  model: string,
+  sourceNodeId: string,
+  code: string,
+  candidateNodeIds: string[]
+): Promise<string[]> {
+  const endpoint = `${url.replace(/\/$/, '')}/api/chat`;
+  
+  const systemPrompt = `You are a codebase indexing assistant. Analyze this source code of a code entity and identify which other known entities from the provided candidate list it calls or references.
+Return ONLY a valid JSON object matching the schema:
+{
+  "connections": [
+    "target_node_id_1",
+    "target_node_id_2"
+  ]
+}
+CRITICAL RULES:
+1. ONLY return target node IDs that are present in the provided list of known candidates. Do NOT invent new node IDs.
+2. Return a clean, valid JSON object.`;
+
+  const userPrompt = `Source Node ID: ${sourceNodeId}\n\nSource Code:\n${code}\n\nCandidate Target Node IDs:\n${JSON.stringify(candidateNodeIds, null, 2)}`;
+
+  const payload = {
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    stream: false,
+    format: 'json'
+  };
+
+  const responseText = await makeHttpRequest(
+    endpoint,
+    'POST',
+    { 'Content-Type': 'application/json' },
+    JSON.stringify(payload)
+  );
+
+  const parsed = JSON.parse(responseText);
+  const text = parsed.message?.content;
+  if (!text) {
+    return [];
+  }
+  const result = JSON.parse(text) as LinkingResult;
+  return result.connections || [];
+}
+
+function filterCandidates(codeSnapshot: string, allNodeIds: string[]): string[] {
+  const lowerCode = codeSnapshot.toLowerCase();
+  return allNodeIds.filter(id => {
+    const shortName = id.includes('.') ? id.split('.').pop()! : id;
+    if (!shortName || shortName.trim().length === 0) return false;
+    if (shortName.length < 3) return false;
+    return lowerCode.includes(shortName.toLowerCase());
+  });
 }
 
 export async function runBackgroundIndexing(opts: {
   devmindPath: string;
-  provider: 'gemini' | 'ollama';
+  provider: 'gemini' | 'vertex' | 'ollama';
   model?: string;
   key?: string;
   url?: string;
@@ -215,6 +716,11 @@ export async function runBackgroundIndexing(opts: {
   console.log(`   Provider        : ${opts.provider}`);
   
   let modelName = opts.model || '';
+  let vertexSaData: any = null;
+  let vertexToken: string | null = null;
+  let vertexProjectId = '';
+  let vertexLocation = 'us-central1';
+
   if (opts.provider === 'gemini') {
     modelName = modelName || 'gemini-2.0-flash';
     const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
@@ -223,22 +729,66 @@ export async function runBackgroundIndexing(opts: {
       process.exit(1);
     }
     opts.key = apiKey;
+  } else if (opts.provider === 'vertex') {
+    modelName = modelName || 'gemini-1.5-flash';
+    const inputKey = opts.key || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY || '';
+    if (!inputKey) {
+      console.error('❌ Error: Vertex AI requires a Service Account JSON path or Bearer Token. Pass --key or set GOOGLE_APPLICATION_CREDENTIALS / VERTEX_API_KEY environment variable.');
+      process.exit(1);
+    }
+
+    try {
+      if (inputKey.trim().startsWith('{')) {
+        vertexSaData = JSON.parse(inputKey);
+      } else if (fs.existsSync(inputKey)) {
+        vertexSaData = JSON.parse(fs.readFileSync(inputKey, 'utf-8'));
+      }
+    } catch (e) {
+      // Treat as raw token
+    }
+
+    vertexProjectId = vertexSaData?.project_id || process.env.GCP_PROJECT_ID || process.env.VERTEX_PROJECT_ID || '';
+    vertexLocation = process.env.GCP_LOCATION || process.env.VERTEX_LOCATION || 'us-central1';
+
+    if (!vertexSaData && !inputKey.startsWith('ya29.')) {
+      console.error('❌ Error: Vertex key must be a valid Service Account JSON file path, inline JSON, or raw OAuth access token starting with "ya29."');
+      process.exit(1);
+    }
+
+    if (!vertexProjectId) {
+      console.error('❌ Error: Vertex Project ID could not be determined. Please set GCP_PROJECT_ID environment variable or specify it in your service account JSON.');
+      process.exit(1);
+    }
+
+    if (!vertexSaData) {
+      vertexToken = inputKey; // Raw Bearer token
+    }
   } else {
     modelName = modelName || 'qwen2.5-coder';
     opts.url = opts.url || 'http://localhost:11434';
   }
+
+  const getVertexToken = async (): Promise<string> => {
+    if (vertexToken) return vertexToken;
+    if (vertexSaData) {
+      return await getVertexTokenCached(vertexSaData);
+    }
+    throw new Error('No Vertex credentials available');
+  };
+
   console.log(`   Model           : ${modelName}`);
 
-  // 1. Scan for repos & files
+  // 1. Open DB
+  const dbFile = path.join(resolvedDevmind, 'brain.db');
+  const db = new DevMindDatabase(dbFile);
+
+  // 2. Scan for repos & files
   const { repos, total_files } = scanRepoFiles(resolvedDevmind);
   if (total_files === 0) {
     console.log('⚠️ No files found to index. Make sure config.json repositories are configured properly.');
+    db.close();
     return;
   }
-
-  // 2. Open DB
-  const dbFile = path.join(resolvedDevmind, 'brain.db');
-  const db = new DevMindDatabase(dbFile);
 
   // 3. Read or create scratchpad
   let pad = readScratchpad(resolvedDevmind);
@@ -250,148 +800,237 @@ export async function runBackgroundIndexing(opts: {
     return;
   }
 
-  const reposDone = new Set(pad.repos_done);
-  
-  // Flatten file list for tracking
-  const allFiles: { repoName: string; absolutePath: string }[] = [];
-  for (const repo of repos) {
-    if (reposDone.has(repo.repo_name)) continue;
-    for (const f of repo.files) {
-      allFiles.push({ repoName: repo.repo_name, absolutePath: f });
-    }
-  }
+  // =========================================================================
+  // PHASE 1: NODE & CODE SNAPSHOT EXTRACTION
+  // =========================================================================
+  const progress = new ProgressDisplay();
 
-  let startIndex = 0;
-  if (pad.last_file_indexed) {
-    const idx = allFiles.findIndex(f => f.absolutePath === pad!.last_file_indexed);
-    if (idx !== -1) {
-      startIndex = idx + 1;
-    }
-  }
-
-  console.log(`   Progress        : ${pad.files_done}/${pad.files_total} files (${Math.round((pad.files_done / pad.files_total) * 100)}%)`);
-  console.log(`   Remaining Files : ${allFiles.length - startIndex} file(s)`);
-  console.log('──────────────────────────────────────────────────\n');
-
-  let fileIndex = startIndex;
-  let successCount = 0;
-
-  for (; fileIndex < allFiles.length; fileIndex++) {
-    const fileObj = allFiles[fileIndex];
-    const relPath = path.relative(process.cwd(), fileObj.absolutePath);
-    console.log(`[${pad.files_done + 1}/${pad.files_total}] Indexing: ${relPath}...`);
-
-    let code = '';
-    try {
-      code = fs.readFileSync(fileObj.absolutePath, 'utf-8');
-    } catch (err) {
-      console.warn(`⚠️ Warning: Failed to read file ${fileObj.absolutePath}: ${(err as Error).message}`);
-      continue;
+  if (pad.phase === 1) {
+    const reposDone = new Set(pad.repos_done);
+    const allFiles: { repoName: string; absolutePath: string }[] = [];
+    for (const repo of repos) {
+      if (reposDone.has(repo.repo_name)) continue;
+      for (const f of repo.files) {
+        allFiles.push({ repoName: repo.repo_name, absolutePath: f });
+      }
     }
 
-    if (code.trim().length === 0) {
-      // Empty file
-      pad.files_done++;
-      pad.last_file_indexed = fileObj.absolutePath;
-      updateScratchpad(resolvedDevmind, {
-        files_done: pad.files_done,
-        last_file_indexed: pad.last_file_indexed
-      });
-      continue;
+    let startIndex = 0;
+    if (pad.last_file_indexed) {
+      const idx = allFiles.findIndex(f => f.absolutePath === pad!.last_file_indexed);
+      if (idx !== -1) startIndex = idx + 1;
     }
 
-    let result: ExtractionResult = {};
-    let retries = 3;
-    while (retries > 0) {
+    // Use pad.files_total as true total so resume shows e.g. 14/1068, not 1/1055
+    progress.startPhase(1, 'Node & Code Extraction', pad.files_total, pad.files_done);
+
+    let fileIndex = startIndex;
+    for (; fileIndex < allFiles.length; fileIndex++) {
+      const fileObj = allFiles[fileIndex];
+      const relPath = path.relative(process.cwd(), fileObj.absolutePath);
+
+      progress.beginItem(relPath);
+
+      let code = '';
       try {
-        if (opts.provider === 'gemini') {
-          result = await extractWithGemini(modelName, opts.key!, fileObj.absolutePath, code);
-        } else {
-          result = await extractWithOllama(opts.url!, modelName, fileObj.absolutePath, code);
-        }
-        break;
+        code = fs.readFileSync(fileObj.absolutePath, 'utf-8');
       } catch (err) {
-        retries--;
-        console.error(`   ⚠️ API Error: ${(err as Error).message}. Retries left: ${retries}`);
-        if (retries === 0) {
-          console.error('❌ Indexing paused. Run this command again to resume.');
-          db.close();
-          process.exit(1);
-        }
-        await sleep(2000);
+        progress.skipItem(`read error: ${(err as Error).message}`);
+        continue;
       }
-    }
 
-    // 4. Save extracted nodes and connections directly to DB
-    let newNodes = 0;
-    let newConns = 0;
+      if (code.trim().length === 0) {
+        pad.files_done++;
+        pad.last_file_indexed = fileObj.absolutePath;
+        writeScratchpad(resolvedDevmind, pad);
+        progress.skipItem('empty file');
+        continue;
+      }
 
-    if (result.nodes && Array.isArray(result.nodes)) {
-      for (const n of result.nodes) {
-        if (n.node_id && n.name && n.type) {
-          db.upsertNode({
-            id: n.node_id,
-            name: n.name,
-            type: n.type,
-            file_path: fileObj.absolutePath,
-            signature: n.signature || null
-          });
-          newNodes++;
+      let result: ExtractionResult = {};
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          if (opts.provider === 'gemini') {
+            result = await extractWithGemini(modelName, opts.key!, fileObj.absolutePath, code);
+          } else if (opts.provider === 'vertex') {
+            const token = await getVertexToken();
+            result = await extractWithVertex(modelName, token, vertexProjectId, vertexLocation, fileObj.absolutePath, code);
+          } else {
+            result = await extractWithOllama(opts.url!, modelName, fileObj.absolutePath, code);
+          }
+          break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) {
+            progress.finishPhase(`Paused — API error. Run again to resume.`);
+            console.error(`❌ ${(err as Error).message}`);
+            db.close();
+            process.exit(1);
+          }
+          await sleep(2000);
         }
       }
-    }
 
-    if (result.connections && Array.isArray(result.connections)) {
-      for (const c of result.connections) {
-        if (c.source_node_id && c.target_node_id) {
-          db.addConnection(c.source_node_id, c.target_node_id);
-          newConns++;
+      let newNodesCount = 0;
+      if (result.nodes && Array.isArray(result.nodes)) {
+        for (const n of result.nodes) {
+          if (n.node_id && n.name && n.type) {
+            db.upsertNode({
+              id: n.node_id,
+              name: n.name,
+              type: n.type,
+              file_path: fileObj.absolutePath,
+              signature: n.signature || null
+            });
+            newNodesCount++;
+            if (n.code_snapshot) {
+              db.updateHistory({
+                node_id: n.node_id,
+                code_snapshot: n.code_snapshot,
+                reasoning: {
+                  what_changed: 'Initial code extraction during background indexing',
+                  why: 'Initial index setup',
+                  goal: 'Establish baseline codebase knowledge graph',
+                  developer: 'devsmind background indexer',
+                  model: modelName
+                }
+              });
+            }
+          }
         }
       }
+
+      pad.files_done++;
+      pad.nodes_created += newNodesCount;
+      pad.last_file_indexed = fileObj.absolutePath;
+      pad.current_repo = fileObj.repoName;
+      pad.updated_at = new Date().toISOString();
+
+      const currentRepoFiles = repos.find(r => r.repo_name === fileObj.repoName)?.files || [];
+      const isRepoDone = currentRepoFiles.length > 0 && currentRepoFiles[currentRepoFiles.length - 1] === fileObj.absolutePath;
+      if (isRepoDone && !pad.repos_done.includes(fileObj.repoName)) {
+        pad.repos_done.push(fileObj.repoName);
+      }
+      writeScratchpad(resolvedDevmind, pad);
+
+      progress.completeItem(`${pad.nodes_created} node(s) found so far`);
+
+      if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
+      else await sleep(200);
     }
 
-    // Update progress
-    pad.files_done++;
-    pad.nodes_created += newNodes;
-    pad.connections_created += newConns;
-    pad.last_file_indexed = fileObj.absolutePath;
-    pad.current_repo = fileObj.repoName;
+    // Transition to Phase 2
+    const activeNodes = db.listNodes();
+    pad.phase = 2;
+    pad.nodes_total = activeNodes.length;
+    pad.nodes_done = 0;
+    pad.updated_at = new Date().toISOString();
+    writeScratchpad(resolvedDevmind, pad);
 
-    // Check if the repository is fully indexed
-    const currentRepoFiles = repos.find(r => r.repo_name === fileObj.repoName)?.files || [];
-    const isRepoDone = currentRepoFiles.length > 0 && currentRepoFiles[currentRepoFiles.length - 1] === fileObj.absolutePath;
-    if (isRepoDone && !pad.repos_done.includes(fileObj.repoName)) {
-      pad.repos_done.push(fileObj.repoName);
-    }
-
-    updateScratchpad(resolvedDevmind, {
-      files_done: pad.files_done,
-      last_file_indexed: pad.last_file_indexed,
-      nodes_created: pad.nodes_created,
-      connections_created: pad.connections_created,
-      current_repo: pad.current_repo,
-      repos_done: pad.repos_done
-    });
-
-    console.log(`   Success: Created ${newNodes} node(s), ${newConns} connection(s).`);
-    successCount++;
-
-    // Respect Gemini AI Studio Free Tier limit (15 Requests/Min -> 1 request every 4 seconds)
-    if (opts.provider === 'gemini') {
-      await sleep(4000);
-    } else {
-      // Short breather for local CPU/GPU to not cook
-      await sleep(200);
-    }
+    progress.finishPhase(`Phase 1 done — ${activeNodes.length} node(s) extracted from ${pad.files_done} file(s)`);
   }
 
-  // Mark complete
-  completeScratchpad(resolvedDevmind);
+  // =========================================================================
+  // PHASE 2: AI CONNECTION RESOLUTION / LINKING
+  // =========================================================================
+  if (pad.phase === 2) {
+    const activeNodes = db.listNodes();
+    const allNodeIds = activeNodes.map(n => n.id);
+    const resumeIndex = pad.nodes_done || 0;
+    // Use total node count and resume offset so bar shows true progress
+    progress.startPhase(2, 'AI Connection Resolution', activeNodes.length, resumeIndex);
+
+    let nodeIndex = resumeIndex;
+    for (; nodeIndex < activeNodes.length; nodeIndex++) {
+      const node = activeNodes[nodeIndex];
+
+      progress.beginItem(node.id);
+
+      const latestCode = db.getLatestCode(node.id);
+      if (!latestCode || !latestCode.code_snapshot || latestCode.code_snapshot.trim().length === 0) {
+        pad.nodes_done = nodeIndex + 1;
+        pad.updated_at = new Date().toISOString();
+        writeScratchpad(resolvedDevmind, pad);
+        progress.skipItem('no code snapshot');
+        continue;
+      }
+
+      const candidates = filterCandidates(latestCode.code_snapshot, allNodeIds);
+      const filteredCandidates = candidates.filter(id => id !== node.id);
+
+      if (filteredCandidates.length === 0) {
+        pad.nodes_done = nodeIndex + 1;
+        pad.updated_at = new Date().toISOString();
+        writeScratchpad(resolvedDevmind, pad);
+        progress.skipItem('no matching candidates');
+        continue;
+      }
+
+      let connections: string[] = [];
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          if (opts.provider === 'gemini') {
+            connections = await resolveConnectionsWithGemini(
+              modelName, opts.key!, node.id, latestCode.code_snapshot, filteredCandidates
+            );
+          } else if (opts.provider === 'vertex') {
+            const token = await getVertexToken();
+            connections = await resolveConnectionsWithVertex(
+              modelName, token, vertexProjectId, vertexLocation, node.id, latestCode.code_snapshot, filteredCandidates
+            );
+          } else {
+            connections = await resolveConnectionsWithOllama(
+              opts.url!, modelName, node.id, latestCode.code_snapshot, filteredCandidates
+            );
+          }
+          break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) {
+            progress.finishPhase('Paused — API error. Run again to resume.');
+            console.error(`❌ ${(err as Error).message}`);
+            db.close();
+            process.exit(1);
+          }
+          await sleep(2000);
+        }
+      }
+
+      let addedCount = 0;
+      for (const targetId of connections) {
+        if (allNodeIds.includes(targetId)) {
+          db.addConnection(node.id, targetId);
+          addedCount++;
+        }
+      }
+
+      pad.nodes_done = nodeIndex + 1;
+      pad.connections_created += addedCount;
+      pad.updated_at = new Date().toISOString();
+      writeScratchpad(resolvedDevmind, pad);
+
+      progress.completeItem(`${pad.connections_created} connection(s) created so far`);
+
+      if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
+      else await sleep(200);
+    }
+
+    progress.finishPhase(`Phase 2 done — ${pad.connections_created} connection(s) linked across ${pad.nodes_total} node(s)`);
+  }
+
+  // Mark indexing session as fully complete
+  pad.status = 'complete';
+  pad.updated_at = new Date().toISOString();
+  writeScratchpad(resolvedDevmind, pad);
   db.vacuum();
   db.close();
-  console.log('\n🎉 Indexing finished completely!');
-  console.log(`   Total Files Indexed  : ${pad.files_done}`);
-  console.log(`   Total Nodes Created  : ${pad.nodes_created}`);
-  console.log(`   Total Conns Created  : ${pad.connections_created}`);
-  console.log('──────────────────────────────────────────────────\n');
+
+  console.log('');
+  console.log('\x1B[1m\x1B[32m  ✔ Indexing complete!\x1B[0m');
+  console.log(`  ├─ Files indexed  : \x1B[33m${pad.files_done}\x1B[0m`);
+  console.log(`  ├─ Nodes created  : \x1B[33m${pad.nodes_created}\x1B[0m`);
+  console.log(`  └─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m`);
+  console.log('');
 }

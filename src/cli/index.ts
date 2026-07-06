@@ -83,14 +83,14 @@ program
   .description('Kick off the first-time graph indexing of all configured repos')
   .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
   .option('--run', 'Start/resume background indexing using a local or cloud LLM')
-  .option('--provider <provider>', 'LLM provider: "gemini" or "ollama"', 'gemini')
-  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash" or "qwen2.5-coder")')
-  .option('--key <api_key>', 'Gemini API Key (overrides GEMINI_API_KEY environment variable)')
+  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
+  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
+  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
   .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
   .action(async (opts: {
     path?: string;
     run?: boolean;
-    provider: 'gemini' | 'ollama';
+    provider: 'gemini' | 'vertex' | 'ollama';
     model?: string;
     key?: string;
     url?: string;

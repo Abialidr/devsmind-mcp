@@ -3,11 +3,14 @@ import * as path from 'path';
 
 export interface IndexScratchpad {
   status: 'in_progress' | 'complete';
+  phase: 1 | 2;
   started_at: string;
   updated_at: string;
   files_done: number;
   files_total: number;
   nodes_created: number;
+  nodes_done: number;
+  nodes_total: number;
   connections_created: number;
   last_file_indexed: string | null;
   repos_done: string[];
@@ -39,11 +42,14 @@ export function createScratchpad(devmindPath: string, filesTotal: number): Index
   const now = new Date().toISOString();
   const pad: IndexScratchpad = {
     status: 'in_progress',
+    phase: 1,
     started_at: now,
     updated_at: now,
     files_done: 0,
     files_total: filesTotal,
     nodes_created: 0,
+    nodes_done: 0,
+    nodes_total: 0,
     connections_created: 0,
     last_file_indexed: null,
     repos_done: [],
