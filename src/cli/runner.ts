@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { DevMindDatabase } from '../db/database';
 import { readScratchpad, createScratchpad, writeScratchpad } from '../db/indexer';
 import { scanRepoFiles } from '../utils/scanner';
+import { safeJsonParse } from '../utils/json';
 
 interface ExtractedNode {
   node_id: string;
@@ -95,13 +96,13 @@ function truncate(s: string, max: number): string {
   return s.length > max ? '…' + s.slice(-(max - 1)) : s;
 }
 
+const MAX_LOG_LINES = 18;
+
 class ProgressDisplay {
   private isTTY = IS_TTY;
-  private lineCount = 0;
   private spinIdx = 0;
 
   // phase state
-  private phaseLabel = '';
   private phaseNum = 0;
   private totalPhases = 2;
   private total = 0;
@@ -110,31 +111,34 @@ class ProgressDisplay {
   private itemStart = 0;
   private times: number[] = [];
   private currentItem = '';
-  private extraLine = '';
+  private statusLine = '';
+
+  // scrolling log ring buffer
+  private logLines: string[] = [];
+  // total lines currently drawn on screen (log + bar)
+  private drawnLines = 0;
 
   startPhase(phaseNum: number, label: string, total: number, alreadyDone = 0) {
     this.phaseNum = phaseNum;
-    this.phaseLabel = label;
     this.total = total;
-    this.done = alreadyDone;  // resume offset — show true overall progress
+    this.done = alreadyDone;
     this.times = [];
     this.phaseStart = Date.now();
     this.currentItem = alreadyDone > 0 ? `Resuming from item ${alreadyDone + 1}…` : 'Starting…';
-    this.extraLine = '';
-    this.lineCount = 0;
+    this.statusLine = '';
+    this.logLines = [];
+    this.drawnLines = 0;
 
     if (!this.isTTY) {
-      console.log(`\n${'═'.repeat(52)}`);
+      console.log(`\n${'═'.repeat(60)}`);
       console.log(` Phase ${phaseNum}/${this.totalPhases}: ${label}`);
-      console.log(`${'═'.repeat(52)}`);
-      if (alreadyDone > 0) {
-        console.log(` Resuming: ${alreadyDone}/${total} already done`);
-      }
+      console.log(`${'═'.repeat(60)}`);
+      if (alreadyDone > 0) console.log(` Resuming: ${alreadyDone}/${total} already done`);
       console.log(` Remaining: ${total - alreadyDone} item(s) to process`);
-      console.log(`${'─'.repeat(52)}\n`);
+      console.log(`${'─'.repeat(60)}\n`);
     } else {
       const resumeTag = alreadyDone > 0 ? ` \x1B[90m(resuming from ${alreadyDone}/${total})\x1B[0m` : '';
-      process.stdout.write(`\n  \x1B[1m\x1B[36mPhase ${phaseNum}/${this.totalPhases}: ${label}\x1B[0m${resumeTag}\n\n`);
+      process.stdout.write(`\n  \x1B[1m\x1B[36mPhase ${phaseNum}/${this.totalPhases}: ${label}\x1B[0m${resumeTag}\n`);
       this._render();
     }
   }
@@ -142,6 +146,7 @@ class ProgressDisplay {
   beginItem(name: string) {
     this.currentItem = name;
     this.itemStart = Date.now();
+    this.statusLine = '';
     this.spinIdx = (this.spinIdx + 1) % SPINNER_FRAMES.length;
     if (this.isTTY) this._render();
     else process.stdout.write(`  [${this.done + 1}/${this.total}] ${name} … `);
@@ -151,22 +156,42 @@ class ProgressDisplay {
     const t = Date.now() - this.itemStart;
     this.times.push(t);
     this.done++;
-    this.extraLine = extra;
+    this.statusLine = extra;
     if (this.isTTY) this._render();
     else console.log(`done (${fmtMs(t)})  ${extra}`);
   }
 
   skipItem(reason: string) {
     this.done++;
-    this.extraLine = reason;
+    this.statusLine = `skip — ${reason}`;
     if (this.isTTY) this._render();
-    else console.log(`skip — ${reason}`);
+    else console.log(`  skip — ${reason}`);
+  }
+
+  updateStatus(msg: string) {
+    this.statusLine = msg;
+    if (this.isTTY) this._render();
+    else console.log(`  ... ${msg}`);
+  }
+
+  /** Push a log line into the scrolling log panel and re-render */
+  log(msg: string) {
+    const ts = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    this.logLines.push(`  \x1B[90m${ts}\x1B[0m  ${msg}`);
+    if (this.logLines.length > MAX_LOG_LINES) {
+      this.logLines.shift();
+    }
+    if (this.isTTY) {
+      this._render();
+    } else {
+      console.log(`  ${msg}`);
+    }
   }
 
   private _render() {
-    // Clear previously rendered block
-    if (this.lineCount > 0) {
-      process.stdout.write(`\x1B[${this.lineCount}A\x1B[0J`);
+    // Clear all previously drawn lines
+    if (this.drawnLines > 0) {
+      process.stdout.write(`\x1B[${this.drawnLines}A\x1B[0J`);
     }
 
     const pct = this.total > 0 ? (this.done / this.total) * 100 : 0;
@@ -177,29 +202,38 @@ class ProgressDisplay {
       : 0;
     const remaining = this.total - this.done;
     const eta = avg > 0 && remaining > 0 ? avg * remaining : 0;
-
     const spin = SPINNER_FRAMES[this.spinIdx];
-    const itemShort = truncate(this.currentItem, 56);
+    const itemShort = truncate(this.currentItem, 64);
     const pctStr = `${Math.round(pct)}%`.padStart(4);
     const doneStr = `${this.done}/${this.total}`;
 
-    const lines: string[] = [
-      `  ${spin} ${bar}  ${doneStr.padEnd(9)} ${pctStr}`,
+    // ── Log panel (scrolling lines) ──────────────────────────────────
+    const logSection: string[] = this.logLines.length > 0
+      ? [
+          `  \x1B[90m${'─'.repeat(60)}\x1B[0m`,
+          ...this.logLines,
+          `  \x1B[90m${'─'.repeat(60)}\x1B[0m`,
+        ]
+      : [];
+
+    // ── Progress bar (fixed) ─────────────────────────────────────────
+    const barSection: string[] = [
+      `  ${spin} ${bar}  ${doneStr.padEnd(11)} ${pctStr}`,
       `  ⏱  Elapsed : \x1B[33m${fmtMs(elapsed)}\x1B[0m   ETA : \x1B[32m${eta > 0 ? '~' + fmtMs(eta) : remaining > 0 ? 'calculating…' : 'done!'}\x1B[0m`,
-      `  ⚡  Avg/item: \x1B[35m${avg > 0 ? fmtMs(avg) : '—'}\x1B[0m   ${this.extraLine ? '\x1B[90m' + truncate(this.extraLine, 30) + '\x1B[0m' : ''}`,
-      `  ▶  \x1B[90m${itemShort}\x1B[0m`,
-      ``
+      `  ⚡  Avg/item: \x1B[35m${avg > 0 ? fmtMs(avg) : '—'}\x1B[0m${ this.statusLine ? `   \x1B[33m${truncate(this.statusLine, 40)}\x1B[0m` : '' }`,
+      `  ▶  \x1B[96m${itemShort}\x1B[0m`,
+      ``,
     ];
 
-    process.stdout.write(lines.join('\n'));
-    this.lineCount = lines.length;
+    const all = [...logSection, ...barSection];
+    process.stdout.write(all.join('\n'));
+    this.drawnLines = all.length;
   }
 
   finishPhase(summary: string) {
-    if (this.isTTY && this.lineCount > 0) {
-      // Clear live block
-      process.stdout.write(`\x1B[${this.lineCount}A\x1B[0J`);
-      this.lineCount = 0;
+    if (this.isTTY && this.drawnLines > 0) {
+      process.stdout.write(`\x1B[${this.drawnLines}A\x1B[0J`);
+      this.drawnLines = 0;
     }
     const elapsed = Date.now() - this.phaseStart;
     const avg = this.times.length > 0
@@ -388,12 +422,12 @@ CRITICAL RULES:
     JSON.stringify(payload)
   );
 
-  const parsed = JSON.parse(responseText);
+  const parsed = safeJsonParse(responseText, {} as any);
   const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     return {};
   }
-  return JSON.parse(text) as ExtractionResult;
+  return safeJsonParse<ExtractionResult>(text, {});
 }
 
 async function resolveConnectionsWithVertex(
@@ -454,12 +488,12 @@ CRITICAL RULES:
     JSON.stringify(payload)
   );
 
-  const parsed = JSON.parse(responseText);
+  const parsed = safeJsonParse(responseText, {} as any);
   const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     return [];
   }
-  const result = JSON.parse(text) as LinkingResult;
+  const result = safeJsonParse<LinkingResult>(text, {});
   return result.connections || [];
 }
 
@@ -520,12 +554,12 @@ CRITICAL RULES:
     JSON.stringify(payload)
   );
 
-  const parsed = JSON.parse(responseText);
+  const parsed = safeJsonParse(responseText, {} as any);
   const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     return {};
   }
-  return JSON.parse(text) as ExtractionResult;
+  return safeJsonParse<ExtractionResult>(text, {});
 }
 
 async function extractWithOllama(
@@ -574,9 +608,12 @@ CRITICAL RULES:
     JSON.stringify(payload)
   );
 
-  const parsed = JSON.parse(responseText);
+  const parsed = safeJsonParse(responseText, {} as any);
   const text = parsed.message?.content;
-  return JSON.parse(text) as ExtractionResult;
+  if (!text) {
+    return {};
+  }
+  return safeJsonParse<ExtractionResult>(text, {});
 }
 
 interface LinkingResult {
@@ -635,12 +672,12 @@ CRITICAL RULES:
     JSON.stringify(payload)
   );
 
-  const parsed = JSON.parse(responseText);
+  const parsed = safeJsonParse(responseText, {} as any);
   const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     return [];
   }
-  const result = JSON.parse(text) as LinkingResult;
+  const result = safeJsonParse<LinkingResult>(text, {});
   return result.connections || [];
 }
 
@@ -684,12 +721,12 @@ CRITICAL RULES:
     JSON.stringify(payload)
   );
 
-  const parsed = JSON.parse(responseText);
+  const parsed = safeJsonParse(responseText, {} as any);
   const text = parsed.message?.content;
   if (!text) {
     return [];
   }
-  const result = JSON.parse(text) as LinkingResult;
+  const result = safeJsonParse<LinkingResult>(text, {});
   return result.connections || [];
 }
 
@@ -847,8 +884,12 @@ export async function runBackgroundIndexing(opts: {
         continue;
       }
 
+      const fileLines = code.split('\n').length;
+      progress.updateStatus(`Reading ${fileLines} lines — sending to AI…`);
+
       let result: ExtractionResult = {};
-      let retries = 3;
+      let retries = 5;
+      let backoffMs = 10000;
       while (retries > 0) {
         try {
           if (opts.provider === 'gemini') {
@@ -868,14 +909,38 @@ export async function runBackgroundIndexing(opts: {
             db.close();
             process.exit(1);
           }
-          await sleep(2000);
+          const errMsg = (err as Error).message;
+          if (errMsg.includes('429')) {
+            progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
+            await sleep(backoffMs);
+            backoffMs *= 2;
+          } else {
+            progress.updateStatus(`API error. Retrying in 2s...`);
+            await sleep(2000);
+          }
         }
       }
 
       let newNodesCount = 0;
+      const totalNodesFound = result.nodes?.length ?? 0;
+      if (totalNodesFound === 0) {
+        progress.log(`\x1B[90mNo nodes found in file\x1B[0m`);
+      }
       if (result.nodes && Array.isArray(result.nodes)) {
         for (const n of result.nodes) {
           if (n.node_id && n.name && n.type) {
+            // Estimate which line the node starts on by finding its code in the file
+            let lineNum = '?';
+            if (n.code_snapshot) {
+              const snippet = n.code_snapshot.trimStart().substring(0, 60);
+              const pos = code.indexOf(snippet.substring(0, 40));
+              if (pos !== -1) {
+                lineNum = String(code.substring(0, pos).split('\n').length);
+              }
+            }
+            const pctDone = fileLines > 0 ? Math.round((parseInt(lineNum) / fileLines) * 100) : 0;
+            const lineTag = lineNum !== '?' ? `\x1B[90mL${lineNum}/${fileLines} (${pctDone}% through file)\x1B[0m` : `\x1B[90m(line unknown)\x1B[0m`;
+            progress.log(`\x1B[32m+\x1B[0m \x1B[1m${n.name}\x1B[0m \x1B[90m[${n.type}]\x1B[0m  ${lineTag}`);
             db.upsertNode({
               id: n.node_id,
               name: n.name,
@@ -896,6 +961,7 @@ export async function runBackgroundIndexing(opts: {
                   model: modelName
                 }
               });
+              progress.log(`  \x1B[90m└ code snapshot saved (${n.code_snapshot.split('\n').length} lines)\x1B[0m`);
             }
           }
         }
@@ -968,7 +1034,8 @@ export async function runBackgroundIndexing(opts: {
       }
 
       let connections: string[] = [];
-      let retries = 3;
+      let retries = 5;
+      let backoffMs = 10000;
       while (retries > 0) {
         try {
           if (opts.provider === 'gemini') {
@@ -994,13 +1061,22 @@ export async function runBackgroundIndexing(opts: {
             db.close();
             process.exit(1);
           }
-          await sleep(2000);
+          const errMsg = (err as Error).message;
+          if (errMsg.includes('429')) {
+            progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
+            await sleep(backoffMs);
+            backoffMs *= 2;
+          } else {
+            progress.updateStatus(`API error. Retrying in 2s...`);
+            await sleep(2000);
+          }
         }
       }
 
       let addedCount = 0;
       for (const targetId of connections) {
         if (allNodeIds.includes(targetId)) {
+          progress.log(`Linked: \x1B[36m${node.id}\x1B[0m → \x1B[36m${targetId}\x1B[0m`);
           db.addConnection(node.id, targetId);
           addedCount++;
         }
