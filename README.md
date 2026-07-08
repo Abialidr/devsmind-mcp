@@ -311,7 +311,10 @@ The new developer's AI agent now possesses the full architectural context and de
 
 ## Changelog
 
-### Version 2.0.1 (Current Release)
+### Version 2.0.2 (Current Release)
+*   **Fully Portable Node IDs & History Metadata**: Resolved the issue where Node IDs and history JSON metadata retained absolute path prefixes or relative dots (`../../`). All Node IDs and history file paths now utilize the environment-independent `{repo_name}/relativePath` format globally, ensuring seamless database synchronization and collaboration across different developers, OS drives, and machine paths.
+
+### Version 2.0.1
 *   **Automatic .gitignore Generation Fix**: Updated the `devsmind init` command to automatically create or update `.devmind/.gitignore` to ignore the local database cache (`brain.db`, `brain.db-wal`, `brain.db-shm`) and CLI index tracker (`index_scratchpad.json`) by default.
 
 ### Version 2.0.0 (Breaking Release)

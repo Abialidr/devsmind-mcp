@@ -12,37 +12,31 @@ We have categorized future enhancements into actionable phases based on implemen
 
 ### Phase 1: Graph Health & Integrity
 
-#### 1.1. Graph Health Analytics (`analyze_graph`)
-*   **Goal**: Run structural analysis algorithms over the existing SQLite graph to detect architectural problems before they silently degrade AI reasoning quality.
-*   **Why We Are Building This**: Over weeks of vibe coding across a team, the graph quietly accumulates dead connections, overloaded functions, and circular dependencies. Nobody notices until the AI starts giving inconsistent answers. This is a preemptive cleanup tool that keeps the graph accurate as the single source of truth.
-*   **Metrics & Detections**:
-    *   **God Entities**: Detect nodes with more than 15 callers/dependencies. A God Entity is so central that modifying it risks breaking dozens of downstream callers — detecting it early tells the AI to recommend a refactor before the problem compounds.
-    *   **Circular References**: DFS-based circular dependency path tracer. Circular dependencies cause the AI to enter infinite reasoning loops when tracing a function's context.
-    *   **Orphaned History**: Stale nodes with history records but zero active code references — dead code from old sessions that wastes AI context window tokens.
+#### 1.1. Graph Health & Integrity (`analyze_graph` & `devsmind analyze`)
+*   **Goal**: Run structural analysis algorithms over the existing SQLite graph (detect circular dependencies, God entities, orphaned/abandoned nodes) and perform local, token-free cleanup (such as Git-native file rename detection, spurious node checks, and soft-delete deprecations) under a single entry point.
+*   **Why We Are Building This**: Over weeks of vibe coding across a team, the graph quietly accumulates dead connections, circular dependencies, and nodes that point to deleted or renamed files. This consolidated utility keeps the graph healthy and clean, ensuring that the AI works on a precise, optimized context without wasting tokens or getting caught in infinite reasoning loops.
+*   **Detections & Analysis**:
+    *   **God Entities**: Detect nodes with more than 15 callers/dependencies. Spots architectural bottlenecks early.
+    *   **Circular References**: DFS-based circular dependency cycle path tracer. Stops the AI from entering infinite reasoning loops when tracing context.
+    *   **Orphaned/Abandoned Nodes**: Finds nodes with history records or active definitions but zero active connections to/from other nodes.
+    *   **Local Filesystem & Git Rename Check**:
+        *   Checks `last_analysis_at` in the `system_meta` table.
+        *   Queries Git for rename actions (`git diff --name-status -M`) looking at commits since `last_analysis_at`. If a rename is found, it automatically updates the node's `file_path` and cascades the rename across qualified node IDs in `nodes`, `node_connections`, and `history` tables, preserving precious evolutionary change logs.
+        *   Checks filesystem existence for other non-renamed files.
+    *   **Spurious/Built-in Nodes**: Identifies common language primitives/built-ins (`promise`, `map`, etc.) that were accidentally indexed.
+*   **Action Modes (Fix vs. Dry-Run)**:
+    *   **Dry-Run (Default)**: Summarizes all detected issues (circular cycles, god entities, orphaned nodes, renamed files, spurious entries, missing files) without modifying the database.
+    *   **Fix Mode**: Triggered via `fix: true` in the MCP tool or `--fix` in the CLI. Applies soft deprecation (marking nodes as `deprecated = 1` and deleting their connections in `node_connections`, **preserving history**) and rename migrations.
 *   **Dual Execution Pathways**:
-    *   **MCP Integration**: Introduce the `analyze_graph` tool to return a structured JSON summary of code smells and architectural bottlenecks directly to the AI agent in-chat.
-    *   **CLI Command (`devsmind analyze`)**: Expose a CLI command so developers can run graph health checks manually from their terminal, outputting a colorized console summary of god entities, circular dependencies, and orphaned records.
-*   **Performance & Cost**: Since this runs local graph algorithms (DFS and relationship degree counting) directly over the SQLite database, it runs in **under 50ms** and consumes **zero LLM tokens**.
-*   **Optimization (Cache Tracking)**: Tracks `last_analysis_at` in the `system_meta` table. If no new history records or connection updates have been written to the database since the last analysis, it returns the cached health analysis report instantly instead of re-running the DFS traversals.
+    *   **MCP Integration**: Expose `analyze_graph` tool accepting `fix: boolean` and `god_entity_threshold: number`.
+    *   **CLI Command (`devsmind analyze`)**: Run health check and rename cleanup manually from the terminal. Accepts `--fix` to apply the migrations.
+*   **Performance**: Runs in milliseconds entirely on local SQLite and Git APIs, consuming **zero LLM tokens**.
+*   **Optimization (Cache Tracking)**: Tracks `last_analysis_at` in the `system_meta` table. If no new history records or connection updates have been written to the database since the last analysis, it returns the cached health analysis report instantly (unless `fix` mode is requested or cache is invalidated).
 *   **Who Benefits**:
     *   **Vibe Coder**: AI always works on a clean, accurate graph → better, more reliable code generation.
     *   **Team Devs**: Spots architectural problems before they become production bugs.
     *   **AI Agent**: Does not waste context window on stale nodes or confused dependency chains.
 
-#### 1.2. Soft-Delete Cleanup & Deprecation (`recheck_graph`)
-*   **Goal**: Perform a local, token-free cleanup of the graph by deprecating orphaned nodes and nodes whose source files have been deleted, while preserving history across file renames using Git.
-*   **Why We Are Building This**: If we blindly delete nodes when a file goes missing, we lose valuable evolutionary history. If a developer renames a file (e.g. `authService.ts` -> `authenticationService.ts`), the functions still exist, but their histories would be severed. We need a way to track renames and perform cleanups without deleting historical records or calling expensive LLM APIs.
-*   **Implementation (Local, Non-LLM Workflow)**:
-    *   **Git-Native Rename Detection (Timestamp Filtered)**: Tracks `last_recheck_at` in the `system_meta` table. Before deprecating a node because its file is missing, the tool queries Git for rename actions (`git diff --name-status -M`) looking **only at commits since `last_recheck_at`** (e.g., using `--since` date flags). If a rename is detected:
-        *   It updates the node's `file_path` to the new name in SQLite.
-        *   If the `node_id` is path-qualified (e.g. `src/auth.ts::verifyOTP`), it runs a cascade rename update across the `nodes`, `node_connections`, and `history` tables, preserving the entire history chain.
-    *   **Local Filesystem Validation**: For files not tracked as renamed by Git, the tool verifies existence using `fs.existsSync`.
-    *   **Local SQL Orphan Check**: Discovers orphaned nodes (nodes with zero connections) using local SQL queries.
-    *   **Soft-Delete Deprecation**: Updates identified stale/orphaned nodes to `deprecated = 1` and deletes their edges in `node_connections` (preserving history), rather than hard deleting the rows.
-    *   **Zero LLM Overhead**: This utility runs 100% locally in milliseconds, using zero LLM tokens.
-*   **Distinct Pathways**:
-    *   **Soft Cleanup (`recheck_graph` MCP tool)**: Automatically runs the Git-native rename check and soft deprecations.
-    *   **Hard Cleanup (CLI `devsmind prune`)**: An interactive terminal command where the developer can permanently purge deprecated nodes and their associated history records to clean the database.
 
 #### 1.3. CLI Reindexing Command (`devsmind reindex`)
 *   **Goal**: Provide a Quality-of-Life terminal command `devsmind reindex` to synchronize the graph with manual changes made outside of active chat sessions, while enforcing that initial indexing must be complete first.
@@ -137,7 +131,7 @@ We have categorized future enhancements into actionable phases based on implemen
 
 | Feature | Developer Value | AI Agent Value | Complexity to Build | Priority |
 | :--- | :--- | :--- | :--- | :--- |
-| **Graph Health Analytics** | 🔥 High — exposes architectural rot early | 🔥 High — cleaner reasoning context | Low | **Critical** |
+| **Graph Health & Integrity** | 🔥 High — exposes architectural rot early | 🔥 High — cleaner reasoning context | Low | **Critical** |
 | **Cross-Repo Trace Mapping** | 🔥 Very High — full system visibility across services | 🔥 Very High — eliminates hallucinated API guesses | Medium | **High** |
 | **Enhanced Recent Changes** | ✅ Medium — readable structural change reports | 🔥 High — self-correction after every edit session | Very Low | **Critical** |
 | **Workflow Context Vault** | 🔥 Very High — true project continuity | 🔥 Very High — solves context death | Medium | **Critical** |
@@ -236,47 +230,7 @@ The following MCP tool specifications define the API endpoints exposed by the De
 #### 📊 Phase 1 Tools: Graph Health & Integrity
 
 ##### `analyze_graph`
-* **Description:** Runs graph structural algorithms (e.g., node degree checks, Cycle Detection via DFS, orphan scans) over the active SQLite database to detect architectural rot, circular dependencies, and dead/orphaned code entities.
-* **Input Schema:**
-  ```json
-  {
-    "type": "object",
-    "properties": {
-      "devmind_path": {
-        "type": "string",
-        "description": "Absolute path to the .devmind directory"
-      },
-      "god_entity_threshold": {
-        "type": "integer",
-        "description": "Call/dependency degree threshold to identify God Entities (default: 15)"
-      }
-    },
-    "required": ["devmind_path"]
-  }
-  ```
-* **Output Format:**
-  ```json
-  {
-    "status": "success",
-    "summary": {
-      "god_entities_found": 3,
-      "circular_dependencies_found": 1,
-      "orphaned_nodes_found": 12
-    },
-    "god_entities": [
-      { "node_id": "authService", "calls_count": 18, "file_path": "src/auth.ts" }
-    ],
-    "circular_dependencies": [
-      ["authService.verify", "sessionService.validate", "authService.verify"]
-    ],
-    "orphaned_nodes": [
-      { "node_id": "staleHelper", "file_path": "src/utils/stale.ts", "last_updated": "2026-05-12T04:12:00Z" }
-    ]
-  }
-  ```
-
-##### `recheck_graph`
-* **Description:** Scans the codebase to identify nodes corresponding to deleted files or nodes that have become completely orphaned. Instead of hard-deleting them, it marks them as deprecated (`deprecated = 1`) and removes active connections from `node_connections`, keeping history records intact.
+* **Description:** Runs graph structural analysis algorithms (cycle detection, God entity checks, and orphan scans) along with codebase synchronization checks (spurious node identification, local file existence check, and Git-native rename tracking). It can operate in read-only analysis mode or apply fixes (soft deprecation and rename cascade updates).
 * **Input Schema:**
   ```json
   {
@@ -289,6 +243,14 @@ The following MCP tool specifications define the API endpoints exposed by the De
       "workspace_root": {
         "type": "string",
         "description": "Absolute path to the workspace root directory"
+      },
+      "fix": {
+        "type": "boolean",
+        "description": "If true, applies deprecations for spurious/missing nodes and updates renamed paths (default: false)"
+      },
+      "god_entity_threshold": {
+        "type": "integer",
+        "description": "Call/dependency degree threshold to identify God Entities (default: 15)"
       }
     },
     "required": ["devmind_path", "workspace_root"]
@@ -298,14 +260,33 @@ The following MCP tool specifications define the API endpoints exposed by the De
   ```json
   {
     "status": "success",
-    "message": "Graph check completed. Deprecated 8 node(s).",
-    "deprecated_count": 8,
+    "fixed": true,
+    "summary": {
+      "god_entities_found": 3,
+      "circular_dependencies_found": 1,
+      "orphaned_nodes_found": 12,
+      "deprecated_nodes_count": 8,
+      "renamed_nodes_count": 2
+    },
+    "god_entities": [
+      { "node_id": "authService", "calls_count": 18, "file_path": "src/auth.ts" }
+    ],
+    "circular_dependencies": [
+      ["authService.verify", "sessionService.validate", "authService.verify"]
+    ],
+    "orphaned_nodes": [
+      { "node_id": "staleHelper", "file_path": "src/utils/stale.ts", "last_updated": "2026-05-12T04:12:00Z" }
+    ],
     "deprecated_nodes": [
       { "node_id": "paymentRouter", "reason": "file_missing" },
       { "node_id": "unusedHelper", "reason": "orphaned" }
+    ],
+    "renamed_nodes": [
+      { "old_node_id": "src/auth.ts#verifyOTP", "new_node_id": "src/authentication.ts#verifyOTP", "file_path": "src/authentication.ts" }
     ]
   }
   ```
+
 
 #### 🌐 Phase 2 Tools: Cross-Service Awareness
 
@@ -704,25 +685,25 @@ sequenceDiagram
     Client-->>Dev: Print clean, formatted token cost summary report
 ```
 
-#### Flow G: Local Git-Native Rename Tracking & Soft-Delete Cleanup (Phase 1)
+#### Flow G: Local Git-Native Rename Tracking & Soft-Delete Cleanup via analyze_graph (Phase 1)
 This flow shows how DevsMind handles file renames and performs graph deprecations 100% locally using cached timestamps without invoking any LLM APIs.
 
 ```mermaid
 sequenceDiagram
-    participant Dev as Developer / CLI
+    participant Dev as Developer / CLI / Agent
     participant MCP as DevsMind MCP Server / CLI Engine
     participant Git as Git Client (Local Command)
     participant FS as Local Filesystem
     participant DB as SQLite DB (brain.db)
 
-    Dev->>MCP: Trigger recheck_graph (or devsmind prune/check)
+    Dev->>MCP: Call analyze_graph(fix: true) (or devsmind analyze --fix)
     
     Note over MCP, DB: Step 1: Fetch Last Run Date
-    MCP->>DB: Query last_recheck_at from system_meta
+    MCP->>DB: Query last_analysis_at from system_meta
     DB-->>MCP: Returns timestamp (e.g. 2026-07-07 12:00:00)
     
     Note over MCP, Git: Step 2: Detect Renames Since Last Run
-    MCP->>Git: Run `git diff --name-status -M --since="<last_recheck_at>"`
+    MCP->>Git: Run `git diff --name-status -M --since="<last_analysis_at>"`
     Git-->>MCP: Returns rename map (e.g., auth.ts -> authentication.ts)
     
     alt Renames Detected
@@ -735,14 +716,14 @@ sequenceDiagram
     MCP->>FS: Run `fs.existsSync(file_path)` for non-renamed files
     FS-->>MCP: Returns true (exists) or false (missing)
     
-    Note over MCP, DB: Step 4: Identify Orphans
-    MCP->>DB: Query for nodes with zero active connections
-    DB-->>MCP: List of orphaned node IDs
+    Note over MCP, DB: Step 4: Identify Orphans & Spurious Nodes
+    MCP->>DB: Query for nodes with zero active connections or spurious helper names
+    DB-->>MCP: List of orphaned/spurious node IDs
     
     Note over MCP, DB: Step 5: Soft-Delete (Deprecate)
-    MCP->>DB: UPDATE nodes SET deprecated = 1 WHERE id IN (missing_files, orphans)
-    MCP->>DB: DELETE FROM node_connections WHERE node_id IN (missing_files, orphans)
-    MCP->>DB: Update last_recheck_at = CURRENT_TIMESTAMP in system_meta
+    MCP->>DB: UPDATE nodes SET deprecated = 1 WHERE id IN (missing_files, orphans, spurious)
+    MCP->>DB: DELETE FROM node_connections WHERE source_node_id IN (missing_files, orphans, spurious) OR target_node_id IN (missing_files, orphans, spurious)
+    MCP->>DB: Update last_analysis_at = CURRENT_TIMESTAMP in system_meta
     DB-->>MCP: Success
     
     MCP-->>Dev: Print cleanup summary report (Deprecated X nodes, Renamed Y nodes)

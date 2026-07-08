@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS history (
   FOREIGN KEY (node_id) REFERENCES nodes (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS system_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Index for searching nodes by name and type
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes (name);
 CREATE INDEX IF NOT EXISTS idx_history_node_id ON history (node_id);

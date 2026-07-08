@@ -620,9 +620,9 @@ function createMcpServer(): Server {
           const codeSnapshot = String(args.code_snapshot);
           const reasoning = args.reasoning as any;
 
-          const workspaceRoot = path.dirname(devmindPath);
-          const relPath = path.relative(workspaceRoot, filePath).replace(/\\/g, '/');
-          const prefix = `${relPath}#`;
+          const db = getDatabase(devmindPath);
+          const repoRelPath = db.toRepoRelativePath(filePath);
+          const prefix = `${repoRelPath}#`;
           const nodeId = rawNodeId.includes('#') ? rawNodeId : `${prefix}${rawNodeId}`;
 
           let nodeName = args.name ? String(args.name) : undefined;
@@ -637,8 +637,6 @@ function createMcpServer(): Server {
           if (!nodeType) {
             nodeType = rawNodeId.includes('.') ? 'method' : 'function';
           }
-
-          const db = getDatabase(devmindPath);
 
           // 1. Ensure node exists (Upsert)
           db.upsertNode({
@@ -817,12 +815,11 @@ function createMcpServer(): Server {
           const rawNodeId = String(args.node_id);
           const filePath = String(args.file_path);
 
-          const workspaceRoot = path.dirname(devmindPath);
-          const relPath = path.relative(workspaceRoot, filePath).replace(/\\/g, '/');
-          const prefix = `${relPath}#`;
+          const db = getDatabase(devmindPath);
+          const repoRelPath = db.toRepoRelativePath(filePath);
+          const prefix = `${repoRelPath}#`;
           const nodeId = rawNodeId.includes('#') ? rawNodeId : `${prefix}${rawNodeId}`;
 
-          const db = getDatabase(devmindPath);
           db.upsertNode({
             id: nodeId,
             name: String(args.name),

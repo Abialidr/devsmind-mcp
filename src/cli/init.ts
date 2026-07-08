@@ -203,7 +203,9 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
 
     const activeExclusions = Array.from(excludedPaths);
     const isParentExcluded = activeExclusions.some(p => {
-      return relDir.startsWith(p + '/') || relDir === p;
+      const cleanPattern = p.replace(/\/$/, '');
+      const cleanRelDir = relDir.replace(/\/$/, '');
+      return cleanRelDir === cleanPattern || cleanRelDir.startsWith(cleanPattern + '/');
     });
 
     if (isParentExcluded) {
@@ -223,10 +225,21 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
 
     for (const entry of entries) {
       // Check if this entry or any of its ancestor paths are excluded
-      const isExcluded = excludedPaths.has(entry.relativePath);
-      const isInheritedExcluded = !isExcluded && Array.from(excludedPaths).some(p =>
-        entry.relativePath.startsWith(p + '/')
-      );
+      const cleanEntryPath = entry.relativePath.replace(/\/$/, '');
+      let isExcluded = false;
+      let isInheritedExcluded = false;
+
+      for (const pattern of excludedPaths) {
+        const cleanPattern = pattern.replace(/\/$/, '');
+        if (cleanEntryPath === cleanPattern) {
+          isExcluded = true;
+          break;
+        }
+        if (cleanEntryPath.startsWith(cleanPattern + '/')) {
+          isInheritedExcluded = true;
+        }
+      }
+
       let statusText: string;
       if (isExcluded) {
         statusText = '🚫 [EXCLUDED]';
@@ -287,9 +300,15 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
       currentDir = entry.fullPath;
       lastSelectedIndex = 0; // Reset cursor when entering a subdirectory
     } else if (action === 'toggle') {
-      if (excludedPaths.has(entry.relativePath)) {
-        excludedPaths.delete(entry.relativePath);
-      } else {
+      const cleanPath = entry.relativePath.replace(/\/$/, '');
+      let found = false;
+      for (const pattern of excludedPaths) {
+        if (pattern.replace(/\/$/, '') === cleanPath) {
+          excludedPaths.delete(pattern);
+          found = true;
+        }
+      }
+      if (!found) {
         excludedPaths.add(entry.relativePath);
       }
     }
@@ -562,51 +581,20 @@ async function handleNewInit(cwd: string) {
   const ignoredPaths: string[] = [];
 
   if (baseResponse.mode === 'embedded') {
-    console.log(`\n🔍 Scanning for repositories in current folder...`);
-    const subdirs = scanSubdirectories(cwd);
+    const repoName = baseResponse.projectName;
+    repos.push({ name: repoName, relative_path: '.' } as EmbeddedRepoConfig);
+    repoPaths.push(cwd);
 
-    const choices = [
-      { title: `Root Directory (./)`, value: '.' },
-      ...subdirs.map(dir => ({ title: `Subdirectory: ${dir} (./${dir})`, value: dir }))
-    ];
+    // Now configure exclusions for this repository folder
+    console.log(`\n📂 Exclusions setup for repository folder "${repoName}":`);
+    
+    const currentExcluded = new Set<string>();
+    // showIgnorePresets will prompt user for .gitignore patterns AND common presets
+    await showIgnorePresets(currentExcluded, cwd);
+    await runFileBrowser(cwd, currentExcluded);
 
-    const repoSelection = await prompts({
-      type: 'multiselect',
-      name: 'selectedDirs',
-      message: 'Select which directories are part of this project:',
-      choices,
-      min: 1,
-      hint: '- Space to select. Return to submit.'
-    });
-
-    if (repoSelection.selectedDirs === undefined) {
-      console.log('❌ Initialization cancelled.');
-      return;
-    }
-
-    for (const dir of repoSelection.selectedDirs) {
-      const repoName = dir === '.' ? baseResponse.projectName : dir;
-      const relativePath = dir === '.' ? '.' : `./${dir}`;
-      repos.push({ name: repoName, relative_path: relativePath } as EmbeddedRepoConfig);
-      
-      const absoluteRepoPath = path.resolve(cwd, relativePath);
-      repoPaths.push(absoluteRepoPath);
-
-      // Now configure exclusions for this repository folder
-      console.log(`\n📂 Exclusions setup for repository folder "${repoName}":`);
-      
-      const currentExcluded = new Set<string>();
-      // showIgnorePresets will prompt user for .gitignore patterns AND common presets
-      await showIgnorePresets(currentExcluded, absoluteRepoPath);
-      await runFileBrowser(absoluteRepoPath, currentExcluded);
-
-      for (const p of currentExcluded) {
-        if (dir !== '.') {
-          ignoredPaths.push(`${dir}/${p}`);
-        } else {
-          ignoredPaths.push(p);
-        }
-      }
+    for (const p of currentExcluded) {
+      ignoredPaths.push(p);
     }
   } else {
     console.log(`\n📦 Standalone Mode — Configure repositories for this brain`);

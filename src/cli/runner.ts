@@ -942,9 +942,8 @@ export async function runBackgroundIndexing(opts: {
             const pctDone = fileLines > 0 ? Math.round((parseInt(lineNum) / fileLines) * 100) : 0;
             const lineTag = lineNum !== '?' ? `\x1B[90mL${lineNum}/${fileLines} (${pctDone}% through file)\x1B[0m` : `\x1B[90m(line unknown)\x1B[0m`;
             progress.log(`\x1B[32m+\x1B[0m \x1B[1m${n.name}\x1B[0m \x1B[90m[${n.type}]\x1B[0m  ${lineTag}`);
-            const workspaceRoot = path.dirname(resolvedDevmind);
-            const relPath = path.relative(workspaceRoot, fileObj.absolutePath).replace(/\\/g, '/');
-            const qualifiedId = `${relPath}#${n.node_id}`;
+            const repoRelPath = db.toRepoRelativePath(fileObj.absolutePath);
+            const qualifiedId = `${repoRelPath}#${n.node_id}`;
 
             db.upsertNode({
               id: qualifiedId,
@@ -1114,4 +1113,341 @@ export async function runBackgroundIndexing(opts: {
   console.log(`  ├─ Nodes created  : \x1B[33m${pad.nodes_created}\x1B[0m`);
   console.log(`  └─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m`);
   console.log('');
+}
+
+export async function runBackgroundReindexing(opts: {
+  devmindPath: string;
+  provider: 'gemini' | 'vertex' | 'ollama';
+  model?: string;
+  key?: string;
+  url?: string;
+}) {
+  const resolvedDevmind = path.resolve(opts.devmindPath);
+  console.log(`\n🧠 DevsMind Background Reindexer`);
+  console.log(`   Brain directory : ${resolvedDevmind}`);
+  console.log(`   Provider        : ${opts.provider}`);
+  
+  let modelName = opts.model || '';
+  let vertexSaData: any = null;
+  let vertexToken: string | null = null;
+  let vertexProjectId = '';
+  let vertexLocation = 'us-central1';
+
+  if (opts.provider === 'gemini') {
+    modelName = modelName || 'gemini-2.0-flash';
+    const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
+    if (!apiKey) {
+      console.error('❌ Error: Gemini API key is required. Pass --key or set GEMINI_API_KEY environment variable.');
+      process.exit(1);
+    }
+    opts.key = apiKey;
+  } else if (opts.provider === 'vertex') {
+    modelName = modelName || 'gemini-1.5-flash';
+    const inputKey = opts.key || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY || '';
+    if (!inputKey) {
+      console.error('❌ Error: Vertex AI requires a Service Account JSON path or Bearer Token. Pass --key or set GOOGLE_APPLICATION_CREDENTIALS / VERTEX_API_KEY environment variable.');
+      process.exit(1);
+    }
+
+    try {
+      if (inputKey.trim().startsWith('{')) {
+        vertexSaData = JSON.parse(inputKey);
+      } else if (fs.existsSync(inputKey)) {
+        vertexSaData = JSON.parse(fs.readFileSync(inputKey, 'utf-8'));
+      }
+    } catch (e) {
+      // Treat as raw token
+    }
+
+    vertexProjectId = vertexSaData?.project_id || process.env.GCP_PROJECT_ID || process.env.VERTEX_PROJECT_ID || '';
+    vertexLocation = process.env.GCP_LOCATION || process.env.VERTEX_LOCATION || 'us-central1';
+
+    if (!vertexSaData && !inputKey.startsWith('ya29.')) {
+      console.error('❌ Error: Vertex key must be a valid Service Account JSON file path, inline JSON, or raw OAuth access token starting with "ya29."');
+      process.exit(1);
+    }
+
+    if (!vertexProjectId) {
+      console.error('❌ Error: Vertex Project ID could not be determined. Please set GCP_PROJECT_ID environment variable or specify it in your service account JSON.');
+      process.exit(1);
+    }
+
+    if (!vertexSaData) {
+      vertexToken = inputKey; // Raw Bearer token
+    }
+  } else {
+    modelName = modelName || 'qwen2.5-coder';
+    opts.url = opts.url || 'http://localhost:11434';
+  }
+
+  const getVertexToken = async (): Promise<string> => {
+    if (vertexToken) return vertexToken;
+    if (vertexSaData) {
+      return await getVertexTokenCached(vertexSaData);
+    }
+    throw new Error('No Vertex credentials available');
+  };
+
+  console.log(`   Model           : ${modelName}`);
+
+  // 1. Open DB
+  const dbFile = path.join(resolvedDevmind, 'brain.db');
+  const db = new DevMindDatabase(dbFile);
+
+  // 2. Initial Index Check
+  const pad = readScratchpad(resolvedDevmind);
+  if (!pad || pad.status !== 'complete') {
+    console.error("❌ Error: Initial indexing has not been completed. Please run 'devsmind index --run' first.");
+    db.close();
+    process.exit(1);
+  }
+
+  // 3. Scan for repos & files
+  const { repos, total_files } = scanRepoFiles(resolvedDevmind);
+  if (total_files === 0) {
+    console.log('⚠️ No files found to reindex.');
+    db.close();
+    return;
+  }
+
+  // 4. Retrieve last reindexing timestamp
+  const lastReindexVal = db.getSystemMeta('last_reindex_at');
+  const lastReindexTime = lastReindexVal ? new Date(lastReindexVal).getTime() : 0;
+  console.log(`   Last reindex    : ${lastReindexVal ? new Date(lastReindexVal).toLocaleString() : 'Never'}`);
+
+  // 5. Detect modified or newly added files
+  const modifiedFiles: { repoName: string; absolutePath: string }[] = [];
+  for (const repo of repos) {
+    for (const f of repo.files) {
+      try {
+        const stat = fs.statSync(f);
+        if (stat.mtimeMs > lastReindexTime) {
+          modifiedFiles.push({ repoName: repo.repo_name, absolutePath: f });
+        }
+      } catch (err) {
+        // ignore errors
+      }
+    }
+  }
+
+  if (modifiedFiles.length === 0) {
+    console.log('\n✅ Code graph is already up to date. No modified files detected.');
+    db.setSystemMeta('last_reindex_at', new Date().toISOString());
+    db.close();
+    return;
+  }
+
+  console.log(`\n📝 Detected ${modifiedFiles.length} modified/new file(s) since last reindex.`);
+
+  // 6. Extraction & Upserting of modified nodes
+  const progress = new ProgressDisplay();
+  progress.startPhase(1, 'Incremental Node Extraction', modifiedFiles.length, 0);
+
+  const newOrUpdatedNodeIds: string[] = [];
+
+  for (let fileIndex = 0; fileIndex < modifiedFiles.length; fileIndex++) {
+    const fileObj = modifiedFiles[fileIndex];
+    const relPath = path.relative(process.cwd(), fileObj.absolutePath);
+
+    progress.beginItem(relPath);
+
+    let code = '';
+    try {
+      code = fs.readFileSync(fileObj.absolutePath, 'utf-8');
+    } catch (err) {
+      progress.skipItem(`read error: ${(err as Error).message}`);
+      continue;
+    }
+
+    // Deprecate existing nodes for this file path before parsing
+    const oldNodes = db.getNodesByFilePath(fileObj.absolutePath);
+    for (const oldNode of oldNodes) {
+      db.deprecateNode(oldNode.id);
+    }
+
+    if (code.trim().length === 0) {
+      progress.skipItem('empty file');
+      continue;
+    }
+
+    const fileLines = code.split('\n').length;
+    progress.updateStatus(`Reading ${fileLines} lines — sending to AI…`);
+
+    let result: ExtractionResult = {};
+    let retries = 5;
+    let backoffMs = 10000;
+    while (retries > 0) {
+      try {
+        if (opts.provider === 'gemini') {
+          result = await extractWithGemini(modelName, opts.key!, fileObj.absolutePath, code);
+        } else if (opts.provider === 'vertex') {
+          const token = await getVertexToken();
+          result = await extractWithVertex(modelName, token, vertexProjectId, vertexLocation, fileObj.absolutePath, code);
+        } else {
+          result = await extractWithOllama(opts.url!, modelName, fileObj.absolutePath, code);
+        }
+        break;
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          progress.finishPhase(`Paused — API error.`);
+          console.error(`❌ ${(err as Error).message}`);
+          db.close();
+          process.exit(1);
+        }
+        const errMsg = (err as Error).message;
+        if (errMsg.includes('429')) {
+          progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
+          await sleep(backoffMs);
+          backoffMs *= 2;
+        } else {
+          progress.updateStatus(`API error. Retrying in 2s...`);
+          await sleep(2000);
+        }
+      }
+    }
+
+    let fileNodesCount = 0;
+    if (result.nodes && Array.isArray(result.nodes)) {
+      for (const n of result.nodes) {
+        if (n.node_id && n.name && n.type) {
+          let lineNum = '?';
+          if (n.code_snapshot) {
+            const snippet = n.code_snapshot.trimStart().substring(0, 60);
+            const pos = code.indexOf(snippet.substring(0, 40));
+            if (pos !== -1) {
+              lineNum = String(code.substring(0, pos).split('\n').length);
+            }
+          }
+          const pctDone = fileLines > 0 ? Math.round((parseInt(lineNum) / fileLines) * 100) : 0;
+          const lineTag = lineNum !== '?' ? `\x1B[90mL${lineNum}/${fileLines} (${pctDone}% through file)\x1B[0m` : `\x1B[90m(line unknown)\x1B[0m`;
+          progress.log(`\x1B[32m+\x1B[0m \x1B[1m${n.name}\x1B[0m \x1B[90m[${n.type}]\x1B[0m  ${lineTag}`);
+          
+          const repoRelPath = db.toRepoRelativePath(fileObj.absolutePath);
+          const qualifiedId = `${repoRelPath}#${n.node_id}`;
+
+          db.upsertNode({
+            id: qualifiedId,
+            name: n.name,
+            type: n.type,
+            file_path: fileObj.absolutePath,
+            signature: n.signature || null
+          });
+          fileNodesCount++;
+          newOrUpdatedNodeIds.push(qualifiedId);
+
+          if (n.code_snapshot) {
+            db.updateHistory({
+              node_id: qualifiedId,
+              code_snapshot: n.code_snapshot,
+              reasoning: {
+                what_changed: 'Incremental code extraction during reindexing',
+                why: 'Incremental graph sync',
+                goal: 'Synchronize graph nodes with updated codebase files',
+                developer: 'devsmind reindexer',
+                model: modelName
+              }
+            });
+          }
+        }
+      }
+    }
+
+    progress.completeItem(`${fileNodesCount} node(s) found`);
+
+    if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
+    else await sleep(200);
+  }
+
+  progress.finishPhase(`Phase 1 done — parsed ${modifiedFiles.length} file(s), found ${newOrUpdatedNodeIds.length} new/updated node(s)`);
+
+  // Phase 2: Resolving connections for modified nodes
+  if (newOrUpdatedNodeIds.length > 0) {
+    const activeNodes = db.listNodes();
+    const allNodeIds = activeNodes.map(n => n.id);
+    
+    progress.startPhase(2, 'Incremental Connection Resolution', newOrUpdatedNodeIds.length, 0);
+
+    for (let nodeIndex = 0; nodeIndex < newOrUpdatedNodeIds.length; nodeIndex++) {
+      const nodeId = newOrUpdatedNodeIds[nodeIndex];
+      progress.beginItem(nodeId);
+
+      const latestCode = db.getLatestCode(nodeId);
+      if (!latestCode || !latestCode.code_snapshot || latestCode.code_snapshot.trim().length === 0) {
+        progress.skipItem('no code snapshot');
+        continue;
+      }
+
+      const candidates = filterCandidates(latestCode.code_snapshot, allNodeIds);
+      const filteredCandidates = candidates.filter(id => id !== nodeId);
+
+      if (filteredCandidates.length === 0) {
+        progress.skipItem('no matching candidates');
+        continue;
+      }
+
+      let connections: string[] = [];
+      let retries = 5;
+      let backoffMs = 10000;
+      while (retries > 0) {
+        try {
+          if (opts.provider === 'gemini') {
+            connections = await resolveConnectionsWithGemini(
+              modelName, opts.key!, nodeId, latestCode.code_snapshot, filteredCandidates
+            );
+          } else if (opts.provider === 'vertex') {
+            const token = await getVertexToken();
+            connections = await resolveConnectionsWithVertex(
+              modelName, token, vertexProjectId, vertexLocation, nodeId, latestCode.code_snapshot, filteredCandidates
+            );
+          } else {
+            connections = await resolveConnectionsWithOllama(
+              opts.url!, modelName, nodeId, latestCode.code_snapshot, filteredCandidates
+            );
+          }
+          break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) {
+            progress.finishPhase('Paused — API error.');
+            console.error(`❌ ${(err as Error).message}`);
+            db.close();
+            process.exit(1);
+          }
+          const errMsg = (err as Error).message;
+          if (errMsg.includes('429')) {
+            progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
+            await sleep(backoffMs);
+            backoffMs *= 2;
+          } else {
+            progress.updateStatus(`API error. Retrying in 2s...`);
+            await sleep(2000);
+          }
+        }
+      }
+
+      let connectionsAdded = 0;
+      for (const targetId of connections) {
+        if (allNodeIds.includes(targetId)) {
+          progress.log(`Linked: \x1B[36m${nodeId}\x1B[0m → \x1B[36m${targetId}\x1B[0m`);
+          db.addConnection(nodeId, targetId);
+          connectionsAdded++;
+        }
+      }
+
+      progress.completeItem(`${connectionsAdded} connection(s) created`);
+
+      if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
+      else await sleep(200);
+    }
+
+    progress.finishPhase('Phase 2 done — finished reindexing connections');
+  }
+
+  // Update last_reindex_at
+  db.setSystemMeta('last_reindex_at', new Date().toISOString());
+  db.vacuum();
+  db.close();
+
+  console.log('\n\x1B[1m\x1B[32m  ✔ Reindexing complete!\x1B[0m\n');
 }

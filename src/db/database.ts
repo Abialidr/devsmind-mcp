@@ -83,6 +83,37 @@ export class DevMindDatabase {
     } catch {
       // Column already exists, ignore
     }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS system_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  }
+
+  getSystemMeta(key: string): string | null {
+    try {
+      const stmt = this.db.prepare('SELECT value FROM system_meta WHERE key = ?');
+      const row = stmt.get(key) as { value: string } | undefined;
+      return row ? row.value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setSystemMeta(key: string, value: string) {
+    const stmt = this.db.prepare(`
+      INSERT INTO system_meta (key, value, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP
+    `);
+    stmt.run(key, value, value);
+  }
+
+  getNodesByFilePath(filePath: string): DbNode[] {
+    const stmt = this.db.prepare('SELECT * FROM nodes WHERE file_path = ? AND deprecated = 0');
+    return stmt.all(filePath) as DbNode[];
   }
 
   close() {
@@ -732,7 +763,7 @@ export class DevMindDatabase {
       const nodeMetadata = node ? {
         name: node.name,
         type: node.type,
-        file_path: node.file_path,
+        file_path: this.toRepoRelativePath(node.file_path),
         signature: node.signature
       } : null;
 
@@ -754,7 +785,7 @@ export class DevMindDatabase {
     }
   }
 
-  private toRepoRelativePath(absolutePath: string): string {
+  public toRepoRelativePath(absolutePath: string): string {
     if (!absolutePath || !this.context) return absolutePath;
     const abs = path.resolve(absolutePath).replace(/\\/g, '/');
     
@@ -774,7 +805,7 @@ export class DevMindDatabase {
     return path.relative(workspaceRoot, absolutePath).replace(/\\/g, '/');
   }
 
-  private toAbsolutePath(repoRelativePath: string): string {
+  public toAbsolutePath(repoRelativePath: string): string {
     if (!repoRelativePath) return repoRelativePath;
     const workspaceRoot = path.dirname(this.dbPath);
     
@@ -827,7 +858,7 @@ export class DevMindDatabase {
                     data.node_id,
                     data.node_metadata.type,
                     data.node_metadata.name,
-                    data.node_metadata.file_path,
+                    this.toAbsolutePath(data.node_metadata.file_path),
                     data.node_metadata.signature
                   );
                 }

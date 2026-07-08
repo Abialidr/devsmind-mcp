@@ -5,7 +5,7 @@ import { handleInit } from './init';
 import { handleRule } from './rule';
 import { handleView } from './view';
 import { handlePrune } from './prune';
-import { runBackgroundIndexing } from './runner';
+import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
 
 const program = new Command();
@@ -122,6 +122,36 @@ program
       console.log(`   Or run it locally in the background using:\n`);
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY`);
       console.log(`   devsmind index --run --provider ollama --model qwen2.5-coder\n`);
+    }
+  });
+
+program
+  .command('reindex')
+  .description('Synchronize the graph with manual changes (incremental parsing of modified/new files)')
+  .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
+  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
+  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
+  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
+  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .action(async (opts: {
+    path?: string;
+    provider: 'gemini' | 'vertex' | 'ollama';
+    model?: string;
+    key?: string;
+    url?: string;
+  }) => {
+    const devmindPath = opts.path ?? '.devmind';
+    try {
+      await runBackgroundReindexing({
+        devmindPath,
+        provider: opts.provider,
+        model: opts.model,
+        key: opts.key,
+        url: opts.url
+      });
+    } catch (err) {
+      console.error(`❌ Reindexing failed: ${(err as Error).message}`);
+      process.exit(1);
     }
   });
 
