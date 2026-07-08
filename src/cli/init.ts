@@ -826,6 +826,18 @@ async function handleNewInit(cwd: string) {
   fs.writeFileSync(gitignorePath, ignoreContent, 'utf-8');
   console.log(`💾 Created/Updated ${gitignorePath}`);
 
+  // Create graph and history directories with .gitkeep files so Git tracks them
+  const graphDir = path.join(devmindDir, 'graph');
+  const historyDir = path.join(devmindDir, 'history');
+  if (!fs.existsSync(graphDir)) {
+    fs.mkdirSync(graphDir, { recursive: true });
+    fs.writeFileSync(path.join(graphDir, '.gitkeep'), '', 'utf-8');
+  }
+  if (!fs.existsSync(historyDir)) {
+    fs.mkdirSync(historyDir, { recursive: true });
+    fs.writeFileSync(path.join(historyDir, '.gitkeep'), '', 'utf-8');
+  }
+
   ensureDbInitialized(dbPath);
   console.log(`🗄️  Initialized SQLite database at ${dbPath}`);
 
