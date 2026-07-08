@@ -52,3 +52,5 @@ EHthumbs.db
 Desktop.ini
 .DS_Store
 devmind-idea.md
+.agents
+yarn.lock

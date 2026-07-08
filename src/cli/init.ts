@@ -814,12 +814,17 @@ async function handleNewInit(cwd: string) {
   fs.writeFileSync(envPath, envLines.join('\n') + '\n', 'utf-8');
   console.log(`💾 Created ${envPath} (local, gitignored)`);
 
-  // Always create .gitignore to protect .env
+  // Always create/update .gitignore to protect .env and ignore database/scratchpad
   const gitignorePath = path.join(devmindDir, '.gitignore');
-  if (!fs.existsSync(gitignorePath)) {
-    fs.writeFileSync(gitignorePath, '.env\n', 'utf-8');
-    console.log(`💾 Created ${gitignorePath}`);
-  }
+  const ignoreContent = [
+    '.env',
+    'brain.db',
+    'brain.db-wal',
+    'brain.db-shm',
+    'index_scratchpad.json'
+  ].join('\n') + '\n';
+  fs.writeFileSync(gitignorePath, ignoreContent, 'utf-8');
+  console.log(`💾 Created/Updated ${gitignorePath}`);
 
   ensureDbInitialized(dbPath);
   console.log(`🗄️  Initialized SQLite database at ${dbPath}`);

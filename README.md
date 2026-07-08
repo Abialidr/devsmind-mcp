@@ -311,7 +311,10 @@ The new developer's AI agent now possesses the full architectural context and de
 
 ## Changelog
 
-### Version 2.0.0 (Current Breaking Release)
+### Version 2.0.1 (Current Release)
+*   **Automatic .gitignore Generation Fix**: Updated the `devsmind init` command to automatically create or update `.devmind/.gitignore` to ignore the local database cache (`brain.db`, `brain.db-wal`, `brain.db-shm`) and CLI index tracker (`index_scratchpad.json`) by default.
+
+### Version 2.0.0 (Breaking Release)
 *   **Git-Friendly Distributed JSON Storage**: Solved Git binary merge conflicts by moving all massive code snapshots and reasoning logs to `.devmind/history/[id].json` and graph structures to `.devmind/graph/[repo_name]/[path].json`. This replaces the monolithic `brain.db` database storage completely.
 *   **Metadata-Only SQLite Cache**: Compacted the local SQLite database (`brain.db`) to store only structural metadata. Wiped all heavy text blobs, and added `brain.db` to `.gitignore`.
 *   **Auto-Sync & Reconstruction**: Added startup auto-sync. The database constructor automatically reconstructs your entire local SQLite database from the disk JSONs in less than 2 seconds on startup.
