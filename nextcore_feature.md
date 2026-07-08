@@ -37,14 +37,6 @@ We have categorized future enhancements into actionable phases based on implemen
     *   **Team Devs**: Spots architectural problems before they become production bugs.
     *   **AI Agent**: Does not waste context window on stale nodes or confused dependency chains.
 
-
-#### 1.3. CLI Reindexing Command (`devsmind reindex`)
-*   **Goal**: Provide a Quality-of-Life terminal command `devsmind reindex` to synchronize the graph with manual changes made outside of active chat sessions, while enforcing that initial indexing must be complete first.
-*   **Why We Are Building This**: If a developer runs `devsmind index` when the database is already fully populated, it can cause confusion. Having a distinct `reindex` command provides QoL clarity. It acts as an update mechanism, whereas `index` is purely for the initial import.
-*   **Rules & Constraints**:
-    *   **Initial Index Check**: When `devsmind reindex` is run, it checks the database state or the scratchpad status. If the initial index is not yet complete, it fails immediately with: `"Error: Initial indexing has not been completed. Please run 'devsmind index --run' first."`
-    *   **Incremental Parsing (Timestamp Filtered)**: Tracks `last_reindex_at` in the `system_meta` table. When running `devsmind reindex`, it scans the repository files and checks for modifications (using file modification times `mtime` newer than `last_reindex_at` or `git diff --name-only` for files changed since `last_reindex_at`). It only re-runs the LLM parser on modified or newly added files, leaving unchanged nodes intact to preserve token consumption. After successful execution, it updates `last_reindex_at` to the current timestamp.
-
 ---
 
 ### Phase 2: Cross-Service Awareness
@@ -64,36 +56,6 @@ We have categorized future enhancements into actionable phases based on implemen
     *   **New Devs Joining**: Can see the full system map on day one without reading all code manually.
 
 ---
-
-### Phase 3: Agent Self-Correction
-
-#### 3. Enhanced Recent Changes with Downstream Impact (`get_recent_changes` upgrade)
-*   **Goal**: Upgrade the existing `get_recent_changes` MCP tool to automatically cross-reference the dependency graph and surface downstream callers that may be affected by recent changes — giving the AI agent a self-correction loop after every edit session.
-*   **Why We Are Building This**: The current `get_recent_changes` is purely time-based — it tells you *what* changed but not *what else might be broken because of that change*. In a vibe coding workflow, the AI modifies a function and often stops, unaware that 3 other callers in different files now have a broken contract. This enhancement closes that loop automatically with zero new infrastructure.
-*   **Current Behaviour**:
-    ```
-    Recent Changes (last 24h):
-    - verifyOTP was updated
-    - loginRouter was updated
-    ```
-*   **Enhanced Behaviour**:
-    ```
-    Recent Changes (last 24h):
-
-    📝 verifyOTP (authService.ts) — updated 2h ago
-       ↳ Downstream callers that may be affected:
-          ⚠️  loginRouter.ts → postLoginHandler()
-          ⚠️  userController.ts → resetPasswordHandler()
-          ✅  adminOverride.ts → (already updated in same session)
-
-    📝 loginRouter.ts — updated 1h ago
-       ↳ No downstream callers affected.
-    ```
-*   **Implementation**: No new tables or services. Runs an additional `getConnections()` query per modified node inside the existing tool response. Pure SQLite — very low complexity.
-*   **Who Benefits**:
-    *   **Vibe Coder**: AI self-verifies its own changes and automatically continues fixing downstream callers until the graph is fully consistent — complete, working code with no half-broken builds.
-    *   **Team Devs**: Readable plain-English structural change report instead of raw git diffs.
-    *   **AI Agent**: Gets a self-correction signal in a single MCP tool call, reducing token waste on follow-up discovery queries.
 
 ### Phase 4: Workflow Context Vault (Feature Sessions)
 
@@ -133,7 +95,7 @@ We have categorized future enhancements into actionable phases based on implemen
 | :--- | :--- | :--- | :--- | :--- |
 | **Graph Health & Integrity** | 🔥 High — exposes architectural rot early | 🔥 High — cleaner reasoning context | Low | **Critical** |
 | **Cross-Repo Trace Mapping** | 🔥 Very High — full system visibility across services | 🔥 Very High — eliminates hallucinated API guesses | Medium | **High** |
-| **Enhanced Recent Changes** | ✅ Medium — readable structural change reports | 🔥 High — self-correction after every edit session | Very Low | **Critical** |
+| **Enhanced Recent Changes** | [DONE] Surfaced downstream warnings in get_recent_changes | [DONE] | - | - |
 | **Workflow Context Vault** | 🔥 Very High — true project continuity | 🔥 Very High — solves context death | Medium | **Critical** |
 | **Token & Cost Telemetry** | ✅ Medium — cost visibility and reporting | 🔥 High — identifies token leaks/bloat | Low | **High** |
 
