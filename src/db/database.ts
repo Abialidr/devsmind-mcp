@@ -357,7 +357,7 @@ export class DevMindDatabase {
     const node = this.getNode(nodeId);
     const resolvedId = node ? node.id : nodeId;
     const history = this.getLatestHistory(resolvedId);
-    if (!history) return null;
+    if (!history || !history.code_snapshot || history.code_snapshot.trim() === '') return null;
     return {
       updated_at: history.updated_at,
       code_snapshot: history.code_snapshot
@@ -465,10 +465,10 @@ export class DevMindDatabase {
       if (diffMs < 3600000) {
         const updateStmt = this.db.prepare(`
           UPDATE history
-          SET code_snapshot = '', reasoning = '', updated_at = ?
+          SET code_snapshot = '', reasoning = ?, updated_at = ?
           WHERE id = ?
         `);
-        updateStmt.run(nowStr, latest.id);
+        updateStmt.run(formattedReasoning, nowStr, latest.id);
         
         // Write/Update on disk
         this.writeHistoryToDisk(latest.id, resolvedId, latest.session_id, latest.created_at, nowStr, code_snapshot, formattedReasoning);
@@ -488,9 +488,9 @@ export class DevMindDatabase {
 
     const insertStmt = this.db.prepare(`
       INSERT INTO history (id, node_id, session_id, created_at, updated_at, code_snapshot, reasoning)
-      VALUES (?, ?, ?, ?, ?, '', '')
+      VALUES (?, ?, ?, ?, ?, '', ?)
     `);
-    insertStmt.run(newId, resolvedId, sessionId, nowStr, nowStr);
+    insertStmt.run(newId, resolvedId, sessionId, nowStr, nowStr, formattedReasoning);
 
     // Write to disk
     this.writeHistoryToDisk(newId, resolvedId, sessionId, nowStr, nowStr, code_snapshot, formattedReasoning);
@@ -534,13 +534,19 @@ export class DevMindDatabase {
     }[];
   }[] {
     const stmt = this.db.prepare(`
-      SELECT h.node_id, n.name as node_name, n.file_path, h.updated_at, h.reasoning
+      SELECT h.id, h.node_id, n.name as node_name, n.file_path, h.updated_at, h.reasoning
       FROM history h
       JOIN nodes n ON h.node_id = n.id
       WHERE h.updated_at >= datetime('now', ?)
       ORDER BY h.updated_at DESC
     `);
     const recentChanges = stmt.all(`-${hours} hours`) as any[];
+
+    for (const change of recentChanges) {
+      const populated = this.populateHistoryFromDisk({ id: change.id, reasoning: change.reasoning });
+      change.reasoning = populated.reasoning;
+      delete change.id;
+    }
 
     if (!analyzeImpact) {
       return recentChanges;
@@ -649,11 +655,7 @@ export class DevMindDatabase {
   getAllHistory(): DbHistory[] {
     const stmt = this.db.prepare('SELECT * FROM history ORDER BY updated_at DESC');
     const rows = stmt.all() as any[];
-    return rows.map(row => ({
-      ...row,
-      code_snapshot: decompressText(row.code_snapshot),
-      reasoning: decompressText(row.reasoning)
-    }));
+    return rows.map(row => this.populateHistoryFromDisk(row));
   }
 
   pruneSpuriousNodes(workspaceRoot: string): { prunedCount: number; prunedNodes: string[] } {
@@ -841,7 +843,7 @@ export class DevMindDatabase {
           `);
           const insertHistoryStmt = this.db.prepare(`
             INSERT INTO history (id, node_id, session_id, created_at, updated_at, code_snapshot, reasoning)
-            VALUES (?, ?, ?, ?, ?, '', '')
+            VALUES (?, ?, ?, ?, ?, '', ?)
           `);
 
           const syncHistoryTx = this.db.transaction(() => {
@@ -863,12 +865,17 @@ export class DevMindDatabase {
                   );
                 }
 
+                const formattedReasoning = typeof data.reasoning === 'string'
+                  ? data.reasoning
+                  : formatReasoning(data.reasoning || '');
+
                 insertHistoryStmt.run(
                   data.id,
                   data.node_id,
                   data.session_id,
                   data.created_at,
-                  data.updated_at
+                  data.updated_at,
+                  formattedReasoning
                 );
               } catch (err) {
                 // ignore

@@ -311,7 +311,13 @@ The new developer's AI agent now possesses the full architectural context and de
 
 ## Changelog
 
-### Version 2.0.2 (Current Release)
+### Version 2.0.4 (Current Release)
+*   **Disk-Based History Adaptation & SQL Search Optimization**: 
+    * Restored SQL-based text filtering (e.g. `getDeveloperActivity`, `getChangesByRequirement`, `searchDecisions`, and `searchNodes`) by storing the small `reasoning` text directly in the SQLite `history` table while maintaining the large `code_snapshot` exclusively on disk.
+    * Fixed `getRecentChanges` and `getAllHistory` to populate reasoning/code from disk-based history files.
+    * Fixed the `get_node_code` MCP tool to return `null` if the snapshot is empty/whitespace, enabling proper caching behavior for agents.
+
+### Version 2.0.2
 *   **Fully Portable Node IDs & History Metadata**: Resolved the issue where Node IDs and history JSON metadata retained absolute path prefixes or relative dots (`../../`). All Node IDs and history file paths now utilize the environment-independent `{repo_name}/relativePath` format globally, ensuring seamless database synchronization and collaboration across different developers, OS drives, and machine paths.
 
 ### Version 2.0.1
