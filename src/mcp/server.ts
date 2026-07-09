@@ -504,6 +504,20 @@ function createMcpServer(): Server {
           }
         },
         {
+          name: 'search_code',
+          description: 'Regex or string search over cached codebase code snapshots. Returns matches grouped by DevsMind Node ID, file path, and matching lines, along with matching statistics (ratio, count). Prefer this over direct grep search.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              query: { type: 'string', description: 'Regex or substring pattern to search for in code' },
+              is_regex: { type: 'boolean', description: 'Whether the query is a regex pattern (default: false)' },
+              case_insensitive: { type: 'boolean', description: 'Perform case-insensitive search (default: true)' }
+            },
+            required: ['devmind_path', 'query']
+          }
+        },
+        {
           name: 'get_orphaned_nodes',
           description: 'Find disconnected code nodes in the graph that have no incoming or outgoing connections.',
           inputSchema: {
@@ -952,6 +966,18 @@ function createMcpServer(): Server {
           const decisions = db.searchDecisions(query);
           return {
             content: [{ type: 'text', text: JSON.stringify(decisions, null, 2) }]
+          };
+        }
+
+        case 'search_code': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const query = String(args.query);
+          const isRegex = args.is_regex === true;
+          const caseInsensitive = args.case_insensitive !== false;
+          const db = getDatabase(devmindPath);
+          const results = db.searchCode({ query, is_regex: isRegex, case_insensitive: caseInsensitive });
+          return {
+            content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
           };
         }
 

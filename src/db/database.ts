@@ -611,6 +611,90 @@ export class DevMindDatabase {
     return stmt.all(wildcard) as { node_id: string; node_name: string; updated_at: string; reasoning: string }[];
   }
 
+  searchCode(params: {
+    query: string;
+    is_regex?: boolean;
+    case_insensitive?: boolean;
+  }): {
+    node_id: string;
+    node_name: string;
+    file_path: string;
+    matches: { line_number: number; line_content: string }[];
+    match_count: number;
+    total_lines: number;
+    match_ratio: number;
+  }[] {
+    const { query, is_regex = false, case_insensitive = true } = params;
+    const historyDir = path.join(path.dirname(this.dbPath), 'history');
+    
+    const stmt = this.db.prepare(`
+      SELECT h.id, n.id AS node_id, n.name AS node_name, n.file_path
+      FROM nodes n
+      JOIN history h ON h.node_id = n.id
+      WHERE n.deprecated = 0
+        AND h.id = (
+          SELECT id FROM history
+          WHERE node_id = n.id
+          ORDER BY updated_at DESC
+          LIMIT 1
+        )
+    `);
+    const rows = stmt.all() as { id: string; node_id: string; node_name: string; file_path: string }[];
+
+    let matcher: RegExp;
+    if (is_regex) {
+      try {
+        matcher = new RegExp(query, case_insensitive ? 'i' : '');
+      } catch (err) {
+        throw new Error(`Invalid regex pattern: ${(err as Error).message}`);
+      }
+    } else {
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      matcher = new RegExp(escaped, case_insensitive ? 'i' : '');
+    }
+
+    const results: any[] = [];
+
+    for (const row of rows) {
+      const filePath = path.join(historyDir, `${row.id}.json`);
+      if (!fs.existsSync(filePath)) continue;
+
+      try {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        const code = data.code_snapshot || '';
+        if (!code) continue;
+
+        const lines = code.split('\n');
+        const nodeMatches: { line_number: number; line_content: string }[] = [];
+
+        lines.forEach((line: string, idx: number) => {
+          if (matcher.test(line)) {
+            nodeMatches.push({
+              line_number: idx + 1,
+              line_content: line
+            });
+          }
+        });
+
+        if (nodeMatches.length > 0) {
+          results.push({
+            node_id: row.node_id,
+            node_name: row.node_name,
+            file_path: row.file_path,
+            matches: nodeMatches,
+            match_count: nodeMatches.length,
+            total_lines: lines.length,
+            match_ratio: parseFloat((nodeMatches.length / lines.length).toFixed(4))
+          });
+        }
+      } catch {
+        // Skip corrupted or unreadable history files
+      }
+    }
+
+    return results.sort((a, b) => b.match_count - a.match_count);
+  }
+
   getOrphanedNodes(): DbNode[] {
     const stmt = this.db.prepare(`
       SELECT * FROM nodes

@@ -741,6 +741,102 @@ function filterCandidates(codeSnapshot: string, allNodeIds: string[]): string[] 
   });
 }
 
+async function extractNodesFromCode(
+  provider: 'gemini' | 'vertex' | 'ollama',
+  modelName: string,
+  key: string | undefined,
+  url: string | undefined,
+  filePath: string,
+  code: string,
+  getVertexToken: () => Promise<string>,
+  vertexProjectId: string,
+  vertexLocation: string,
+  progress: ProgressDisplay
+): Promise<ExtractionResult> {
+  const maxLines = 350;
+  const overlap = 50;
+  const lines = code.split('\n');
+
+  const executeExtraction = async (codeChunk: string): Promise<ExtractionResult> => {
+    let retries = 5;
+    let backoffMs = 10000;
+    while (retries > 0) {
+      try {
+        if (provider === 'gemini') {
+          return await extractWithGemini(modelName, key!, filePath, codeChunk);
+        } else if (provider === 'vertex') {
+          const token = await getVertexToken();
+          return await extractWithVertex(modelName, token, vertexProjectId, vertexLocation, filePath, codeChunk);
+        } else {
+          return await extractWithOllama(url!, modelName, filePath, codeChunk);
+        }
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          throw err;
+        }
+        const errMsg = (err as Error).message;
+        if (errMsg.includes('429')) {
+          progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
+          await sleep(backoffMs);
+          backoffMs *= 2;
+        } else {
+          progress.updateStatus(`API error. Retrying in 2s...`);
+          await sleep(2000);
+        }
+      }
+    }
+    return {};
+  };
+
+  if (lines.length <= maxLines) {
+    return await executeExtraction(code);
+  }
+
+  const relPath = path.relative(process.cwd(), filePath);
+  progress.log(`\x1B[90m[${relPath}] Large file (${lines.length} lines) - parsing in chunks to prevent LLM output truncation...\x1B[0m`);
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < lines.length) {
+    const end = Math.min(start + maxLines, lines.length);
+    chunks.push(lines.slice(start, end).join('\n'));
+    if (end === lines.length) break;
+    start += maxLines - overlap;
+  }
+
+  const seenNodeIds = new Map<string, ExtractedNode>();
+
+  for (let i = 0; i < chunks.length; i++) {
+    progress.updateStatus(`Sending chunk ${i + 1}/${chunks.length} to AI…`);
+    const chunkCode = chunks[i];
+    try {
+      const chunkResult = await executeExtraction(chunkCode);
+      if (chunkResult.nodes && Array.isArray(chunkResult.nodes)) {
+        for (const node of chunkResult.nodes) {
+          if (!node.node_id) continue;
+          const existing = seenNodeIds.get(node.node_id);
+          if (!existing || (node.code_snapshot && (!existing.code_snapshot || node.code_snapshot.length > existing.code_snapshot.length))) {
+            seenNodeIds.set(node.node_id, node);
+          }
+        }
+      }
+    } catch (err) {
+      progress.log(`\x1B[31mError extracting chunk ${i + 1}/${chunks.length}: ${(err as Error).message}\x1B[0m`);
+      throw err;
+    }
+
+    if (i < chunks.length - 1) {
+      if (provider === 'gemini' || provider === 'vertex') {
+        await sleep(1500);
+      } else {
+        await sleep(100);
+      }
+    }
+  }
+
+  return { nodes: Array.from(seenNodeIds.values()) };
+}
+
 export async function runBackgroundIndexing(opts: {
   devmindPath: string;
   provider: 'gemini' | 'vertex' | 'ollama';
@@ -889,37 +985,24 @@ export async function runBackgroundIndexing(opts: {
       progress.updateStatus(`Reading ${fileLines} lines — sending to AI…`);
 
       let result: ExtractionResult = {};
-      let retries = 5;
-      let backoffMs = 10000;
-      while (retries > 0) {
-        try {
-          if (opts.provider === 'gemini') {
-            result = await extractWithGemini(modelName, opts.key!, fileObj.absolutePath, code);
-          } else if (opts.provider === 'vertex') {
-            const token = await getVertexToken();
-            result = await extractWithVertex(modelName, token, vertexProjectId, vertexLocation, fileObj.absolutePath, code);
-          } else {
-            result = await extractWithOllama(opts.url!, modelName, fileObj.absolutePath, code);
-          }
-          break;
-        } catch (err) {
-          retries--;
-          if (retries === 0) {
-            progress.finishPhase(`Paused — API error. Run again to resume.`);
-            console.error(`❌ ${(err as Error).message}`);
-            db.close();
-            process.exit(1);
-          }
-          const errMsg = (err as Error).message;
-          if (errMsg.includes('429')) {
-            progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
-            await sleep(backoffMs);
-            backoffMs *= 2;
-          } else {
-            progress.updateStatus(`API error. Retrying in 2s...`);
-            await sleep(2000);
-          }
-        }
+      try {
+        result = await extractNodesFromCode(
+          opts.provider,
+          modelName,
+          opts.key,
+          opts.url,
+          fileObj.absolutePath,
+          code,
+          getVertexToken,
+          vertexProjectId,
+          vertexLocation,
+          progress
+        );
+      } catch (err) {
+        progress.finishPhase(`Paused — API error. Run again to resume.`);
+        console.error(`❌ ${(err as Error).message}`);
+        db.close();
+        process.exit(1);
       }
 
       let newNodesCount = 0;
@@ -1274,37 +1357,24 @@ export async function runBackgroundReindexing(opts: {
     progress.updateStatus(`Reading ${fileLines} lines — sending to AI…`);
 
     let result: ExtractionResult = {};
-    let retries = 5;
-    let backoffMs = 10000;
-    while (retries > 0) {
-      try {
-        if (opts.provider === 'gemini') {
-          result = await extractWithGemini(modelName, opts.key!, fileObj.absolutePath, code);
-        } else if (opts.provider === 'vertex') {
-          const token = await getVertexToken();
-          result = await extractWithVertex(modelName, token, vertexProjectId, vertexLocation, fileObj.absolutePath, code);
-        } else {
-          result = await extractWithOllama(opts.url!, modelName, fileObj.absolutePath, code);
-        }
-        break;
-      } catch (err) {
-        retries--;
-        if (retries === 0) {
-          progress.finishPhase(`Paused — API error.`);
-          console.error(`❌ ${(err as Error).message}`);
-          db.close();
-          process.exit(1);
-        }
-        const errMsg = (err as Error).message;
-        if (errMsg.includes('429')) {
-          progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
-          await sleep(backoffMs);
-          backoffMs *= 2;
-        } else {
-          progress.updateStatus(`API error. Retrying in 2s...`);
-          await sleep(2000);
-        }
-      }
+    try {
+      result = await extractNodesFromCode(
+        opts.provider,
+        modelName,
+        opts.key,
+        opts.url,
+        fileObj.absolutePath,
+        code,
+        getVertexToken,
+        vertexProjectId,
+        vertexLocation,
+        progress
+      );
+    } catch (err) {
+      progress.finishPhase(`Paused — API error.`);
+      console.error(`❌ ${(err as Error).message}`);
+      db.close();
+      process.exit(1);
     }
 
     let fileNodesCount = 0;
