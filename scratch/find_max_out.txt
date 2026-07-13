@@ -1,0 +1,7 @@
+Worst express node: src/controllers/OrderController.ts#OrderController  [nest_controller]  → 87 edges
+   64  src/controllers/OrderController.ts
+   6  src/service/inboundOrder.service.ts
+   4  src/service/orderLog.service.ts
+   4  src/service/orderService.ts
+   2  src/controllers/BoxyWebhookController.ts
+   2  src/service/boxyLabel.service.ts

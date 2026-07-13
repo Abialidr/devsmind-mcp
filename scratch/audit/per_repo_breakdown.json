@@ -1,0 +1,66 @@
+[
+  {
+    "repo": "harrir-backend-order-service",
+    "nodes": 214,
+    "orphans": 13,
+    "orphan_rate_pct": 6.07,
+    "edges_out": 365,
+    "edge_density_per_node": 1.706
+  },
+  {
+    "repo": "harrir-backend-products-service",
+    "nodes": 577,
+    "orphans": 47,
+    "orphan_rate_pct": 8.15,
+    "edges_out": 1174,
+    "edge_density_per_node": 2.035
+  },
+  {
+    "repo": "harrir-backend-user-service",
+    "nodes": 622,
+    "orphans": 21,
+    "orphan_rate_pct": 3.38,
+    "edges_out": 1686,
+    "edge_density_per_node": 2.711
+  },
+  {
+    "repo": "harrir-backend-zoho-service",
+    "nodes": 354,
+    "orphans": 56,
+    "orphan_rate_pct": 15.82,
+    "edges_out": 683,
+    "edge_density_per_node": 1.929
+  },
+  {
+    "repo": "harrir-express-backend",
+    "nodes": 1314,
+    "orphans": 25,
+    "orphan_rate_pct": 1.9,
+    "edges_out": 7114,
+    "edge_density_per_node": 5.414
+  },
+  {
+    "repo": "harrir-mini-app",
+    "nodes": 1139,
+    "orphans": 156,
+    "orphan_rate_pct": 13.7,
+    "edges_out": 6204,
+    "edge_density_per_node": 5.447
+  },
+  {
+    "repo": "harrir-web",
+    "nodes": 1636,
+    "orphans": 23,
+    "orphan_rate_pct": 1.41,
+    "edges_out": 5728,
+    "edge_density_per_node": 3.501
+  },
+  {
+    "repo": "harrir-web-admin",
+    "nodes": 1414,
+    "orphans": 19,
+    "orphan_rate_pct": 1.34,
+    "edges_out": 4301,
+    "edge_density_per_node": 3.042
+  }
+]

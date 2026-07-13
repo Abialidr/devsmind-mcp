@@ -19,12 +19,12 @@ export interface IndexScratchpad {
 
 const SCRATCHPAD_FILE = 'index_scratchpad.json';
 
-function scratchpadPath(devmindPath: string): string {
-  return path.join(path.resolve(devmindPath), SCRATCHPAD_FILE);
+function scratchpadPath(devmindPath: string, fileName: string = SCRATCHPAD_FILE): string {
+  return path.join(path.resolve(devmindPath), fileName);
 }
 
-export function readScratchpad(devmindPath: string): IndexScratchpad | null {
-  const p = scratchpadPath(devmindPath);
+export function readScratchpad(devmindPath: string, fileName?: string): IndexScratchpad | null {
+  const p = scratchpadPath(devmindPath, fileName);
   if (!fs.existsSync(p)) return null;
   try {
     return JSON.parse(fs.readFileSync(p, 'utf-8')) as IndexScratchpad;
@@ -33,12 +33,12 @@ export function readScratchpad(devmindPath: string): IndexScratchpad | null {
   }
 }
 
-export function writeScratchpad(devmindPath: string, data: IndexScratchpad): void {
-  const p = scratchpadPath(devmindPath);
+export function writeScratchpad(devmindPath: string, data: IndexScratchpad, fileName?: string): void {
+  const p = scratchpadPath(devmindPath, fileName);
   fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-export function createScratchpad(devmindPath: string, filesTotal: number): IndexScratchpad {
+export function createScratchpad(devmindPath: string, filesTotal: number, fileName?: string): IndexScratchpad {
   const now = new Date().toISOString();
   const pad: IndexScratchpad = {
     status: 'in_progress',
@@ -55,7 +55,7 @@ export function createScratchpad(devmindPath: string, filesTotal: number): Index
     repos_done: [],
     current_repo: null
   };
-  writeScratchpad(devmindPath, pad);
+  writeScratchpad(devmindPath, pad, fileName);
   return pad;
 }
 

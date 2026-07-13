@@ -87,9 +87,14 @@ program
   .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
   .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
   .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
-  .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: 350). Increase for large-context models like gemini-2.5-flash', '350')
-  .option('--chunk-overlap <lines>', 'Overlap lines between chunks to avoid missing nodes at boundaries (default: 50)', '50')
-  .option('--local-edges', 'Resolve Phase 2 connections locally using typescript AST and regex instead of calling LLM')
+  .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: off — whole file in one call). Set this for very large files or smaller-context models.')
+  .option('--chunk-overlap <lines>', 'Overlap lines between chunks, only used when --chunk-size is set (default: 50)')
+  .option('--local-edges', '[Deprecated] Connections are always resolved locally via AST now — this flag is a no-op, kept for backward compatibility.')
+  .option('--from-scratch', 'Wipe ALL nodes, connections, history, and graph/history folders, then reindex from zero. Asks for confirmation unless --yes is passed.')
+  .option('--nodes-only', 'Only run Phase 1 (node/code extraction). No connections are built or touched.')
+  .option('--edges-only', 'Only run Phase 2 (connection resolution). Wipes existing connections and rebuilds them fresh across all current nodes. Requires nodes to already exist.')
+  .option('--repos <names>', 'Comma-separated repo names to restrict this run to (standalone mode only). Composes with --nodes-only / --edges-only, or full. Not allowed with --from-scratch.')
+  .option('--yes', 'Skip the confirmation prompt for --from-scratch')
   .action(async (opts: {
     path?: string;
     run?: boolean;
@@ -97,14 +102,27 @@ program
     model?: string;
     key?: string;
     url?: string;
-    chunkSize: string;
-    chunkOverlap: string;
+    chunkSize?: string;
+    chunkOverlap?: string;
     localEdges?: boolean;
+    fromScratch?: boolean;
+    nodesOnly?: boolean;
+    edgesOnly?: boolean;
+    repos?: string;
+    yes?: boolean;
   }) => {
     const devmindPath = opts.path ?? '.devmind';
     const resolved = require('path').resolve(devmindPath);
 
     if (opts.run) {
+      if (opts.nodesOnly && opts.edgesOnly) {
+        console.error('❌ Error: --nodes-only and --edges-only cannot be used together. Omit both to run the full index.');
+        process.exit(1);
+      }
+      if (opts.fromScratch && opts.edgesOnly) {
+        console.error('❌ Error: --from-scratch and --edges-only cannot be used together — --from-scratch wipes nodes, so there would be nothing to build edges from. Use --from-scratch alone, or --from-scratch --nodes-only, then --edges-only separately.');
+        process.exit(1);
+      }
       try {
         await runBackgroundIndexing({
           devmindPath,
@@ -112,9 +130,14 @@ program
           model: opts.model,
           key: opts.key,
           url: opts.url,
-          chunkSize: parseInt(opts.chunkSize, 10) || 350,
-          chunkOverlap: parseInt(opts.chunkOverlap, 10) || 50,
-          localEdges: !!opts.localEdges
+          chunkSize: opts.chunkSize ? parseInt(opts.chunkSize, 10) : undefined,
+          chunkOverlap: opts.chunkOverlap ? parseInt(opts.chunkOverlap, 10) : undefined,
+          localEdges: !!opts.localEdges,
+          fromScratch: !!opts.fromScratch,
+          nodesOnly: !!opts.nodesOnly,
+          edgesOnly: !!opts.edgesOnly,
+          repos: opts.repos ? opts.repos.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+          yes: !!opts.yes
         });
       } catch (err) {
         console.error(`❌ Background indexing failed: ${(err as Error).message}`);
@@ -131,7 +154,12 @@ program
       console.log(`   Or run it locally in the background using:\n`);
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY`);
       console.log(`   devsmind index --run --provider gemini --model gemini-2.5-flash --key YOUR_GEMINI_KEY --chunk-size 1500 --chunk-overlap 100`);
-      console.log(`   devsmind index --run --provider ollama --model qwen2.5-coder\n`);
+      console.log(`   devsmind index --run --provider ollama --model qwen2.5-coder`);
+      console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --nodes-only`);
+      console.log(`   devsmind index --run --edges-only`);
+      console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --from-scratch`);
+      console.log(`   devsmind index --run --edges-only --repos harrir-web,harrir-web-admin`);
+      console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --repos harrir-mini-app\n`);
     }
   });
 
@@ -143,17 +171,17 @@ program
   .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
   .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
   .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
-  .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: 350). Increase for large-context models like gemini-2.5-flash', '350')
-  .option('--chunk-overlap <lines>', 'Overlap lines between chunks to avoid missing nodes at boundaries (default: 50)', '50')
-  .option('--local-edges', 'Resolve Phase 2 connections locally using typescript AST and regex instead of calling LLM')
+  .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: off — whole file in one call). Set this for very large files or smaller-context models.')
+  .option('--chunk-overlap <lines>', 'Overlap lines between chunks, only used when --chunk-size is set (default: 50)')
+  .option('--local-edges', '[Deprecated] Connections are always resolved locally via AST now — this flag is a no-op, kept for backward compatibility.')
   .action(async (opts: {
     path?: string;
     provider: 'gemini' | 'vertex' | 'ollama';
     model?: string;
     key?: string;
     url?: string;
-    chunkSize: string;
-    chunkOverlap: string;
+    chunkSize?: string;
+    chunkOverlap?: string;
     localEdges?: boolean;
   }) => {
     const devmindPath = opts.path ?? '.devmind';
@@ -164,8 +192,8 @@ program
         model: opts.model,
         key: opts.key,
         url: opts.url,
-        chunkSize: parseInt(opts.chunkSize, 10) || 350,
-        chunkOverlap: parseInt(opts.chunkOverlap, 10) || 50,
+        chunkSize: opts.chunkSize ? parseInt(opts.chunkSize, 10) : undefined,
+        chunkOverlap: opts.chunkOverlap ? parseInt(opts.chunkOverlap, 10) : undefined,
         localEdges: !!opts.localEdges
       });
     } catch (err) {

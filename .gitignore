@@ -54,3 +54,6 @@ Desktop.ini
 devmind-idea.md
 .agents
 yarn.lock
+
+.claude
+.agents

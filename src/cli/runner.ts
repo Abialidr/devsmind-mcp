@@ -3,9 +3,11 @@ import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
 import * as crypto from 'crypto';
+import prompts from 'prompts';
 import { DevMindDatabase } from '../db/database';
 import { readScratchpad, createScratchpad, writeScratchpad } from '../db/indexer';
 import { scanRepoFiles } from '../utils/scanner';
+import { loadProjectContext } from '../utils/config';
 import { safeJsonParse } from '../utils/json';
 import { resolveConnectionsLocally } from '../utils/ast';
 
@@ -431,73 +433,6 @@ CRITICAL RULES:
   return safeJsonParse<ExtractionResult>(text, {});
 }
 
-async function resolveConnectionsWithVertex(
-  model: string,
-  token: string,
-  projectId: string,
-  location: string,
-  sourceNodeId: string,
-  code: string,
-  candidateNodeIds: string[]
-): Promise<string[]> {
-  const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent`;
-  
-  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code of a specific code entity and identify which other known code entities from the provided candidate list it calls or references.
-Return ONLY a valid JSON object matching the schema:
-{
-  "connections": [
-    "target_node_id_1",
-    "target_node_id_2"
-  ]
-}
-CRITICAL RULES:
-1. ONLY return target node IDs that are present in the provided list of known candidates. Do NOT invent new node IDs.
-2. DO NOT include connections to third-party libraries, language built-ins, or the source node itself.
-3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
-4. If no connections are found, return an empty array.`;
-
-  const payload = {
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            text: `Source Node ID: ${sourceNodeId}\n\nSource Code:\n${code}\n\nCandidate Target Node IDs in the Codebase:\n${JSON.stringify(candidateNodeIds, null, 2)}`
-          }
-        ]
-      }
-    ],
-    systemInstruction: {
-      parts: [
-        {
-          text: systemPrompt
-        }
-      ]
-    },
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
-  };
-
-  const responseText = await makeHttpRequest(
-    url,
-    'POST',
-    {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    JSON.stringify(payload)
-  );
-
-  const parsed = safeJsonParse(responseText, {} as any);
-  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    return [];
-  }
-  const result = safeJsonParse<LinkingResult>(text, {});
-  return result.connections || [];
-}
-
 async function extractWithGemini(
   model: string,
   key: string,
@@ -617,131 +552,6 @@ CRITICAL RULES:
   return safeJsonParse<ExtractionResult>(text, {});
 }
 
-interface LinkingResult {
-  connections?: string[];
-}
-
-async function resolveConnectionsWithGemini(
-  model: string,
-  key: string,
-  sourceNodeId: string,
-  code: string,
-  candidateNodeIds: string[]
-): Promise<string[]> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  
-  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code of a specific code entity and identify which other known code entities from the provided candidate list it calls or references.
-Return ONLY a valid JSON object matching the schema:
-{
-  "connections": [
-    "target_node_id_1",
-    "target_node_id_2"
-  ]
-}
-CRITICAL RULES:
-1. ONLY return target node IDs that are present in the provided list of known candidates. Do NOT invent new node IDs.
-2. DO NOT include connections to third-party libraries, language built-ins, or the source node itself.
-3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
-4. If no connections are found, return an empty array.`;
-
-  const payload = {
-    contents: [
-      {
-        parts: [
-          {
-            text: `Source Node ID: ${sourceNodeId}\n\nSource Code:\n${code}\n\nCandidate Target Node IDs in the Codebase:\n${JSON.stringify(candidateNodeIds, null, 2)}`
-          }
-        ]
-      }
-    ],
-    systemInstruction: {
-      parts: [
-        {
-          text: systemPrompt
-        }
-      ]
-    },
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
-  };
-
-  const responseText = await makeHttpRequest(
-    url,
-    'POST',
-    { 'Content-Type': 'application/json' },
-    JSON.stringify(payload)
-  );
-
-  const parsed = safeJsonParse(responseText, {} as any);
-  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    return [];
-  }
-  const result = safeJsonParse<LinkingResult>(text, {});
-  return result.connections || [];
-}
-
-async function resolveConnectionsWithOllama(
-  url: string,
-  model: string,
-  sourceNodeId: string,
-  code: string,
-  candidateNodeIds: string[]
-): Promise<string[]> {
-  const endpoint = `${url.replace(/\/$/, '')}/api/chat`;
-  
-  const systemPrompt = `You are a codebase indexing assistant. Analyze this source code of a code entity and identify which other known entities from the provided candidate list it calls or references.
-Return ONLY a valid JSON object matching the schema:
-{
-  "connections": [
-    "target_node_id_1",
-    "target_node_id_2"
-  ]
-}
-CRITICAL RULES:
-1. ONLY return target node IDs that are present in the provided list of known candidates. Do NOT invent new node IDs.
-2. Return a clean, valid JSON object.`;
-
-  const userPrompt = `Source Node ID: ${sourceNodeId}\n\nSource Code:\n${code}\n\nCandidate Target Node IDs:\n${JSON.stringify(candidateNodeIds, null, 2)}`;
-
-  const payload = {
-    model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    stream: false,
-    format: 'json'
-  };
-
-  const responseText = await makeHttpRequest(
-    endpoint,
-    'POST',
-    { 'Content-Type': 'application/json' },
-    JSON.stringify(payload)
-  );
-
-  const parsed = safeJsonParse(responseText, {} as any);
-  const text = parsed.message?.content;
-  if (!text) {
-    return [];
-  }
-  const result = safeJsonParse<LinkingResult>(text, {});
-  return result.connections || [];
-}
-
-function filterCandidates(codeSnapshot: string, allNodeIds: string[]): string[] {
-  const lowerCode = codeSnapshot.toLowerCase();
-  return allNodeIds.filter(id => {
-    const symbolName = id.includes('#') ? id.split('#').pop()! : id;
-    const shortName = symbolName.includes('.') ? symbolName.split('.').pop()! : symbolName;
-    if (!shortName || shortName.trim().length === 0) return false;
-    if (shortName.length < 3) return false;
-    return lowerCode.includes(shortName.toLowerCase());
-  });
-}
-
 async function extractNodesFromCode(
   provider: 'gemini' | 'vertex' | 'ollama',
   modelName: string,
@@ -753,11 +563,12 @@ async function extractNodesFromCode(
   vertexProjectId: string,
   vertexLocation: string,
   progress: ProgressDisplay,
-  chunkSize: number = 350,
-  chunkOverlap: number = 50
+  chunkSize?: number,
+  chunkOverlap?: number
 ): Promise<ExtractionResult> {
+  // Chunking is opt-in: with no --chunk-size, the whole file always goes in one call.
   const maxLines = chunkSize;
-  const overlap = chunkOverlap;
+  const overlap = chunkOverlap ?? 50;
   const lines = code.split('\n');
 
   const executeExtraction = async (codeChunk: string): Promise<ExtractionResult> => {
@@ -792,7 +603,7 @@ async function extractNodesFromCode(
     return {};
   };
 
-  if (lines.length <= maxLines) {
+  if (!maxLines || lines.length <= maxLines) {
     return await executeExtraction(code);
   }
 
@@ -800,11 +611,13 @@ async function extractNodesFromCode(
   progress.log(`\x1B[90m[${relPath}] Large file (${lines.length} lines) - parsing in chunks to prevent LLM output truncation...\x1B[0m`);
   const chunks: string[] = [];
   let start = 0;
+  // Guard against overlap >= chunkSize, which would make the step <= 0 and loop forever.
+  const step = Math.max(1, maxLines - overlap);
   while (start < lines.length) {
     const end = Math.min(start + maxLines, lines.length);
     chunks.push(lines.slice(start, end).join('\n'));
     if (end === lines.length) break;
-    start += maxLines - overlap;
+    start += step;
   }
 
   const seenNodeIds = new Map<string, ExtractedNode>();
@@ -848,70 +661,118 @@ export async function runBackgroundIndexing(opts: {
   url?: string;
   chunkSize?: number;
   chunkOverlap?: number;
+  /** @deprecated Connections are always resolved locally via AST now. Accepted as a no-op for backward compatibility. */
   localEdges?: boolean;
+  fromScratch?: boolean;
+  nodesOnly?: boolean;
+  edgesOnly?: boolean;
+  repos?: string[];
+  yes?: boolean;
 }) {
   const resolvedDevmind = path.resolve(opts.devmindPath);
-  const chunkSize = opts.chunkSize ?? 350;
-  const chunkOverlap = opts.chunkOverlap ?? 50;
-  const localEdges = !!opts.localEdges;
+  const chunkSize = opts.chunkSize;
+  const chunkOverlap = opts.chunkOverlap;
+  const fromScratch = !!opts.fromScratch;
+  const nodesOnly = !!opts.nodesOnly;
+  const edgesOnly = !!opts.edgesOnly;
+
+  // Repo scoping: restrict the whole operation to the named repos. Standalone-only.
+  const scopedRepos: string[] | null = opts.repos && opts.repos.length ? opts.repos : null;
+  const inScope = (nodeId: string): boolean =>
+    !scopedRepos || scopedRepos.some(r => nodeId.startsWith(`{${r}}/`));
+  if (scopedRepos) {
+    let ctx: ReturnType<typeof loadProjectContext>;
+    try {
+      ctx = loadProjectContext(resolvedDevmind);
+    } catch (err) {
+      console.error(`❌ Error: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    if (ctx.config.mode !== 'standalone') {
+      console.error('❌ Error: --repos only works in standalone mode (embedded projects share one root, so per-repo scoping does not apply).');
+      process.exit(1);
+    }
+    if (fromScratch) {
+      console.error('❌ Error: --from-scratch wipes the entire graph, so it cannot be combined with --repos. Drop one of them.');
+      process.exit(1);
+    }
+    const known = new Set(ctx.config.repos.map(r => r.name));
+    const unknown = scopedRepos.filter(r => !known.has(r));
+    if (unknown.length) {
+      console.error(`❌ Error: unknown repo name(s): ${unknown.join(', ')}`);
+      console.error(`   Valid repos: ${[...known].join(', ')}`);
+      process.exit(1);
+    }
+    console.log(`   Scope           : repos = ${scopedRepos.join(', ')}`);
+  }
+  // Scoped runs use a SEPARATE scratchpad so they can't clobber (or mark "complete") the
+  // global session — otherwise a later full `index --run` would see the scoped run's
+  // "complete" and skip every un-indexed repo.
+  const padFile: string | undefined = scopedRepos ? 'index_scratchpad.scoped.json' : undefined;
 
   console.log(`\n🧠 DevsMind Background Indexer`);
   console.log(`   Brain directory : ${resolvedDevmind}`);
   console.log(`   Provider        : ${opts.provider}`);
-  console.log(`   Local Edges     : ${localEdges}`);
-  console.log(`   Chunk size      : ${chunkSize} lines  (overlap: ${chunkOverlap} lines)`);
-  
+  console.log(`   Connections     : local AST resolution (always)`);
+  console.log(`   Chunking        : ${chunkSize ? `${chunkSize} lines (overlap: ${chunkOverlap ?? 50})` : 'off — whole file per call'}`);
+
   let modelName = opts.model || '';
   let vertexSaData: any = null;
   let vertexToken: string | null = null;
   let vertexProjectId = '';
   let vertexLocation = 'us-central1';
 
-  if (opts.provider === 'gemini') {
-    modelName = modelName || 'gemini-2.0-flash';
-    const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
-    if (!apiKey) {
-      console.error('❌ Error: Gemini API key is required. Pass --key or set GEMINI_API_KEY environment variable.');
-      process.exit(1);
-    }
-    opts.key = apiKey;
-  } else if (opts.provider === 'vertex') {
-    modelName = modelName || 'gemini-1.5-flash';
-    const inputKey = opts.key || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY || '';
-    if (!inputKey) {
-      console.error('❌ Error: Vertex AI requires a Service Account JSON path or Bearer Token. Pass --key or set GOOGLE_APPLICATION_CREDENTIALS / VERTEX_API_KEY environment variable.');
-      process.exit(1);
-    }
-
-    try {
-      if (inputKey.trim().startsWith('{')) {
-        vertexSaData = JSON.parse(inputKey);
-      } else if (fs.existsSync(inputKey)) {
-        vertexSaData = JSON.parse(fs.readFileSync(inputKey, 'utf-8'));
+  // --edges-only never calls the LLM (Phase 1 is skipped entirely), so it shouldn't
+  // require provider credentials at all.
+  if (!edgesOnly) {
+    if (opts.provider === 'gemini') {
+      modelName = modelName || 'gemini-2.0-flash';
+      const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
+      if (!apiKey) {
+        console.error('❌ Error: Gemini API key is required. Pass --key or set GEMINI_API_KEY environment variable.');
+        process.exit(1);
       }
-    } catch (e) {
-      // Treat as raw token
+      opts.key = apiKey;
+    } else if (opts.provider === 'vertex') {
+      modelName = modelName || 'gemini-1.5-flash';
+      const inputKey = opts.key || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY || '';
+      if (!inputKey) {
+        console.error('❌ Error: Vertex AI requires a Service Account JSON path or Bearer Token. Pass --key or set GOOGLE_APPLICATION_CREDENTIALS / VERTEX_API_KEY environment variable.');
+        process.exit(1);
+      }
+
+      try {
+        if (inputKey.trim().startsWith('{')) {
+          vertexSaData = JSON.parse(inputKey);
+        } else if (fs.existsSync(inputKey)) {
+          vertexSaData = JSON.parse(fs.readFileSync(inputKey, 'utf-8'));
+        }
+      } catch (e) {
+        // Treat as raw token
+      }
+
+      vertexProjectId = vertexSaData?.project_id || process.env.GCP_PROJECT_ID || process.env.VERTEX_PROJECT_ID || '';
+      vertexLocation = process.env.GCP_LOCATION || process.env.VERTEX_LOCATION || 'us-central1';
+
+      if (!vertexSaData && !inputKey.startsWith('ya29.')) {
+        console.error('❌ Error: Vertex key must be a valid Service Account JSON file path, inline JSON, or raw OAuth access token starting with "ya29."');
+        process.exit(1);
+      }
+
+      if (!vertexProjectId) {
+        console.error('❌ Error: Vertex Project ID could not be determined. Please set GCP_PROJECT_ID environment variable or specify it in your service account JSON.');
+        process.exit(1);
+      }
+
+      if (!vertexSaData) {
+        vertexToken = inputKey; // Raw Bearer token
+      }
+    } else {
+      modelName = modelName || 'qwen2.5-coder';
+      opts.url = opts.url || 'http://localhost:11434';
     }
 
-    vertexProjectId = vertexSaData?.project_id || process.env.GCP_PROJECT_ID || process.env.VERTEX_PROJECT_ID || '';
-    vertexLocation = process.env.GCP_LOCATION || process.env.VERTEX_LOCATION || 'us-central1';
-
-    if (!vertexSaData && !inputKey.startsWith('ya29.')) {
-      console.error('❌ Error: Vertex key must be a valid Service Account JSON file path, inline JSON, or raw OAuth access token starting with "ya29."');
-      process.exit(1);
-    }
-
-    if (!vertexProjectId) {
-      console.error('❌ Error: Vertex Project ID could not be determined. Please set GCP_PROJECT_ID environment variable or specify it in your service account JSON.');
-      process.exit(1);
-    }
-
-    if (!vertexSaData) {
-      vertexToken = inputKey; // Raw Bearer token
-    }
-  } else {
-    modelName = modelName || 'qwen2.5-coder';
-    opts.url = opts.url || 'http://localhost:11434';
+    console.log(`   Model           : ${modelName}`);
   }
 
   const getVertexToken = async (): Promise<string> => {
@@ -922,24 +783,138 @@ export async function runBackgroundIndexing(opts: {
     throw new Error('No Vertex credentials available');
   };
 
-  console.log(`   Model           : ${modelName}`);
-
   // 1. Open DB
   const dbFile = path.join(resolvedDevmind, 'brain.db');
   const db = new DevMindDatabase(dbFile);
 
-  // 2. Scan for repos & files
-  const { repos, total_files } = scanRepoFiles(resolvedDevmind);
+  // --from-scratch: wipe everything (with confirmation) before proceeding.
+  if (fromScratch) {
+    if (!opts.yes) {
+      const confirmResult = await prompts({
+        type: 'confirm',
+        name: 'yes',
+        message: '🚨 WARNING: --from-scratch will permanently delete ALL nodes, connections, history, and the committed graph/ and history/ folders, then reindex from zero. Are you absolutely sure?',
+        initial: false
+      });
+      if (!confirmResult.yes) {
+        console.log('Aborted — nothing was changed.');
+        db.close();
+        return;
+      }
+    }
+    console.log('💥 Wiping all nodes, connections, history, and graph/history folders...');
+    db.resetAll();
+    const scratchpadFile = path.join(resolvedDevmind, 'index_scratchpad.json');
+    if (fs.existsSync(scratchpadFile)) {
+      fs.unlinkSync(scratchpadFile);
+    }
+  }
+
+  // --edges-only: skip Phase 1 entirely, wipe existing edges, rebuild them fresh
+  // across every currently-active node using the AST resolver. Requires nodes to
+  // already exist (from a prior full index or a --nodes-only run).
+  if (edgesOnly) {
+    // All nodes stay in the candidate pool (targets can live in any repo/file), but when
+    // scoped we only rebuild edges ORIGINATING from the named repos' nodes.
+    const allNodes = db.listNodes();
+    if (allNodes.length === 0) {
+      console.error('❌ Error: --edges-only requires nodes to already exist. Run without --edges-only first (or with --nodes-only) to extract nodes.');
+      db.close();
+      process.exit(1);
+    }
+    const existingNodes = scopedRepos ? allNodes.filter(n => inScope(n.id)) : allNodes;
+    if (existingNodes.length === 0) {
+      console.error(`❌ Error: no nodes found for repo(s): ${scopedRepos?.join(', ')}. Extract nodes first.`);
+      db.close();
+      process.exit(1);
+    }
+
+    let edgePad = readScratchpad(resolvedDevmind, padFile);
+    let resumeIndex = 0;
+    // Scoped runs never resume the shared scratchpad (its counts describe a different set).
+    if (!scopedRepos && edgePad && edgePad.phase === 2 && edgePad.status === 'in_progress' && edgePad.nodes_total === existingNodes.length) {
+      resumeIndex = edgePad.nodes_done || 0;
+      console.log(`↻ Resuming edge rebuild from node ${resumeIndex + 1}/${existingNodes.length}`);
+    } else {
+      if (scopedRepos) {
+        console.log(`🧹 Clearing connections for ${existingNodes.length} node(s) in scope...`);
+        db.clearConnectionsForSources(existingNodes.map(n => n.id));
+      } else {
+        console.log('🧹 Clearing existing connections...');
+        db.clearAllConnections();
+      }
+      edgePad = createScratchpad(resolvedDevmind, 0, padFile);
+      edgePad.phase = 2;
+      edgePad.nodes_total = existingNodes.length;
+      writeScratchpad(resolvedDevmind, edgePad, padFile);
+    }
+
+    const edgeProgress = new ProgressDisplay();
+    const allNodeIds = allNodes.map(n => n.id);
+    edgeProgress.startPhase(2, 'AI Connection Resolution', existingNodes.length, resumeIndex);
+
+    for (let i = resumeIndex; i < existingNodes.length; i++) {
+      const node = existingNodes[i];
+      edgeProgress.beginItem(node.id);
+
+      const latestCode = db.getLatestCode(node.id);
+      if (!latestCode || !latestCode.code_snapshot || latestCode.code_snapshot.trim().length === 0) {
+        edgePad.nodes_done = i + 1;
+        writeScratchpad(resolvedDevmind, edgePad, padFile);
+        edgeProgress.skipItem('no code snapshot');
+        continue;
+      }
+
+      edgeProgress.updateStatus(`Resolving connections locally via AST…`);
+      const connections = resolveConnectionsLocally(node.id, node.file_path, allNodes, resolvedDevmind);
+
+      let addedCount = 0;
+      for (const targetId of connections) {
+        if (allNodeIds.includes(targetId)) {
+          edgeProgress.log(`Linked: \x1B[36m${node.id}\x1B[0m → \x1B[36m${targetId}\x1B[0m`);
+          db.addConnection(node.id, targetId);
+          addedCount++;
+        }
+      }
+
+      edgePad.nodes_done = i + 1;
+      edgePad.connections_created += addedCount;
+      writeScratchpad(resolvedDevmind, edgePad, padFile);
+      edgeProgress.completeItem(`${edgePad.connections_created} connection(s) created so far`);
+    }
+
+    edgeProgress.finishPhase(`Phase 2 done — ${edgePad.connections_created} connection(s) linked across ${existingNodes.length} node(s)`);
+
+    edgePad.status = 'complete';
+    edgePad.updated_at = new Date().toISOString();
+    writeScratchpad(resolvedDevmind, edgePad, padFile);
+    db.vacuum();
+    db.close();
+
+    console.log('');
+    console.log('\x1B[1m\x1B[32m  ✔ Edge rebuild complete!\x1B[0m');
+    console.log(`  └─ Connections    : \x1B[33m${edgePad.connections_created}\x1B[0m`);
+    console.log('');
+    return;
+  }
+
+  // 2. Scan for repos & files (restricted to scoped repos when --repos is given)
+  const scanResult = scanRepoFiles(resolvedDevmind);
+  const repos = scopedRepos
+    ? scanResult.repos.filter(r => scopedRepos.includes(r.repo_name))
+    : scanResult.repos;
+  const total_files = repos.reduce((sum, r) => sum + r.files.length, 0);
   if (total_files === 0) {
     console.log('⚠️ No files found to index. Make sure config.json repositories are configured properly.');
     db.close();
     return;
   }
 
-  // 3. Read or create scratchpad
-  let pad = readScratchpad(resolvedDevmind);
-  if (!pad) {
-    pad = createScratchpad(resolvedDevmind, total_files);
+  // 3. Read or create scratchpad. Scoped runs always start a fresh scratchpad — they are
+  // targeted re-runs, so they must not be blocked by (or resume) a prior global session.
+  let pad = readScratchpad(resolvedDevmind, padFile);
+  if (scopedRepos || !pad) {
+    pad = createScratchpad(resolvedDevmind, total_files, padFile);
   } else if (pad.status === 'complete') {
     console.log('✅ Indexing is already completed!');
     db.close();
@@ -988,7 +963,7 @@ export async function runBackgroundIndexing(opts: {
       if (code.trim().length === 0) {
         pad.files_done++;
         pad.last_file_indexed = fileObj.absolutePath;
-        writeScratchpad(resolvedDevmind, pad);
+        writeScratchpad(resolvedDevmind, pad, padFile);
         progress.skipItem('empty file');
         continue;
       }
@@ -1079,7 +1054,7 @@ export async function runBackgroundIndexing(opts: {
       if (isRepoDone && !pad.repos_done.includes(fileObj.repoName)) {
         pad.repos_done.push(fileObj.repoName);
       }
-      writeScratchpad(resolvedDevmind, pad);
+      writeScratchpad(resolvedDevmind, pad, padFile);
 
       progress.completeItem(`${pad.nodes_created} node(s) found so far`);
 
@@ -1087,24 +1062,38 @@ export async function runBackgroundIndexing(opts: {
       else await sleep(200);
     }
 
-    // Transition to Phase 2
     const activeNodes = db.listNodes();
-    pad.phase = 2;
-    pad.nodes_total = activeNodes.length;
-    pad.nodes_done = 0;
-    pad.updated_at = new Date().toISOString();
-    writeScratchpad(resolvedDevmind, pad);
-
     progress.finishPhase(`Phase 1 done — ${activeNodes.length} node(s) extracted from ${pad.files_done} file(s)`);
+
+    if (nodesOnly) {
+      pad.status = 'complete';
+      pad.updated_at = new Date().toISOString();
+      writeScratchpad(resolvedDevmind, pad, padFile);
+    } else {
+      // Transition to Phase 2
+      pad.phase = 2;
+      pad.nodes_total = activeNodes.length;
+      pad.nodes_done = 0;
+      pad.updated_at = new Date().toISOString();
+      writeScratchpad(resolvedDevmind, pad, padFile);
+    }
   }
 
   // =========================================================================
   // PHASE 2: AI CONNECTION RESOLUTION / LINKING
   // =========================================================================
-  if (pad.phase === 2) {
-    const activeNodes = db.listNodes();
-    const allNodeIds = activeNodes.map(n => n.id);
+  if (pad.phase === 2 && !nodesOnly) {
+    const allNodes = db.listNodes();
+    const allNodeIds = allNodes.map(n => n.id);
+    // Candidates are always all nodes; when scoped we only (re)build edges from the
+    // named repos' nodes and clear just those first so we don't wipe other repos' edges.
+    const activeNodes = scopedRepos ? allNodes.filter(n => inScope(n.id)) : allNodes;
     const resumeIndex = pad.nodes_done || 0;
+    if (scopedRepos && resumeIndex === 0) {
+      console.log(`🧹 Clearing connections for ${activeNodes.length} node(s) in scope...`);
+      db.clearConnectionsForSources(activeNodes.map(n => n.id));
+    }
+    pad.nodes_total = activeNodes.length;
     // Use total node count and resume offset so bar shows true progress
     progress.startPhase(2, 'AI Connection Resolution', activeNodes.length, resumeIndex);
 
@@ -1118,66 +1107,13 @@ export async function runBackgroundIndexing(opts: {
       if (!latestCode || !latestCode.code_snapshot || latestCode.code_snapshot.trim().length === 0) {
         pad.nodes_done = nodeIndex + 1;
         pad.updated_at = new Date().toISOString();
-        writeScratchpad(resolvedDevmind, pad);
+        writeScratchpad(resolvedDevmind, pad, padFile);
         progress.skipItem('no code snapshot');
         continue;
       }
 
-      const candidates = filterCandidates(latestCode.code_snapshot, allNodeIds);
-      const filteredCandidates = candidates.filter(id => id !== node.id);
-
-      if (filteredCandidates.length === 0) {
-        pad.nodes_done = nodeIndex + 1;
-        pad.updated_at = new Date().toISOString();
-        writeScratchpad(resolvedDevmind, pad);
-        progress.skipItem('no matching candidates');
-        continue;
-      }
-
-      let connections: string[] = [];
-      if (localEdges) {
-        progress.updateStatus(`Resolving connections locally via AST…`);
-        connections = resolveConnectionsLocally(node.id, node.file_path, activeNodes, resolvedDevmind);
-      } else {
-        let retries = 5;
-        let backoffMs = 10000;
-        while (retries > 0) {
-          try {
-            if (opts.provider === 'gemini') {
-              connections = await resolveConnectionsWithGemini(
-                modelName, opts.key!, node.id, latestCode.code_snapshot, filteredCandidates
-              );
-            } else if (opts.provider === 'vertex') {
-              const token = await getVertexToken();
-              connections = await resolveConnectionsWithVertex(
-                modelName, token, vertexProjectId, vertexLocation, node.id, latestCode.code_snapshot, filteredCandidates
-              );
-            } else {
-              connections = await resolveConnectionsWithOllama(
-                opts.url!, modelName, node.id, latestCode.code_snapshot, filteredCandidates
-              );
-            }
-            break;
-          } catch (err) {
-            retries--;
-            if (retries === 0) {
-              progress.finishPhase('Paused — API error. Run again to resume.');
-              console.error(`❌ ${(err as Error).message}`);
-              db.close();
-              process.exit(1);
-            }
-            const errMsg = (err as Error).message;
-            if (errMsg.includes('429')) {
-              progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
-              await sleep(backoffMs);
-              backoffMs *= 2;
-            } else {
-              progress.updateStatus(`API error. Retrying in 2s...`);
-              await sleep(2000);
-            }
-          }
-        }
-      }
+      progress.updateStatus(`Resolving connections locally via AST…`);
+      const connections = resolveConnectionsLocally(node.id, node.file_path, allNodes, resolvedDevmind);
 
       let addedCount = 0;
       for (const targetId of connections) {
@@ -1191,14 +1127,9 @@ export async function runBackgroundIndexing(opts: {
       pad.nodes_done = nodeIndex + 1;
       pad.connections_created += addedCount;
       pad.updated_at = new Date().toISOString();
-      writeScratchpad(resolvedDevmind, pad);
+      writeScratchpad(resolvedDevmind, pad, padFile);
 
       progress.completeItem(`${pad.connections_created} connection(s) created so far`);
-
-      if (!localEdges) {
-        if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
-        else await sleep(200);
-      }
     }
 
     progress.finishPhase(`Phase 2 done — ${pad.connections_created} connection(s) linked across ${pad.nodes_total} node(s)`);
@@ -1207,7 +1138,7 @@ export async function runBackgroundIndexing(opts: {
   // Mark indexing session as fully complete
   pad.status = 'complete';
   pad.updated_at = new Date().toISOString();
-  writeScratchpad(resolvedDevmind, pad);
+  writeScratchpad(resolvedDevmind, pad, padFile);
   db.vacuum();
   db.close();
 
@@ -1227,19 +1158,19 @@ export async function runBackgroundReindexing(opts: {
   url?: string;
   chunkSize?: number;
   chunkOverlap?: number;
+  /** @deprecated Connections are always resolved locally via AST now. Accepted as a no-op for backward compatibility. */
   localEdges?: boolean;
 }) {
   const resolvedDevmind = path.resolve(opts.devmindPath);
-  const chunkSize = opts.chunkSize ?? 350;
-  const chunkOverlap = opts.chunkOverlap ?? 50;
-  const localEdges = !!opts.localEdges;
+  const chunkSize = opts.chunkSize;
+  const chunkOverlap = opts.chunkOverlap;
 
   console.log(`\n🧠 DevsMind Background Reindexer`);
   console.log(`   Brain directory : ${resolvedDevmind}`);
   console.log(`   Provider        : ${opts.provider}`);
-  console.log(`   Local Edges     : ${localEdges}`);
-  console.log(`   Chunk size      : ${chunkSize} lines  (overlap: ${chunkOverlap} lines)`);
-  
+  console.log(`   Connections     : local AST resolution (always)`);
+  console.log(`   Chunking        : ${chunkSize ? `${chunkSize} lines (overlap: ${chunkOverlap ?? 50})` : 'off — whole file per call'}`);
+
   let modelName = opts.model || '';
   let vertexSaData: any = null;
   let vertexToken: string | null = null;
@@ -1357,6 +1288,11 @@ export async function runBackgroundReindexing(opts: {
   progress.startPhase(1, 'Incremental Node Extraction', modifiedFiles.length, 0);
 
   const newOrUpdatedNodeIds: string[] = [];
+  // Source nodes (in possibly-unmodified files) that had edges pointing INTO the modified
+  // files. deprecateNode below deletes those inbound edges, so we capture their sources here
+  // and re-resolve them after Phase 2 to rebuild the "used-by" edges (else every reindex
+  // silently strips incoming edges from unmodified callers).
+  const inboundSourceIds = new Set<string>();
 
   for (let fileIndex = 0; fileIndex < modifiedFiles.length; fileIndex++) {
     const fileObj = modifiedFiles[fileIndex];
@@ -1372,9 +1308,11 @@ export async function runBackgroundReindexing(opts: {
       continue;
     }
 
-    // Deprecate existing nodes for this file path before parsing
+    // Deprecate existing nodes for this file path before parsing. Capture inbound-edge
+    // sources FIRST (deprecateNode deletes edges in both directions).
     const oldNodes = db.getNodesByFilePath(fileObj.absolutePath);
     for (const oldNode of oldNodes) {
+      for (const src of db.getInboundSources(oldNode.id)) inboundSourceIds.add(src);
       db.deprecateNode(oldNode.id);
     }
 
@@ -1480,60 +1418,11 @@ export async function runBackgroundReindexing(opts: {
         continue;
       }
 
-      const candidates = filterCandidates(latestCode.code_snapshot, allNodeIds);
-      const filteredCandidates = candidates.filter(id => id !== nodeId);
-
-      if (filteredCandidates.length === 0) {
-        progress.skipItem('no matching candidates');
-        continue;
-      }
-
+      progress.updateStatus(`Resolving connections locally via AST…`);
       let connections: string[] = [];
-      if (localEdges) {
-        progress.updateStatus(`Resolving connections locally via AST…`);
-        const nodeObj = db.getNode(nodeId);
-        if (nodeObj && nodeObj.file_path) {
-          connections = resolveConnectionsLocally(nodeId, nodeObj.file_path, activeNodes, resolvedDevmind);
-        }
-      } else {
-        let retries = 5;
-        let backoffMs = 10000;
-        while (retries > 0) {
-          try {
-            if (opts.provider === 'gemini') {
-              connections = await resolveConnectionsWithGemini(
-                modelName, opts.key!, nodeId, latestCode.code_snapshot, filteredCandidates
-              );
-            } else if (opts.provider === 'vertex') {
-              const token = await getVertexToken();
-              connections = await resolveConnectionsWithVertex(
-                modelName, token, vertexProjectId, vertexLocation, nodeId, latestCode.code_snapshot, filteredCandidates
-              );
-            } else {
-              connections = await resolveConnectionsWithOllama(
-                opts.url!, modelName, nodeId, latestCode.code_snapshot, filteredCandidates
-              );
-            }
-            break;
-          } catch (err) {
-            retries--;
-            if (retries === 0) {
-              progress.finishPhase('Paused — API error.');
-              console.error(`❌ ${(err as Error).message}`);
-              db.close();
-              process.exit(1);
-            }
-            const errMsg = (err as Error).message;
-            if (errMsg.includes('429')) {
-              progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
-              await sleep(backoffMs);
-              backoffMs *= 2;
-            } else {
-              progress.updateStatus(`API error. Retrying in 2s...`);
-              await sleep(2000);
-            }
-          }
-        }
+      const nodeObj = db.getNode(nodeId);
+      if (nodeObj && nodeObj.file_path) {
+        connections = resolveConnectionsLocally(nodeId, nodeObj.file_path, activeNodes, resolvedDevmind);
       }
 
       let connectionsAdded = 0;
@@ -1546,14 +1435,33 @@ export async function runBackgroundReindexing(opts: {
       }
 
       progress.completeItem(`${connectionsAdded} connection(s) created`);
-
-      if (!localEdges) {
-        if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
-        else await sleep(200);
-      }
     }
 
     progress.finishPhase('Phase 2 done — finished reindexing connections');
+  }
+
+  // Phase 2b: rebuild inbound edges. Callers in unmodified files had their edges into the
+  // modified files deleted by deprecateNode; re-resolve those callers so their links to the
+  // modified files' NEW nodes are restored (addConnection is idempotent for unchanged edges).
+  const reresolveSources = [...inboundSourceIds].filter(
+    id => !newOrUpdatedNodeIds.includes(id) && db.getNode(id)
+  );
+  if (reresolveSources.length > 0) {
+    const activeNodes = db.listNodes();
+    const allNodeIds = new Set(activeNodes.map(n => n.id));
+    progress.startPhase(2, 'Inbound Edge Rebuild', reresolveSources.length, 0);
+    for (const srcId of reresolveSources) {
+      progress.beginItem(srcId);
+      const srcNode = db.getNode(srcId);
+      if (!srcNode || !srcNode.file_path) { progress.skipItem('missing'); continue; }
+      const conns = resolveConnectionsLocally(srcId, srcNode.file_path, activeNodes, resolvedDevmind);
+      let added = 0;
+      for (const targetId of conns) {
+        if (allNodeIds.has(targetId)) { db.addConnection(srcId, targetId); added++; }
+      }
+      progress.completeItem(`${added} connection(s)`);
+    }
+    progress.finishPhase('Phase 2b done — inbound edges rebuilt');
   }
 
   // Update last_reindex_at

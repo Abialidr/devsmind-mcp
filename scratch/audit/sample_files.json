@@ -1,0 +1,142 @@
+[
+  {
+    "repo": "harrir-mini-app",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\home-page\\home-page.js",
+    "ids": "{harrir-mini-app}/components/home-page/home-page.js#productsService|||{harrir-mini-app}/components/home-page/home-page.js#homepageService|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.props|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.data|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods._getLang|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods._getI18n|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods._applyLangToSections|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods._normSection|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.hydrateSectionTemplateData|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.handleProductTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.handleFavoriteTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onCarouselScroll|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.updateCenteredDots|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onDotTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.handleTopDealTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.handleTopDealFavoriteTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onTopDealsShopNow|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.handleRecentTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.handleRecentFavoriteTap|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onClearRecentlyViewed|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadProducts|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadNextProducts|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onProductsScrollToLower|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadTopDeals|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadNextTopDeals|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onTopDealsScrollToLower|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadRecentlyViewed|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadNextRecentlyViewed|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.onRecentlyViewedScrollToLower|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods._processSections|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.loadHomepageSections|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods._loadRemainingPages|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractHeroImages|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractBannerImages|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractCategoryItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractSpotlightItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractBrandsItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractSeasonalItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractDiscountItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractSpotlightBrandsItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractProductsItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.methods.extractCollectionItems|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.pageEvents.show|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.didMount|||{harrir-mini-app}/components/home-page/home-page.js#HomePageComponent.didUpdate",
+    "node_count": 46,
+    "types": "variable|||variable|||class|||variable|||variable|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method"
+  },
+  {
+    "repo": "harrir-mini-app",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\hero\\index.js",
+    "ids": "{harrir-mini-app}/components/hero/index.js#hero_component|||{harrir-mini-app}/components/hero/index.js#hero_component.data|||{harrir-mini-app}/components/hero/index.js#hero_component.props|||{harrir-mini-app}/components/hero/index.js#hero_component.didMount|||{harrir-mini-app}/components/hero/index.js#hero_component.didUpdate|||{harrir-mini-app}/components/hero/index.js#hero_component.onSlideChange|||{harrir-mini-app}/components/hero/index.js#hero_component.onDotTap|||{harrir-mini-app}/components/hero/index.js#hero_component.onImageTap",
+    "node_count": 8,
+    "types": "react_component|||variable|||variable|||method|||method|||method|||method|||method"
+  },
+  {
+    "repo": "harrir-web",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\PriceRangeFilter.tsx",
+    "ids": "{harrir-web}/app/category/PriceRangeFilter.tsx#PriceRangeFilter|||{harrir-web}/app/category/PriceRangeFilter.tsx#PriceRangeFilter.setClampedDraftRange|||{harrir-web}/app/category/PriceRangeFilter.tsx#PriceRangeFilter.commitRange",
+    "node_count": 3,
+    "types": "react_component|||function|||function"
+  },
+  {
+    "repo": "harrir-web",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\components\\homepage\\SpotlightSection.tsx",
+    "ids": "{harrir-web}/app/components/homepage/SpotlightSection.tsx#SpotlightBreakpoint|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#SpotlightResponsiveConfig|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#SPOTLIGHT_ITEMS_PER_VIEW|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#SPOTLIGHT_BRANDS_ITEMS_PER_VIEW|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getItemsPerViewConfig|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getCarouselItemsPerView|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getSlidesToScroll|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getSpotlightCarouselOptions|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getSpotlightItemImage|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getSpotlightItemTitle|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#getSpotlightItemSubtitle|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#SpotlightItem|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#SpotlightBrandItem|||{harrir-web}/app/components/homepage/SpotlightSection.tsx#SpotlightSection",
+    "node_count": 14,
+    "types": "type_alias|||type_alias|||constant|||constant|||function|||function|||function|||function|||function|||function|||function|||react_component|||react_component|||react_component"
+  },
+  {
+    "repo": "harrir-web-admin",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\return-management\\[requestId]\\_components\\RefundRetryActions.tsx",
+    "ids": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#RefundRetryActionsProps|||{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#MutationPayload|||{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#readMutationResponse|||{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#asRecord|||{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#getRefundStatus|||{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#showRetryResultToast|||{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/RefundRetryActions.tsx#RefundRetryActions",
+    "node_count": 7,
+    "types": "type_alias|||type_alias|||function|||function|||function|||function|||react_component"
+  },
+  {
+    "repo": "harrir-express-backend",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\config\\index.ts",
+    "ids": "{harrir-express-backend}/src/config/index.ts#config",
+    "node_count": 1,
+    "types": "constant"
+  },
+  {
+    "repo": "harrir-mini-app",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\ai-stylist-chat\\ai-stylist-chat.js",
+    "ids": "{harrir-mini-app}/components/ai-stylist-chat/ai-stylist-chat.js#ai-stylist-chat|||{harrir-mini-app}/components/ai-stylist-chat/ai-stylist-chat.js#ai-stylist-chat.didMount|||{harrir-mini-app}/components/ai-stylist-chat/ai-stylist-chat.js#ai-stylist-chat.didUpdate|||{harrir-mini-app}/components/ai-stylist-chat/ai-stylist-chat.js#ai-stylist-chat.syncFromProps",
+    "node_count": 4,
+    "types": "react_component|||method|||method|||method"
+  },
+  {
+    "repo": "harrir-web-admin",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\categories\\api.ts",
+    "ids": "{harrir-web-admin}/components/categories/api.ts#ApiCategory|||{harrir-web-admin}/components/categories/api.ts#mapApiToCategory|||{harrir-web-admin}/components/categories/api.ts#mapCategoryToFormData|||{harrir-web-admin}/components/categories/api.ts#mapSubcategoryToFormData",
+    "node_count": 4,
+    "types": "interface|||function|||function|||function"
+  },
+  {
+    "repo": "harrir-web",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\legal\\LegalPage.tsx",
+    "ids": "{harrir-web}/app/legal/LegalPage.tsx#getActiveLanguage|||{harrir-web}/app/legal/LegalPage.tsx#LegalPage",
+    "node_count": 2,
+    "types": "function|||react_component"
+  },
+  {
+    "repo": "harrir-backend-products-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\ClearCaches\\app.ts",
+    "ids": "{harrir-backend-products-service}/src/functions/ClearCaches/app.ts#controller|||{harrir-backend-products-service}/src/functions/ClearCaches/app.ts#clearHomepageCache|||{harrir-backend-products-service}/src/functions/ClearCaches/app.ts#lambdaHandler",
+    "node_count": 3,
+    "types": "variable|||variable|||function"
+  },
+  {
+    "repo": "harrir-backend-order-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\CheckReturnEligibility\\schema.ts",
+    "ids": "{harrir-backend-order-service}/src/functions/CheckReturnEligibility/schema.ts#CheckReturnEligibilitySchema",
+    "node_count": 1,
+    "types": "validator"
+  },
+  {
+    "repo": "harrir-backend-user-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\functions\\api\\v1\\AuthAlipayLogin\\app.ts",
+    "ids": "{harrir-backend-user-service}/src/functions/api/v1/AuthAlipayLogin/app.ts#lambdaHandler",
+    "node_count": 1,
+    "types": "variable"
+  },
+  {
+    "repo": "harrir-backend-zoho-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\repositories\\ProductRepository.ts",
+    "ids": "{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.create|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findByASIN|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findById|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findByVariantASIN|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findByVariantSlug|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.update|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findProduct|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.updateVariantProduct|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findTotalCount|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findAllBySkipAndLimit|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.addZohoIdMatchedProductBySKU|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.updateZohoDetailsByItemId|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.fetchItemWithOutId|||{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository.findZohoItemIdFromASIN",
+    "node_count": 15,
+    "types": "class|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method|||method"
+  },
+  {
+    "repo": "harrir-backend-products-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\SourceConfigController.ts",
+    "ids": "{harrir-backend-products-service}/src/controllers/SourceConfigController.ts#SourceConfigController|||{harrir-backend-products-service}/src/controllers/SourceConfigController.ts#SourceConfigController.repository|||{harrir-backend-products-service}/src/controllers/SourceConfigController.ts#SourceConfigController.establishDBConnection|||{harrir-backend-products-service}/src/controllers/SourceConfigController.ts#SourceConfigController.closeConnections|||{harrir-backend-products-service}/src/controllers/SourceConfigController.ts#SourceConfigController.createOrUpdateConfig|||{harrir-backend-products-service}/src/controllers/SourceConfigController.ts#SourceConfigController.getConfigs",
+    "node_count": 6,
+    "types": "class|||variable|||method|||method|||method|||method"
+  },
+  {
+    "repo": "harrir-backend-user-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\functions\\api\\v1\\GetAddressDetails\\schema.ts",
+    "ids": "{harrir-backend-user-service}/src/functions/api/v1/GetAddressDetails/schema.ts#GetAddressDetails.schema.default",
+    "node_count": 1,
+    "types": "constant"
+  },
+  {
+    "repo": "harrir-web-admin",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\lib\\firebase-server.ts",
+    "ids": "{harrir-web-admin}/lib/firebase-server.ts#firebaseServerConfig|||{harrir-web-admin}/lib/firebase-server.ts#firebaseServerApp|||{harrir-web-admin}/lib/firebase-server.ts#serverDb",
+    "node_count": 3,
+    "types": "constant|||constant|||constant"
+  },
+  {
+    "repo": "harrir-express-backend",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\middleware\\adminAuth.ts",
+    "ids": "{harrir-express-backend}/src/middleware/adminAuth.ts#adminAuth",
+    "node_count": 1,
+    "types": "middleware"
+  },
+  {
+    "repo": "harrir-backend-order-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\repositories\\PromoCodeRepository.ts",
+    "ids": "{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository|||{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.findById|||{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.create|||{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.update|||{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.findByPromocode|||{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.updateByPromocode",
+    "node_count": 6,
+    "types": "class|||method|||method|||method|||method|||method"
+  },
+  {
+    "repo": "harrir-backend-zoho-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateUserAddressInZohoSQS\\app.ts",
+    "ids": "{harrir-backend-zoho-service}/src/functions/CreateUserAddressInZohoSQS/app.ts#controller|||{harrir-backend-zoho-service}/src/functions/CreateUserAddressInZohoSQS/app.ts#AddUserAddressIntoZohoSQS|||{harrir-backend-zoho-service}/src/functions/CreateUserAddressInZohoSQS/app.ts#lambdaHandler",
+    "node_count": 3,
+    "types": "variable|||variable|||function"
+  },
+  {
+    "repo": "harrir-backend-user-service",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\functions\\api\\v1\\GetUserNotificationPreferences\\app.ts",
+    "ids": "{harrir-backend-user-service}/src/functions/api/v1/GetUserNotificationPreferences/app.ts#controller|||{harrir-backend-user-service}/src/functions/api/v1/GetUserNotificationPreferences/app.ts#lambdaHandler",
+    "node_count": 2,
+    "types": "variable|||function"
+  }
+]

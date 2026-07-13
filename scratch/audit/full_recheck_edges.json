@@ -1,0 +1,1938 @@
+{
+  "harrir-backend-order-service": [
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/WishListController.ts#WishListController",
+        "name": "WishListController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\WishListController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/controllers/WishListController.ts#WishListController.getResponseData",
+        "name": "getResponseData",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\WishListController.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/WishListController.ts#WishListController",
+      "target_id": "{harrir-backend-order-service}/src/controllers/WishListController.ts#WishListController.getResponseData"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/PromoCodeController.ts#PromoCodeController",
+        "name": "PromoCodeController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\PromoCodeController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.findById",
+        "name": "findById",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\repositories\\PromoCodeRepository.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/PromoCodeController.ts#PromoCodeController",
+      "target_id": "{harrir-backend-order-service}/src/repositories/PromoCodeRepository.ts#PromoCodeRepository.findById"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/shared/CacheService.ts#CacheService",
+        "name": "CacheService",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\shared\\CacheService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/shared/CacheService.ts#CacheService.get",
+        "name": "get",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\shared\\CacheService.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/shared/CacheService.ts#CacheService",
+      "target_id": "{harrir-backend-order-service}/src/shared/CacheService.ts#CacheService.get"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController",
+        "name": "BoxyOrderController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\BoxyOrderController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController.getParameterValue",
+        "name": "getParameterValue",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\BoxyOrderController.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController",
+      "target_id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController.getParameterValue"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/functions/GetCart/app.ts#lambdaHandler",
+        "name": "lambdaHandler",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\GetCart\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/functions/GetCart/app.ts#controller",
+        "name": "controller",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\GetCart\\app.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/functions/GetCart/app.ts#lambdaHandler",
+      "target_id": "{harrir-backend-order-service}/src/functions/GetCart/app.ts#controller"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/services/OrderLiveTrackingService.ts#normalizeBoxyStatusKey",
+        "name": "normalizeBoxyStatusKey",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\services\\OrderLiveTrackingService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/services/OrderLiveTrackingService.ts#normalizeStringish",
+        "name": "normalizeStringish",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\services\\OrderLiveTrackingService.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/services/OrderLiveTrackingService.ts#normalizeBoxyStatusKey",
+      "target_id": "{harrir-backend-order-service}/src/services/OrderLiveTrackingService.ts#normalizeStringish"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController.getParameterValue",
+        "name": "getParameterValue",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\BoxyOrderController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController.getRequiredValue",
+        "name": "getRequiredValue",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\BoxyOrderController.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController.getParameterValue",
+      "target_id": "{harrir-backend-order-service}/src/controllers/BoxyOrderController.ts#BoxyOrderController.getRequiredValue"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/repositories/ReturnRequestRepository.ts#ReturnRequestRepository.lineKeyFromProduct",
+        "name": "lineKeyFromProduct",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\repositories\\ReturnRequestRepository.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/repositories/ReturnRequestRepository.ts#AnyRecord",
+        "name": "AnyRecord",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\repositories\\ReturnRequestRepository.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/repositories/ReturnRequestRepository.ts#ReturnRequestRepository.lineKeyFromProduct",
+      "target_id": "{harrir-backend-order-service}/src/repositories/ReturnRequestRepository.ts#AnyRecord"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/functions/GetWishList/app.ts#lambdaHandler",
+        "name": "lambdaHandler",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\GetWishList\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/functions/GetWishList/app.ts#controller",
+        "name": "controller",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\GetWishList\\app.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/functions/GetWishList/app.ts#lambdaHandler",
+      "target_id": "{harrir-backend-order-service}/src/functions/GetWishList/app.ts#controller"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController",
+        "name": "CartController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\CartController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController.getEnrichedCart",
+        "name": "getEnrichedCart",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\CartController.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController",
+      "target_id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController.getEnrichedCart"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController.removeCartItem",
+        "name": "removeCartItem",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\CartController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/shared/CacheService.ts#CacheService",
+        "name": "CacheService",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\shared\\CacheService.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController.removeCartItem",
+      "target_id": "{harrir-backend-order-service}/src/shared/CacheService.ts#CacheService"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/PromoCodeController.ts#PromoCodeController.addPromocode",
+        "name": "addPromocode",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\PromoCodeController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/controllers/PromoCodeController.ts#PromoCodeController.promoCodeRepository",
+        "name": "promoCodeRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\PromoCodeController.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/PromoCodeController.ts#PromoCodeController.addPromocode",
+      "target_id": "{harrir-backend-order-service}/src/controllers/PromoCodeController.ts#PromoCodeController.promoCodeRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/WishListController.ts#WishListController.addOrWishListItem",
+        "name": "addOrWishListItem",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\WishListController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/shared/db-connection.ts#establishDBConnection",
+        "name": "establishDBConnection",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\shared\\db-connection.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/WishListController.ts#WishListController.addOrWishListItem",
+      "target_id": "{harrir-backend-order-service}/src/shared/db-connection.ts#establishDBConnection"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/UpdateProductInCartController.ts#UpdateProductInCartController.getResponseData",
+        "name": "getResponseData",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\UpdateProductInCartController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/controllers/UpdateProductInCartController.ts#UpdateProductInCartController.languageRepository",
+        "name": "languageRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\UpdateProductInCartController.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/UpdateProductInCartController.ts#UpdateProductInCartController.getResponseData",
+      "target_id": "{harrir-backend-order-service}/src/controllers/UpdateProductInCartController.ts#UpdateProductInCartController.languageRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController",
+        "name": "CartController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\controllers\\CartController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-order-service}/src/shared/db-connection.ts#closeDBConnection",
+        "name": "closeDBConnection",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\shared\\db-connection.ts"
+      },
+      "source_id": "{harrir-backend-order-service}/src/controllers/CartController.ts#CartController",
+      "target_id": "{harrir-backend-order-service}/src/shared/db-connection.ts#closeDBConnection"
+    }
+  ],
+  "harrir-backend-products-service": [
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ElasticProduct",
+        "name": "ElasticProduct",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ProductAttributes",
+        "name": "ProductAttributes",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ElasticProduct",
+      "target_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ProductAttributes"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/controllers/CategoryController.ts#CategoryController.getAttributeByCategoryV2",
+        "name": "getAttributeByCategoryV2",
+        "type": "api_endpoint",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\CategoryController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/controllers/CategoryController.ts#formatCategoryAndBrands",
+        "name": "formatCategoryAndBrands",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\CategoryController.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/controllers/CategoryController.ts#CategoryController.getAttributeByCategoryV2",
+      "target_id": "{harrir-backend-products-service}/src/controllers/CategoryController.ts#formatCategoryAndBrands"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/services/PricingConfigService.ts#PricingConfigService.invalidateCache",
+        "name": "invalidateCache",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\services\\PricingConfigService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/services/PricingConfigService.ts#PricingConfigService.CATEGORY_CACHE_KEY",
+        "name": "CATEGORY_CACHE_KEY",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\services\\PricingConfigService.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/services/PricingConfigService.ts#PricingConfigService.invalidateCache",
+      "target_id": "{harrir-backend-products-service}/src/services/PricingConfigService.ts#PricingConfigService.CATEGORY_CACHE_KEY"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ElasticProduct",
+        "name": "ElasticProduct",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#Category",
+        "name": "Category",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ElasticProduct",
+      "target_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#Category"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/functions/SearchProductsOffsetFiltersTest/app.ts#searchProductsOffsetFiltersInMemory",
+        "name": "searchProductsOffsetFiltersInMemory",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\SearchProductsOffsetFiltersTest\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/functions/SearchProductsOffsetFiltersTest/app.ts#controller",
+        "name": "controller",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\SearchProductsOffsetFiltersTest\\app.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/functions/SearchProductsOffsetFiltersTest/app.ts#searchProductsOffsetFiltersInMemory",
+      "target_id": "{harrir-backend-products-service}/src/functions/SearchProductsOffsetFiltersTest/app.ts#controller"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController.processCategoryChange",
+        "name": "processCategoryChange",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ProductController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController.productRepository",
+        "name": "productRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ProductController.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController.processCategoryChange",
+      "target_id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController.productRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController",
+        "name": "ElasticController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ElasticController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/repositories/CategoryRepository.ts#CategoryRepository.findAllBySkipAndLimit",
+        "name": "findAllBySkipAndLimit",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\repositories\\CategoryRepository.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController",
+      "target_id": "{harrir-backend-products-service}/src/repositories/CategoryRepository.ts#CategoryRepository.findAllBySkipAndLimit"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/functions/GetRecommendedProducts/app.ts#getRecommendedProducts",
+        "name": "getRecommendedProducts",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\GetRecommendedProducts\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/functions/GetRecommendedProducts/app.ts#controller",
+        "name": "controller",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\GetRecommendedProducts\\app.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/functions/GetRecommendedProducts/app.ts#getRecommendedProducts",
+      "target_id": "{harrir-backend-products-service}/src/functions/GetRecommendedProducts/app.ts#controller"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController",
+        "name": "ProductController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ProductController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController.wishlistRepository",
+        "name": "wishlistRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ProductController.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController",
+      "target_id": "{harrir-backend-products-service}/src/controllers/ProductController.ts#ProductController.wishlistRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/services/PricingService.ts#PricingService.constructor",
+        "name": "constructor",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\services\\PricingService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/services/PricingConfigService.ts#CommissionTier",
+        "name": "CommissionTier",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\services\\PricingConfigService.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/services/PricingService.ts#PricingService.constructor",
+      "target_id": "{harrir-backend-products-service}/src/services/PricingConfigService.ts#CommissionTier"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ElasticProduct",
+        "name": "ElasticProduct",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ProductAttributesTransaltions",
+        "name": "ProductAttributesTransaltions",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ElasticProduct",
+      "target_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#ProductAttributesTransaltions"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController",
+        "name": "ElasticController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ElasticController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController.getSEOByASIN",
+        "name": "getSEOByASIN",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ElasticController.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController",
+      "target_id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController.getSEOByASIN"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#Variant",
+        "name": "Variant",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#Price",
+        "name": "Price",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#Variant",
+      "target_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#Price"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController.indexSearchResult",
+        "name": "indexSearchResult",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\ElasticController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#searchDataInfo",
+        "name": "searchDataInfo",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\interfaces\\IElasticProduct.d.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/controllers/ElasticController.ts#ElasticController.indexSearchResult",
+      "target_id": "{harrir-backend-products-service}/src/interfaces/IElasticProduct.d.ts#searchDataInfo"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-products-service}/src/functions/GetCategory/app.ts#getCategory",
+        "name": "getCategory",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\GetCategory\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-products-service}/src/functions/GetCategory/app.ts#controller",
+        "name": "controller",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\GetCategory\\app.ts"
+      },
+      "source_id": "{harrir-backend-products-service}/src/functions/GetCategory/app.ts#getCategory",
+      "target_id": "{harrir-backend-products-service}/src/functions/GetCategory/app.ts#controller"
+    }
+  ],
+  "harrir-backend-user-service": [
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/QiPaymentController.ts#QiPaymentController.getCards",
+        "name": "getCards",
+        "type": "api_endpoint",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\QiPaymentController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/QiPaymentController.ts#QiPaymentController.closeConnections",
+        "name": "closeConnections",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\QiPaymentController.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/QiPaymentController.ts#QiPaymentController.getCards",
+      "target_id": "{harrir-backend-user-service}/src/controllers/api/v1/QiPaymentController.ts#QiPaymentController.closeConnections"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/AccountDeletionService.ts#revokeProviderToken",
+        "name": "revokeProviderToken",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\AccountDeletionService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/AccountDeletionService.ts#revokeAppleToken",
+        "name": "revokeAppleToken",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\AccountDeletionService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/services/api/v1/AccountDeletionService.ts#revokeProviderToken",
+      "target_id": "{harrir-backend-user-service}/src/services/api/v1/AccountDeletionService.ts#revokeAppleToken"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/DebugController.ts#DebugController.healthCheckRedis",
+        "name": "healthCheckRedis",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\DebugController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService.set",
+        "name": "set",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\CacheService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/DebugController.ts#DebugController.healthCheckRedis",
+      "target_id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService.set"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/UserNotificationReceiptService.ts#upsertUserNotificationReceipts",
+        "name": "upsertUserNotificationReceipts",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\UserNotificationReceiptService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/UserNotificationReceiptService.ts#UserNotificationReceiptDocument",
+        "name": "UserNotificationReceiptDocument",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\UserNotificationReceiptService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/services/api/v1/UserNotificationReceiptService.ts#upsertUserNotificationReceipts",
+      "target_id": "{harrir-backend-user-service}/src/services/api/v1/UserNotificationReceiptService.ts#UserNotificationReceiptDocument"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/UserController.ts#UserController.getAddress",
+        "name": "getAddress",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\UserController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService",
+        "name": "CacheService",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\CacheService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/UserController.ts#UserController.getAddress",
+      "target_id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService.get",
+        "name": "get",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\CacheService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService.getClient",
+        "name": "getClient",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\CacheService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService.get",
+      "target_id": "{harrir-backend-user-service}/src/services/CacheService.ts#CacheService.getClient"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/VerifySocialUserController.ts#VerifySocialUserController.verifySocialUser",
+        "name": "verifySocialUser",
+        "type": "api_endpoint",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\VerifySocialUserController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/VerifySocialUserController.ts#VerifySocialUserController.closeConnections",
+        "name": "closeConnections",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\VerifySocialUserController.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/VerifySocialUserController.ts#VerifySocialUserController.verifySocialUser",
+      "target_id": "{harrir-backend-user-service}/src/controllers/api/v1/VerifySocialUserController.ts#VerifySocialUserController.closeConnections"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/LinkSocialUserController.ts#LinkSocialUserController",
+        "name": "LinkSocialUserController",
+        "type": "nest_controller",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\LinkSocialUserController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/LinkSocialUserController.ts#LinkSocialUserController.establishDBConnection",
+        "name": "establishDBConnection",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\LinkSocialUserController.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/LinkSocialUserController.ts#LinkSocialUserController",
+      "target_id": "{harrir-backend-user-service}/src/controllers/api/v1/LinkSocialUserController.ts#LinkSocialUserController.establishDBConnection"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/LanguageSettingController.ts#LanguageSetingController.createLanuageSetting",
+        "name": "createLanuageSetting",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\LanguageSettingController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/LanguageSettingController.ts#LanguageSetingController.getResponseData",
+        "name": "getResponseData",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\LanguageSettingController.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/LanguageSettingController.ts#LanguageSetingController.createLanuageSetting",
+      "target_id": "{harrir-backend-user-service}/src/controllers/api/v1/LanguageSettingController.ts#LanguageSetingController.getResponseData"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/CheckoutPaymentController.ts#CheckoutPaymentController.queryPayment",
+        "name": "queryPayment",
+        "type": "api_endpoint",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\CheckoutPaymentController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/UtilityNotificationDispatchService.ts#establishDBConnection",
+        "name": "establishDBConnection",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\UtilityNotificationDispatchService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/CheckoutPaymentController.ts#CheckoutPaymentController.queryPayment",
+      "target_id": "{harrir-backend-user-service}/src/services/api/v1/UtilityNotificationDispatchService.ts#establishDBConnection"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/OtpController.ts#OtpController",
+        "name": "OtpController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\OtpController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/OtpController.ts#OtpController.otpEventRepository",
+        "name": "otpEventRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\OtpController.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/OtpController.ts#OtpController",
+      "target_id": "{harrir-backend-user-service}/src/controllers/api/v1/OtpController.ts#OtpController.otpEventRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/UtilityNotificationDispatchService.ts#insertDelivery",
+        "name": "insertDelivery",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\UtilityNotificationDispatchService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/UtilityNotificationDispatchService.ts#COLLECTIONS",
+        "name": "COLLECTIONS",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\UtilityNotificationDispatchService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/services/api/v1/UtilityNotificationDispatchService.ts#insertDelivery",
+      "target_id": "{harrir-backend-user-service}/src/services/api/v1/UtilityNotificationDispatchService.ts#COLLECTIONS"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/PaymentController.ts#PaymentController",
+        "name": "PaymentController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\PaymentController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/controllers/api/v1/PaymentController.ts#PaymentController.toObjectIdOrRaw",
+        "name": "toObjectIdOrRaw",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\PaymentController.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/controllers/api/v1/PaymentController.ts#PaymentController",
+      "target_id": "{harrir-backend-user-service}/src/controllers/api/v1/PaymentController.ts#PaymentController.toObjectIdOrRaw"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/AlipayService.ts#AlipayService.init",
+        "name": "init",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\AlipayService.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/services/api/v1/AlipayService.ts#AlipayService.clientId",
+        "name": "clientId",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\AlipayService.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/services/api/v1/AlipayService.ts#AlipayService.init",
+      "target_id": "{harrir-backend-user-service}/src/services/api/v1/AlipayService.ts#AlipayService.clientId"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-user-service}/src/functions/api/v1/UpdateUserPreferences/app.ts#lambdaHandler",
+        "name": "lambdaHandler",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\functions\\api\\v1\\UpdateUserPreferences\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-user-service}/src/middleware/authorizationMiddleware.ts#authMiddleware",
+        "name": "authMiddleware",
+        "type": "middleware",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\middleware\\authorizationMiddleware.ts"
+      },
+      "source_id": "{harrir-backend-user-service}/src/functions/api/v1/UpdateUserPreferences/app.ts#lambdaHandler",
+      "target_id": "{harrir-backend-user-service}/src/middleware/authorizationMiddleware.ts#authMiddleware"
+    }
+  ],
+  "harrir-backend-zoho-service": [
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoWebhookController.ts#ZohoWebhookController.updateZohoItemDetails",
+        "name": "updateZohoItemDetails",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoWebhookController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoWebhookController.ts#ZohoWebhookController.productRepository",
+        "name": "productRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoWebhookController.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/controllers/ZohoWebhookController.ts#ZohoWebhookController.updateZohoItemDetails",
+      "target_id": "{harrir-backend-zoho-service}/src/controllers/ZohoWebhookController.ts#ZohoWebhookController.productRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#createZohoCustomer",
+        "name": "createZohoCustomer",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#splitName",
+        "name": "splitName",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#createZohoCustomer",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#splitName"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#deleteInvoiceInZohoBooksForVoidedOrder",
+        "name": "deleteInvoiceInZohoBooksForVoidedOrder",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#getRequiredEnv",
+        "name": "getRequiredEnv",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#deleteInvoiceInZohoBooksForVoidedOrder",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#getRequiredEnv"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/ZohoOrderStatusWebhook/app.ts#lambdaHandler",
+        "name": "lambdaHandler",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\ZohoOrderStatusWebhook\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/ZohoOrderStatusWebhook/app.ts#updateZohoOrderStatus",
+        "name": "updateZohoOrderStatus",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\ZohoOrderStatusWebhook\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/ZohoOrderStatusWebhook/app.ts#lambdaHandler",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/ZohoOrderStatusWebhook/app.ts#updateZohoOrderStatus"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#extractSourceTypeFromProduct",
+        "name": "extractSourceTypeFromProduct",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#isRecord",
+        "name": "isRecord",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#extractSourceTypeFromProduct",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#isRecord"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController",
+        "name": "ZohoItemController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.cronDetailsRepository",
+        "name": "cronDetailsRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController",
+      "target_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.cronDetailsRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController",
+        "name": "ZohoItemController",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/helpers/index.ts#addOrUpdateCustomersInZoho",
+        "name": "addOrUpdateCustomersInZoho",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\helpers\\index.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController",
+      "target_id": "{harrir-backend-zoho-service}/src/helpers/index.ts#addOrUpdateCustomersInZoho"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoWebhookController.ts#ZohoWebhookController.productRepository",
+        "name": "productRepository",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoWebhookController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository",
+        "name": "ProductRepository",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\repositories\\ProductRepository.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/controllers/ZohoWebhookController.ts#ZohoWebhookController.productRepository",
+      "target_id": "{harrir-backend-zoho-service}/src/repositories/ProductRepository.ts#ProductRepository"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/AddAddressIntoZoho/app.ts#lambdaHandler",
+        "name": "lambdaHandler",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\AddAddressIntoZoho\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/AddAddressIntoZoho/app.ts#AddAddressIntoZoho",
+        "name": "AddAddressIntoZoho",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\AddAddressIntoZoho\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/AddAddressIntoZoho/app.ts#lambdaHandler",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/AddAddressIntoZoho/app.ts#AddAddressIntoZoho"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.AddProductInZohoJob",
+        "name": "AddProductInZohoJob",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.closeConnections",
+        "name": "closeConnections",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.AddProductInZohoJob",
+      "target_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.closeConnections"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#createBillsInZohoBooksBySource",
+        "name": "createBillsInZohoBooksBySource",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#normalizeSourceType",
+        "name": "normalizeSourceType",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#createBillsInZohoBooksBySource",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#normalizeSourceType"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/repositories/CronDetailsRepository.ts#CronDetailsRepository",
+        "name": "CronDetailsRepository",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\repositories\\CronDetailsRepository.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/interfaces/index.ts#ICronDetails",
+        "name": "ICronDetails",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\interfaces\\index.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/repositories/CronDetailsRepository.ts#CronDetailsRepository",
+      "target_id": "{harrir-backend-zoho-service}/src/interfaces/index.ts#ICronDetails"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.createProductInZoho",
+        "name": "createProductInZoho",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.establishDBConnection",
+        "name": "establishDBConnection",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\controllers\\ZohoItemController.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.createProductInZoho",
+      "target_id": "{harrir-backend-zoho-service}/src/controllers/ZohoItemController.ts#ZohoItemController.establishDBConnection"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#resolveInvoiceDiscountAmount",
+        "name": "resolveInvoiceDiscountAmount",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#InvoiceQueueMessage",
+        "name": "InvoiceQueueMessage",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#resolveInvoiceDiscountAmount",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#InvoiceQueueMessage"
+    },
+    {
+      "source": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#persistZohoCustomerIdInMongo",
+        "name": "persistZohoCustomerIdInMongo",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "target": {
+        "id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#parseObjectId",
+        "name": "parseObjectId",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\functions\\CreateInvoiceInZohoSQS\\app.ts"
+      },
+      "source_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#persistZohoCustomerIdInMongo",
+      "target_id": "{harrir-backend-zoho-service}/src/functions/CreateInvoiceInZohoSQS/app.ts#parseObjectId"
+    }
+  ],
+  "harrir-express-backend": [
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/MyLookController.ts#getAdminPost",
+        "name": "getAdminPost",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\MyLookController.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/MyLookController.ts#parseErrorMessage",
+        "name": "parseErrorMessage",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\MyLookController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/MyLookController.ts#getAdminPost",
+      "target_id": "{harrir-express-backend}/src/controllers/MyLookController.ts#parseErrorMessage"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/service/notificationService.ts#DEFAULT_NOTIFICATION_TYPES",
+        "name": "DEFAULT_NOTIFICATION_TYPES",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\service\\notificationService.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/service/notificationService.ts#TopicId",
+        "name": "TopicId",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\service\\notificationService.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/service/notificationService.ts#DEFAULT_NOTIFICATION_TYPES",
+      "target_id": "{harrir-express-backend}/src/service/notificationService.ts#TopicId"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/routes/returnRequests.ts#router.get./:return_request_id",
+        "name": "GET /:return_request_id",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\routes\\returnRequests.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#listReturnRequests",
+        "name": "listReturnRequests",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\ReturnRequestController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/routes/returnRequests.ts#router.get./:return_request_id",
+      "target_id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#listReturnRequests"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/helper/homepage.ts#collectSectionImages",
+        "name": "collectSectionImages",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\helper\\homepage.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/types/homepage.types.ts#HomepageSection",
+        "name": "HomepageSection",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\types\\homepage.types.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/helper/homepage.ts#collectSectionImages",
+      "target_id": "{harrir-express-backend}/src/types/homepage.types.ts#HomepageSection"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#approveReturnRequestProduct",
+        "name": "approveReturnRequestProduct",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\ReturnRequestController.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#parseErrorStatus",
+        "name": "parseErrorStatus",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\ReturnRequestController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#approveReturnRequestProduct",
+      "target_id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#parseErrorStatus"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/BoxyWebhookController.ts#isAuthorizedWebhook",
+        "name": "isAuthorizedWebhook",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\BoxyWebhookController.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/BoxyWebhookController.ts#normalizeStringish",
+        "name": "normalizeStringish",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\BoxyWebhookController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/BoxyWebhookController.ts#isAuthorizedWebhook",
+      "target_id": "{harrir-express-backend}/src/controllers/BoxyWebhookController.ts#normalizeStringish"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/homepage.controller.ts#homepage.controller.enrichSectionWithProducts",
+        "name": "enrichSectionWithProducts",
+        "type": "helper",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\homepage.controller.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/service/awsService.ts#uploadFileToS3",
+        "name": "uploadFileToS3",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\service\\awsService.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/homepage.controller.ts#homepage.controller.enrichSectionWithProducts",
+      "target_id": "{harrir-express-backend}/src/service/awsService.ts#uploadFileToS3"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/models/homepage.repository.ts#HomepageRepository.getSectionById",
+        "name": "getSectionById",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\models\\homepage.repository.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/config/mongodb.ts#getDb",
+        "name": "getDb",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\config\\mongodb.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/models/homepage.repository.ts#HomepageRepository.getSectionById",
+      "target_id": "{harrir-express-backend}/src/config/mongodb.ts#getDb"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#rejectReturnRequestProduct",
+        "name": "rejectReturnRequestProduct",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\ReturnRequestController.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#parseErrorMessage",
+        "name": "parseErrorMessage",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\ReturnRequestController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#rejectReturnRequestProduct",
+      "target_id": "{harrir-express-backend}/src/controllers/ReturnRequestController.ts#parseErrorMessage"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/models/homepage.repository.ts#HomepageRepository.getAllSections",
+        "name": "getAllSections",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\models\\homepage.repository.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/config/mongodb.ts#getDb",
+        "name": "getDb",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\config\\mongodb.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/models/homepage.repository.ts#HomepageRepository.getAllSections",
+      "target_id": "{harrir-express-backend}/src/config/mongodb.ts#getDb"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/OrderController.ts#OrderController.receiveInboundItems",
+        "name": "receiveInboundItems",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\OrderController.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/OrderController.ts#uploadInboundReceiptImages",
+        "name": "uploadInboundReceiptImages",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\OrderController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/OrderController.ts#OrderController.receiveInboundItems",
+      "target_id": "{harrir-express-backend}/src/controllers/OrderController.ts#uploadInboundReceiptImages"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/routes/admin.ts#router.get_/me",
+        "name": "GET /me",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\routes\\admin.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/middleware/adminAuth.ts#adminAuth",
+        "name": "adminAuth",
+        "type": "middleware",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\middleware\\adminAuth.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/routes/admin.ts#router.get_/me",
+      "target_id": "{harrir-express-backend}/src/middleware/adminAuth.ts#adminAuth"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/coupon.controller.ts#listCoupons",
+        "name": "listCoupons",
+        "type": "route_handler",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\coupon.controller.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/coupon.controller.ts#parseErrorStatus",
+        "name": "parseErrorStatus",
+        "type": "util_function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\coupon.controller.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/coupon.controller.ts#listCoupons",
+      "target_id": "{harrir-express-backend}/src/controllers/coupon.controller.ts#parseErrorStatus"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/controllers/OrderController.ts#OrderController",
+        "name": "OrderController",
+        "type": "nest_controller",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\OrderController.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/controllers/OrderController.ts#addDays",
+        "name": "addDays",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\controllers\\OrderController.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/controllers/OrderController.ts#OrderController",
+      "target_id": "{harrir-express-backend}/src/controllers/OrderController.ts#addDays"
+    },
+    {
+      "source": {
+        "id": "{harrir-express-backend}/src/service/aiOrderService.ts#processAiOrder",
+        "name": "processAiOrder",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\service\\aiOrderService.ts"
+      },
+      "target": {
+        "id": "{harrir-express-backend}/src/service/zohoInvoiceService.ts#isProductionEnvironment",
+        "name": "isProductionEnvironment",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\service\\zohoInvoiceService.ts"
+      },
+      "source_id": "{harrir-express-backend}/src/service/aiOrderService.ts#processAiOrder",
+      "target_id": "{harrir-express-backend}/src/service/zohoInvoiceService.ts#isProductionEnvironment"
+    }
+  ],
+  "harrir-mini-app": [
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/spotlight/index.js#SpotlightComponent",
+        "name": "SpotlightComponent",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\spotlight\\index.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/deeplinkParser.js#navigateToDeeplink",
+        "name": "navigateToDeeplink",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\deeplinkParser.js"
+      },
+      "source_id": "{harrir-mini-app}/components/spotlight/index.js#SpotlightComponent",
+      "target_id": "{harrir-mini-app}/utils/deeplinkParser.js#navigateToDeeplink"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/product-card/product-card.js#product-card._handleWishlist",
+        "name": "_handleWishlist",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\product-card\\product-card.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/data/services/OrdersService.js#OrdersService",
+        "name": "OrdersService",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\data\\services\\OrdersService.js"
+      },
+      "source_id": "{harrir-mini-app}/components/product-card/product-card.js#product-card._handleWishlist",
+      "target_id": "{harrir-mini-app}/data/services/OrdersService.js#OrdersService"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/pages/profile/index.js#Page.onLoginTap",
+        "name": "onLoginTap",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\profile\\index.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/notificationManager.js#notificationManager",
+        "name": "notificationManager",
+        "type": "utility",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\notificationManager.js"
+      },
+      "source_id": "{harrir-mini-app}/pages/profile/index.js#Page.onLoginTap",
+      "target_id": "{harrir-mini-app}/utils/notificationManager.js#notificationManager"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/hero/index.js#hero_component",
+        "name": "Component",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\hero\\index.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/deeplinkParser.js#navigateToDeeplink",
+        "name": "navigateToDeeplink",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\deeplinkParser.js"
+      },
+      "source_id": "{harrir-mini-app}/components/hero/index.js#hero_component",
+      "target_id": "{harrir-mini-app}/utils/deeplinkParser.js#navigateToDeeplink"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/pages/payment-result/index.js#ordersService",
+        "name": "ordersService",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\payment-result\\index.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/pages/payment-result/index.js#Page.data",
+        "name": "data",
+        "type": "variable",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\payment-result\\index.js"
+      },
+      "source_id": "{harrir-mini-app}/pages/payment-result/index.js#ordersService",
+      "target_id": "{harrir-mini-app}/pages/payment-result/index.js#Page.data"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/utils/i18n.js#setLocale",
+        "name": "setLocale",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\i18n.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/i18n.js#getLocale",
+        "name": "getLocale",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\i18n.js"
+      },
+      "source_id": "{harrir-mini-app}/utils/i18n.js#setLocale",
+      "target_id": "{harrir-mini-app}/utils/i18n.js#getLocale"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/pages/help-support/index.js#Page.onShow",
+        "name": "onShow",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\help-support\\index.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/navigation.js#setNavigationTitleByKey",
+        "name": "setNavigationTitleByKey",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\navigation.js"
+      },
+      "source_id": "{harrir-mini-app}/pages/help-support/index.js#Page.onShow",
+      "target_id": "{harrir-mini-app}/utils/navigation.js#setNavigationTitleByKey"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/product-card/product-card.js#product-card.handleTouchEnd",
+        "name": "handleTouchEnd",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\product-card\\product-card.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/components/product-card/product-card.js#product-card.onCardTap",
+        "name": "onCardTap",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\product-card\\product-card.js"
+      },
+      "source_id": "{harrir-mini-app}/components/product-card/product-card.js#product-card.handleTouchEnd",
+      "target_id": "{harrir-mini-app}/components/product-card/product-card.js#product-card.onCardTap"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/add-to-cart-bar/add-to-cart-bar.js#add-to-cart-bar.js::AddToCartBarComponent",
+        "name": "AddToCartBarComponent",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\add-to-cart-bar\\add-to-cart-bar.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/data/const.js#asset",
+        "name": "asset",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\data\\const.js"
+      },
+      "source_id": "{harrir-mini-app}/components/add-to-cart-bar/add-to-cart-bar.js#add-to-cart-bar.js::AddToCartBarComponent",
+      "target_id": "{harrir-mini-app}/data/const.js#asset"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/app.js#App.unSubscribeCart",
+        "name": "unSubscribeCart",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\app.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/i18n.js#setLocale",
+        "name": "setLocale",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\i18n.js"
+      },
+      "source_id": "{harrir-mini-app}/app.js#App.unSubscribeCart",
+      "target_id": "{harrir-mini-app}/utils/i18n.js#setLocale"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/pages/cart/index.js#CartPage",
+        "name": "CartPage",
+        "type": "react_page",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\cart\\index.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/i18n.js#getDir",
+        "name": "getDir",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\i18n.js"
+      },
+      "source_id": "{harrir-mini-app}/pages/cart/index.js#CartPage",
+      "target_id": "{harrir-mini-app}/utils/i18n.js#getDir"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/data/services/UserService.js#UserService.createQiPayment",
+        "name": "createQiPayment",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\data\\services\\UserService.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/data/services/BaseService.js#BaseService",
+        "name": "BaseService",
+        "type": "class",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\data\\services\\BaseService.js"
+      },
+      "source_id": "{harrir-mini-app}/data/services/UserService.js#UserService.createQiPayment",
+      "target_id": "{harrir-mini-app}/data/services/BaseService.js#BaseService"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/ai-stylist/ai-stylist.js#Component",
+        "name": "Component",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\ai-stylist\\ai-stylist.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/data/const.js#asset",
+        "name": "asset",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\data\\const.js"
+      },
+      "source_id": "{harrir-mini-app}/components/ai-stylist/ai-stylist.js#Component",
+      "target_id": "{harrir-mini-app}/data/const.js#asset"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/filter-modal/filter-modal.js#FilterModalComponent._notifyChangeDebounced",
+        "name": "_notifyChangeDebounced",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\filter-modal\\filter-modal.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/components/filter-modal/filter-modal.js#FilterModalComponent._notifyChange",
+        "name": "_notifyChange",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\filter-modal\\filter-modal.js"
+      },
+      "source_id": "{harrir-mini-app}/components/filter-modal/filter-modal.js#FilterModalComponent._notifyChangeDebounced",
+      "target_id": "{harrir-mini-app}/components/filter-modal/filter-modal.js#FilterModalComponent._notifyChange"
+    },
+    {
+      "source": {
+        "id": "{harrir-mini-app}/components/add-to-cart-bar/add-to-cart-bar.js#add-to-cart-bar.js::AddToCartBarComponent",
+        "name": "AddToCartBarComponent",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\add-to-cart-bar\\add-to-cart-bar.js"
+      },
+      "target": {
+        "id": "{harrir-mini-app}/utils/i18n.js#getLang",
+        "name": "getLang",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\utils\\i18n.js"
+      },
+      "source_id": "{harrir-mini-app}/components/add-to-cart-bar/add-to-cart-bar.js#add-to-cart-bar.js::AddToCartBarComponent",
+      "target_id": "{harrir-mini-app}/utils/i18n.js#getLang"
+    }
+  ],
+  "harrir-web": [
+    {
+      "source": {
+        "id": "{harrir-web}/store/api.ts#api.getOnboardingConfig",
+        "name": "getOnboardingConfig",
+        "type": "api_endpoint",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "target": {
+        "id": "{harrir-web}/store/notificationsSlice.ts#notificationsSlice.clearUserNotifications",
+        "name": "clearUserNotifications",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\notificationsSlice.ts"
+      },
+      "source_id": "{harrir-web}/store/api.ts#api.getOnboardingConfig",
+      "target_id": "{harrir-web}/store/notificationsSlice.ts#notificationsSlice.clearUserNotifications"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/category/page.tsx#CategoryPageContent",
+        "name": "CategoryPageContent",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/app/category/category-page-helpers.ts#stableFiltersValue",
+        "name": "stableFiltersValue",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\category-page-helpers.ts"
+      },
+      "source_id": "{harrir-web}/app/category/page.tsx#CategoryPageContent",
+      "target_id": "{harrir-web}/app/category/category-page-helpers.ts#stableFiltersValue"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/store/api.ts#AppliedCouponSnapshot",
+        "name": "AppliedCouponSnapshot",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "target": {
+        "id": "{harrir-web}/store/supportChatSlice.ts#supportChatSlice.setSupportChatActiveSession",
+        "name": "setSupportChatActiveSession",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\supportChatSlice.ts"
+      },
+      "source_id": "{harrir-web}/store/api.ts#AppliedCouponSnapshot",
+      "target_id": "{harrir-web}/store/supportChatSlice.ts#supportChatSlice.setSupportChatActiveSession"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/store/api.ts#api",
+        "name": "api",
+        "type": "nest_provider",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "target": {
+        "id": "{harrir-web}/store/api.ts#extractUserDetailsData",
+        "name": "extractUserDetailsData",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "source_id": "{harrir-web}/store/api.ts#api",
+      "target_id": "{harrir-web}/store/api.ts#extractUserDetailsData"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/dl/[deeplink]/page.tsx#DeeplinkResolverPage",
+        "name": "DeeplinkResolverPage",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\dl\\[deeplink]\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/lib/category-page.ts#getCategoryLookupLink",
+        "name": "getCategoryLookupLink",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\lib\\category-page.ts"
+      },
+      "source_id": "{harrir-web}/app/dl/[deeplink]/page.tsx#DeeplinkResolverPage",
+      "target_id": "{harrir-web}/lib/category-page.ts#getCategoryLookupLink"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/user/onboarding/steps/FeedReadyStep.tsx#FeedReadyStep",
+        "name": "FeedReadyStep",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\user\\onboarding\\steps\\FeedReadyStep.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/i18n/languages.ts#Language",
+        "name": "Language",
+        "type": "enum",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\i18n\\languages.ts"
+      },
+      "source_id": "{harrir-web}/app/user/onboarding/steps/FeedReadyStep.tsx#FeedReadyStep",
+      "target_id": "{harrir-web}/i18n/languages.ts#Language"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/store/api.ts#api",
+        "name": "api",
+        "type": "nest_provider",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "target": {
+        "id": "{harrir-web}/store/api.ts#WishlistResponse",
+        "name": "WishlistResponse",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "source_id": "{harrir-web}/store/api.ts#api",
+      "target_id": "{harrir-web}/store/api.ts#WishlistResponse"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/store/api.ts#LinkCriteriaResponse",
+        "name": "LinkCriteriaResponse",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\api.ts"
+      },
+      "target": {
+        "id": "{harrir-web}/store/notificationsSlice.ts#notificationsSlice.clearUserNotifications",
+        "name": "clearUserNotifications",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\notificationsSlice.ts"
+      },
+      "source_id": "{harrir-web}/store/api.ts#LinkCriteriaResponse",
+      "target_id": "{harrir-web}/store/notificationsSlice.ts#notificationsSlice.clearUserNotifications"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/dl/[deeplink]/page.tsx#getProductDestination",
+        "name": "getProductDestination",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\dl\\[deeplink]\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/app/dl/[deeplink]/page.tsx#normalizePath",
+        "name": "normalizePath",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\dl\\[deeplink]\\page.tsx"
+      },
+      "source_id": "{harrir-web}/app/dl/[deeplink]/page.tsx#getProductDestination",
+      "target_id": "{harrir-web}/app/dl/[deeplink]/page.tsx#normalizePath"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/category/[slug]/page.tsx#resolveCategorySeo",
+        "name": "resolveCategorySeo",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\[slug]\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/app/category/category-page-helpers.ts#findCategoryBySlug",
+        "name": "findCategoryBySlug",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\category-page-helpers.ts"
+      },
+      "source_id": "{harrir-web}/app/category/[slug]/page.tsx#resolveCategorySeo",
+      "target_id": "{harrir-web}/app/category/category-page-helpers.ts#findCategoryBySlug"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/category/category-page-helpers.ts#categoryMatchesSlug",
+        "name": "categoryMatchesSlug",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\category-page-helpers.ts"
+      },
+      "target": {
+        "id": "{harrir-web}/app/category/category-page-helpers.ts#getLocalizedCategoryText",
+        "name": "getLocalizedCategoryText",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\category\\category-page-helpers.ts"
+      },
+      "source_id": "{harrir-web}/app/category/category-page-helpers.ts#categoryMatchesSlug",
+      "target_id": "{harrir-web}/app/category/category-page-helpers.ts#getLocalizedCategoryText"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/dl/[deeplink]/page.tsx#DeeplinkResolverPage",
+        "name": "DeeplinkResolverPage",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\dl\\[deeplink]\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/lib/category-page.ts#buildCategoryPageContextFromCriteria",
+        "name": "buildCategoryPageContextFromCriteria",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\lib\\category-page.ts"
+      },
+      "source_id": "{harrir-web}/app/dl/[deeplink]/page.tsx#DeeplinkResolverPage",
+      "target_id": "{harrir-web}/lib/category-page.ts#buildCategoryPageContextFromCriteria"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/terms-and-conditions/page.tsx#TermsAndConditionsPage",
+        "name": "TermsAndConditionsPage",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\terms-and-conditions\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/app/legal/legal-content.ts#termsAndConditionsContent",
+        "name": "termsAndConditionsContent",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\legal\\legal-content.ts"
+      },
+      "source_id": "{harrir-web}/app/terms-and-conditions/page.tsx#TermsAndConditionsPage",
+      "target_id": "{harrir-web}/app/legal/legal-content.ts#termsAndConditionsContent"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/providers.tsx#CartWishlistBootstrap",
+        "name": "CartWishlistBootstrap",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\providers.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/store/homepageSlice.ts#homepageSlice.hydrateHomepage",
+        "name": "hydrateHomepage",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\homepageSlice.ts"
+      },
+      "source_id": "{harrir-web}/app/providers.tsx#CartWishlistBootstrap",
+      "target_id": "{harrir-web}/store/homepageSlice.ts#homepageSlice.hydrateHomepage"
+    },
+    {
+      "source": {
+        "id": "{harrir-web}/app/components/NotificationPopover.tsx#NotificationPopoverProps",
+        "name": "NotificationPopoverProps",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\components\\NotificationPopover.tsx"
+      },
+      "target": {
+        "id": "{harrir-web}/store/notificationsSlice.ts#UserNotification",
+        "name": "UserNotification",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\notificationsSlice.ts"
+      },
+      "source_id": "{harrir-web}/app/components/NotificationPopover.tsx#NotificationPopoverProps",
+      "target_id": "{harrir-web}/store/notificationsSlice.ts#UserNotification"
+    }
+  ],
+  "harrir-web-admin": [
+    {
+      "source": {
+        "id": "{harrir-web-admin}/store/services/categoryApi.ts#useReorderSubCategoriesMutation",
+        "name": "useReorderSubCategoriesMutation",
+        "type": "react_hook",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\store\\services\\categoryApi.ts"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/components/categories/api.ts#mapApiToCategory",
+        "name": "mapApiToCategory",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\categories\\api.ts"
+      },
+      "source_id": "{harrir-web-admin}/store/services/categoryApi.ts#useReorderSubCategoriesMutation",
+      "target_id": "{harrir-web-admin}/components/categories/api.ts#mapApiToCategory"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/components/coupons/CouponsListTable.tsx#CouponListRow",
+        "name": "CouponListRow",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\coupons\\CouponsListTable.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/components/coupons/CouponsListTable.tsx#CouponStatus",
+        "name": "CouponStatus",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\coupons\\CouponsListTable.tsx"
+      },
+      "source_id": "{harrir-web-admin}/components/coupons/CouponsListTable.tsx#CouponListRow",
+      "target_id": "{harrir-web-admin}/components/coupons/CouponsListTable.tsx#CouponStatus"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/warehouse-management/inbound/InboundOrdersList.tsx#InboundOrdersListProps",
+        "name": "InboundOrdersListProps",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\warehouse-management\\inbound\\InboundOrdersList.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/warehouse-management/inbound/inbound.types.ts#InboundSourceRow",
+        "name": "InboundSourceRow",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\warehouse-management\\inbound\\inbound.types.ts"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/warehouse-management/inbound/InboundOrdersList.tsx#InboundOrdersListProps",
+      "target_id": "{harrir-web-admin}/app/(admin)/warehouse-management/inbound/inbound.types.ts#InboundSourceRow"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/customers/page.tsx#SearchParamsRecord",
+        "name": "SearchParamsRecord",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\customers\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/orders/page.tsx#SearchParamValue",
+        "name": "SearchParamValue",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\orders\\page.tsx"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/customers/page.tsx#SearchParamsRecord",
+      "target_id": "{harrir-web-admin}/app/(admin)/orders/orders/page.tsx#SearchParamValue"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/dashboard/_components/shared.tsx#Panel",
+        "name": "Panel",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\dashboard\\_components\\shared.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/dashboard/_components/data.ts#CARD_BASE_CLASS",
+        "name": "CARD_BASE_CLASS",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\dashboard\\_components\\data.ts"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/orders/dashboard/_components/shared.tsx#Panel",
+      "target_id": "{harrir-web-admin}/app/(admin)/orders/dashboard/_components/data.ts#CARD_BASE_CLASS"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/lib/utils.ts#formatShippingAddress",
+        "name": "formatShippingAddress",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\lib\\utils.ts"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/page.tsx#toNonEmptyString",
+        "name": "toNonEmptyString",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\return-management\\[requestId]\\page.tsx"
+      },
+      "source_id": "{harrir-web-admin}/lib/utils.ts#formatShippingAddress",
+      "target_id": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/page.tsx#toNonEmptyString"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/lib/admin-return-requests.server.ts#fetchAdminReturnRequestsFromBackend",
+        "name": "fetchAdminReturnRequestsFromBackend",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\lib\\admin-return-requests.server.ts"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/lib/admin-return-requests.server.ts#BackendReturnRequestListData",
+        "name": "BackendReturnRequestListData",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\lib\\admin-return-requests.server.ts"
+      },
+      "source_id": "{harrir-web-admin}/lib/admin-return-requests.server.ts#fetchAdminReturnRequestsFromBackend",
+      "target_id": "{harrir-web-admin}/lib/admin-return-requests.server.ts#BackendReturnRequestListData"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/ReturnDetailActions.tsx#showApproveSuccessToast",
+        "name": "showApproveSuccessToast",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\return-management\\[requestId]\\_components\\ReturnDetailActions.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/ReturnDetailActions.tsx#ReturnRequestMutationPayload",
+        "name": "ReturnRequestMutationPayload",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\return-management\\[requestId]\\_components\\ReturnDetailActions.tsx"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/ReturnDetailActions.tsx#showApproveSuccessToast",
+      "target_id": "{harrir-web-admin}/app/(admin)/orders/return-management/[requestId]/_components/ReturnDetailActions.tsx#ReturnRequestMutationPayload"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/orders/[orderId]/_components/OrderDetailsSections.tsx#ProductDetailsCard.handleSourceKeyDown",
+        "name": "handleSourceKeyDown",
+        "type": "method",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\orders\\[orderId]\\_components\\OrderDetailsSections.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/orders/[orderId]/order-details.types.ts#ProductLine",
+        "name": "ProductLine",
+        "type": "interface",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\orders\\[orderId]\\order-details.types.ts"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/orders/orders/[orderId]/_components/OrderDetailsSections.tsx#ProductDetailsCard.handleSourceKeyDown",
+      "target_id": "{harrir-web-admin}/app/(admin)/orders/orders/[orderId]/order-details.types.ts#ProductLine"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/marketing/custom-links/page.tsx#CustomLinksPage",
+        "name": "CustomLinksPage",
+        "type": "next_page",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\marketing\\custom-links\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/marketing/custom-links/page.tsx#getCustomLinksData",
+        "name": "getCustomLinksData",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\marketing\\custom-links\\page.tsx"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/marketing/custom-links/page.tsx#CustomLinksPage",
+      "target_id": "{harrir-web-admin}/app/(admin)/marketing/custom-links/page.tsx#getCustomLinksData"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/store/services/homepageApi.ts#homepageApi.toggleSection",
+        "name": "toggleSection",
+        "type": "api_endpoint",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\store\\services\\homepageApi.ts"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/src/apiRoutes.ts#apiRoutes",
+        "name": "apiRoutes",
+        "type": "constant",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\src\\apiRoutes.ts"
+      },
+      "source_id": "{harrir-web-admin}/store/services/homepageApi.ts#homepageApi.toggleSection",
+      "target_id": "{harrir-web-admin}/src/apiRoutes.ts#apiRoutes"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/marketing/notification-center/page.tsx#Page",
+        "name": "Page",
+        "type": "next_page",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\marketing\\notification-center\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/orders/return-management/page.tsx#SearchParamsRecord",
+        "name": "SearchParamsRecord",
+        "type": "type_alias",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\orders\\return-management\\page.tsx"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/marketing/notification-center/page.tsx#Page",
+      "target_id": "{harrir-web-admin}/app/(admin)/orders/return-management/page.tsx#SearchParamsRecord"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/lib/rbac.tsx#resolveRBACAccess",
+        "name": "resolveRBACAccess",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\lib\\rbac.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/lib/rbac.tsx#findDefinitionsByKey",
+        "name": "findDefinitionsByKey",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\lib\\rbac.tsx"
+      },
+      "source_id": "{harrir-web-admin}/lib/rbac.tsx#resolveRBACAccess",
+      "target_id": "{harrir-web-admin}/lib/rbac.tsx#findDefinitionsByKey"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/components/category-settings.tsx#CategorySettings",
+        "name": "CategorySettings",
+        "type": "react_component",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\category-settings.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/components/category-settings.tsx#CategorySettings.handleOpenCategoryModal",
+        "name": "handleOpenCategoryModal",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\category-settings.tsx"
+      },
+      "source_id": "{harrir-web-admin}/components/category-settings.tsx#CategorySettings",
+      "target_id": "{harrir-web-admin}/components/category-settings.tsx#CategorySettings.handleOpenCategoryModal"
+    },
+    {
+      "source": {
+        "id": "{harrir-web-admin}/app/(admin)/settings/user-roles/page.tsx#UserRolesPage",
+        "name": "UserRolesPage",
+        "type": "next_page",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\settings\\user-roles\\page.tsx"
+      },
+      "target": {
+        "id": "{harrir-web-admin}/app/(admin)/settings/user-roles/page.tsx#normalizeStatus",
+        "name": "normalizeStatus",
+        "type": "function",
+        "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\settings\\user-roles\\page.tsx"
+      },
+      "source_id": "{harrir-web-admin}/app/(admin)/settings/user-roles/page.tsx#UserRolesPage",
+      "target_id": "{harrir-web-admin}/app/(admin)/settings/user-roles/page.tsx#normalizeStatus"
+    }
+  ]
+}

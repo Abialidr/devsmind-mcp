@@ -128,6 +128,76 @@ export class DevMindDatabase {
     }
   }
 
+  /**
+   * Wipes all nodes, connections, history, and system_meta from the DB, and clears
+   * the committed graph/ and history/ JSON directories on disk. Used by `--from-scratch`
+   * reindexing. This is destructive and irreversible from within the app — callers are
+   * responsible for confirming with the user first.
+   */
+  resetAll(): void {
+    this.db.exec('DELETE FROM node_connections');
+    this.db.exec('DELETE FROM history');
+    this.db.exec('DELETE FROM nodes');
+    this.db.exec('DELETE FROM system_meta');
+
+    const workspaceRoot = path.dirname(this.dbPath);
+    for (const dir of ['graph', 'history']) {
+      const p = path.join(workspaceRoot, dir);
+      if (fs.existsSync(p)) {
+        fs.rmSync(p, { recursive: true, force: true });
+      }
+      fs.mkdirSync(p, { recursive: true });
+    }
+
+    this.vacuum();
+  }
+
+  /**
+   * Deletes every connection from both the DB and (by rewriting each affected file's
+   * graph JSON) from disk. Used by `--edges-only` to rebuild the edge graph from
+   * scratch without touching nodes or history.
+   */
+  clearAllConnections(): void {
+    const rows = this.db.prepare('SELECT DISTINCT file_path FROM nodes WHERE deprecated = 0').all() as { file_path: string }[];
+    const affectedFilePaths = new Set<string>();
+    for (const row of rows) {
+      for (const p of row.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+        affectedFilePaths.add(p);
+      }
+    }
+    this.db.exec('DELETE FROM node_connections');
+    for (const filePath of affectedFilePaths) {
+      this.writeGraphToDisk(filePath);
+    }
+  }
+
+  /**
+   * Deletes only the OUTGOING connections of the given source nodes (and re-syncs the
+   * affected files' graph JSON). Used by repo-scoped `--edges-only` so that rebuilding
+   * one repo's edges doesn't wipe every other repo's edges.
+   */
+  clearConnectionsForSources(nodeIds: string[]): void {
+    if (nodeIds.length === 0) return;
+    const affectedFilePaths = new Set<string>();
+    const del = this.db.prepare('DELETE FROM node_connections WHERE source_node_id = ?');
+    const getFp = this.db.prepare('SELECT file_path FROM nodes WHERE id = ?');
+    const tx = this.db.transaction((ids: string[]) => {
+      for (const id of ids) {
+        const row = getFp.get(id) as { file_path?: string } | undefined;
+        if (row?.file_path) {
+          for (const p of row.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+            affectedFilePaths.add(p);
+          }
+        }
+        del.run(id);
+      }
+    });
+    tx(nodeIds);
+    for (const filePath of affectedFilePaths) {
+      this.writeGraphToDisk(filePath);
+    }
+  }
+
   // --- Node Operations ---
 
   upsertNode(node: { id: string; type: string; name: string; file_path: string; signature?: string | null }) {
@@ -242,8 +312,66 @@ export class DevMindDatabase {
       if (node.file_path) {
         this.writeGraphToDisk(node.file_path);
       }
+
+      // Edges pointing INTO the renamed node live in the SOURCE nodes' files' graph JSONs
+      // (which still reference oldId on disk). The DB was already repointed to newId above,
+      // so rewrite each such file — otherwise syncFromDisk reloads the stale oldId edge and
+      // the renamed node silently loses all its inbound ("used-by") edges.
+      const inboundSourceFiles = this.db.prepare(`
+        SELECT DISTINCT n.file_path AS file_path
+        FROM node_connections c JOIN nodes n ON n.id = c.source_node_id
+        WHERE c.target_node_id = ?
+      `).all(newId) as { file_path: string }[];
+      for (const row of inboundSourceFiles) {
+        if (!row.file_path) continue;
+        for (const p of row.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+          this.writeGraphToDisk(p);
+        }
+      }
+
+      // Keep the committed history/*.json files in sync with the rename. Without this,
+      // syncFromDisk() on the next server start would find the old node_id (which no
+      // longer exists in the DB) and re-insert it right back, undoing the rename.
+      const historyIds = this.db.prepare('SELECT id FROM history WHERE node_id = ?').all(newId) as { id: string }[];
+      for (const row of historyIds) {
+        this.patchHistoryDiskIdentity(row.id, newId, name, node.type, node.file_path, node.signature);
+      }
     } finally {
       this.db.pragma('foreign_keys = ON');
+    }
+  }
+
+  /**
+   * Rewrites a history/[id].json file's identifying fields (node_id, node_metadata) in
+   * place, leaving code_snapshot/reasoning/timestamps untouched. Used after a rename so
+   * disk stays consistent with the DB without needing the full code_snapshot/reasoning
+   * to be re-passed in.
+   */
+  private patchHistoryDiskIdentity(
+    historyId: string,
+    nodeId: string,
+    name: string,
+    type: string,
+    filePath: string,
+    signature: string | null
+  ): void {
+    try {
+      const historyDir = path.join(path.dirname(this.dbPath), 'history');
+      const filePathOnDisk = path.join(historyDir, `${historyId}.json`);
+      if (!fs.existsSync(filePathOnDisk)) return;
+
+      const data = JSON.parse(fs.readFileSync(filePathOnDisk, 'utf-8'));
+      data.node_id = nodeId;
+      data.node_metadata = {
+        name,
+        type,
+        file_path: this.toRepoRelativePath(filePath),
+        signature
+      };
+
+      fs.writeFileSync(filePathOnDisk, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn('⚠️ SQLite warning: Failed to patch history JSON identity on disk:', err);
     }
   }
 
@@ -351,6 +479,14 @@ export class DevMindDatabase {
     `);
     const rows = stmt.all(resolvedId) as any[];
     return rows.map(row => this.populateHistoryFromDisk(row));
+  }
+
+  /** Distinct source node ids of edges pointing INTO this node (its "used-by" callers). */
+  getInboundSources(nodeId: string): string[] {
+    const rows = this.db
+      .prepare('SELECT DISTINCT source_node_id FROM node_connections WHERE target_node_id = ?')
+      .all(nodeId) as { source_node_id: string }[];
+    return rows.map(r => r.source_node_id);
   }
 
   getLatestCode(nodeId: string): { code_snapshot: string; updated_at: string } | null {
@@ -758,10 +894,11 @@ export class DevMindDatabase {
 
     const idsToDelete: string[] = [];
     const namesDeleted: string[] = [];
+    const affectedFilePaths = new Set<string>();
 
     for (const node of candidates) {
       const lowerName = node.name.toLowerCase();
-      
+
       // 1. Check if name is in the spurious list
       const isSpurious = spuriousNames.has(lowerName);
 
@@ -785,6 +922,11 @@ export class DevMindDatabase {
       if (isSpurious || fileMissing) {
         idsToDelete.push(node.id);
         namesDeleted.push(`${node.name} (${node.id})`);
+        if (node.file_path) {
+          for (const p of node.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+            affectedFilePaths.add(p);
+          }
+        }
       }
     }
 
@@ -800,6 +942,13 @@ export class DevMindDatabase {
         }
       });
       deprecateTx(idsToDelete);
+
+      // Keep the committed graph/*.json files in sync with the DB. Without this,
+      // syncFromDisk() on the next server start would re-insert the just-pruned
+      // nodes right back into the database, since it trusts disk as source of truth.
+      for (const filePath of affectedFilePaths) {
+        this.writeGraphToDisk(filePath);
+      }
     }
 
     return {
@@ -879,7 +1028,7 @@ export class DevMindDatabase {
       const repoPath = resolveRepoPath(this.context, repo.name);
       if (repoPath) {
         const normalizedRepoPath = path.resolve(repoPath).replace(/\\/g, '/');
-        if (abs.startsWith(normalizedRepoPath)) {
+        if (abs === normalizedRepoPath || abs.startsWith(normalizedRepoPath + '/')) {
           const relative = path.relative(normalizedRepoPath, abs).replace(/\\/g, '/');
           return `{${repo.name}}/${relative}`;
         }
@@ -989,7 +1138,7 @@ export class DevMindDatabase {
 
         const jsonFiles = walkSync(graphDir);
         if (jsonFiles.length > 0) {
-          const deleteNodesForFileStmt = this.db.prepare('DELETE FROM nodes WHERE file_path = ? OR file_path LIKE ?');
+          const deleteNodesForFileStmt = this.db.prepare('DELETE FROM nodes WHERE file_path = ?');
           const deleteConnsForNodesStmt = this.db.prepare('DELETE FROM node_connections WHERE source_node_id = ?');
           const insertNodeStmt = this.db.prepare(`
             INSERT OR REPLACE INTO nodes (id, type, name, file_path, signature, deprecated)
@@ -1010,12 +1159,12 @@ export class DevMindDatabase {
                 const fileRelPath = data.file_path; // E.g. "{harrir-web}/app/page.tsx" or relative path
                 const fileAbsPath = this.toAbsolutePath(fileRelPath);
 
-                // Strip leading {repo} or ../ and normalize separators for matching
-                const cleanRelPath = fileRelPath.replace(/^\{[^}]+\}\//, '').replace(/^(\.\.\/)+/, '').replace(/\\/g, '/');
-                const fileQueryPath = `%${cleanRelPath.replace(/\//g, path.sep)}`;
-
-                // Clean existing nodes in SQLite for this file
-                deleteNodesForFileStmt.run(fileAbsPath, fileQueryPath);
+                // Clean existing nodes in SQLite for this file BEFORE re-inserting from
+                // the JSON (so removed/renamed symbols are cleared). Match ONLY the exact
+                // absolute path: the previous suffix `LIKE '%<relpath>'` matched the same
+                // relative path in EVERY repo, so syncing one repo's file deleted another
+                // repo's same-named file nodes (cross-repo data loss).
+                deleteNodesForFileStmt.run(fileAbsPath);
 
                 // Insert nodes
                 const nodes = data.nodes || [];
@@ -1044,25 +1193,44 @@ export class DevMindDatabase {
     }
   }
 
+  /** Escape LIKE metacharacters so a path is matched literally (use with ESCAPE '\\'). */
+  private likeEscape(s: string): string {
+    return s.replace(/[\\%_]/g, ch => '\\' + ch);
+  }
+
   writeGraphToDisk(filePath: string) {
     try {
       if (!filePath) return;
       const workspaceRoot = path.dirname(this.dbPath);
       // Clean/resolve the file path
       const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(workspaceRoot, filePath);
-      const relPath = path.relative(workspaceRoot, absPath).replace(/\\/g, '/');
       const repoRelPath = this.toRepoRelativePath(absPath);
 
       // E.g., "{harrir-web}/app/page.tsx" -> "graph/harrir-web/app/page.json"
       const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
       const graphJsonPath = path.join(workspaceRoot, 'graph', diskRelPath);
 
-      // Get all active nodes in this file
+      // Get all active nodes in this file. A node's file_path is either exactly this
+      // absolute path, or (for the rare node spanning multiple files) a ", "-joined list
+      // containing it. We anchor on the FULL absolute path with ", " boundaries and escape
+      // LIKE metacharacters — the old `%<relpath>%` / `%<relpath>` matched short relative
+      // suffixes shared across repos, pulling in (and later corrupting) other repos' nodes.
+      const absEsc = this.likeEscape(absPath);
       const stmtNodes = this.db.prepare(`
         SELECT * FROM nodes
-        WHERE deprecated = 0 AND (file_path = ? OR file_path LIKE ? OR file_path LIKE ? OR file_path LIKE ?)
+        WHERE deprecated = 0 AND (
+          file_path = ? OR
+          file_path LIKE ? ESCAPE '\\' OR
+          file_path LIKE ? ESCAPE '\\' OR
+          file_path LIKE ? ESCAPE '\\'
+        )
       `);
-      const nodes = stmtNodes.all(absPath, `%${relPath}%`, `%${absPath}%`, `%${relPath}`) as DbNode[];
+      const nodes = stmtNodes.all(
+        absPath,
+        `${absEsc}, %`,
+        `%, ${absEsc}`,
+        `%, ${absEsc}, %`
+      ) as DbNode[];
 
       if (nodes.length === 0) {
         // If no nodes left, delete the JSON file if it exists

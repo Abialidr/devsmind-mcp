@@ -1,0 +1,302 @@
+[
+  {
+    "id": "{harrir-mini-app}/pages/search/search.js#Page.onFilterTap",
+    "name": "onFilterTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\search\\search.js"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/functions/CategoriesTree/schema.ts#CategoriesTreeSchema",
+    "name": "CategoriesTreeSchema",
+    "type": "validator",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\CategoriesTree\\schema.ts"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/controllers/SearchController.ts#SearchController.mixProducts",
+    "name": "mixProducts",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\SearchController.ts"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/repositories/CategoryRepository.ts#CategoryRepository.removeDeletedAt",
+    "name": "removeDeletedAt",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\repositories\\CategoryRepository.ts"
+  },
+  {
+    "id": "{harrir-backend-zoho-service}/src/shared/const.ts#CURRENCY",
+    "name": "CURRENCY",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\shared\\const.ts"
+  },
+  {
+    "id": "{harrir-web-admin}/components/Logo.tsx#Logo",
+    "name": "Logo",
+    "type": "react_component",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\components\\Logo.tsx"
+  },
+  {
+    "id": "{harrir-backend-zoho-service}/src/repositories/OrderRepository.ts#OrderRepository.findByOrderIdAndProductId",
+    "name": "findByOrderIdAndProductId",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\repositories\\OrderRepository.ts"
+  },
+  {
+    "id": "{harrir-backend-order-service}/src/functions/AddWishListItem/schema.ts#AddWishListItem.schema",
+    "name": "AddWishListItemSchema",
+    "type": "validator",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\AddWishListItem\\schema.ts"
+  },
+  {
+    "id": "{harrir-web}/i18n/locales/ar.ts#ar",
+    "name": "ar",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\i18n\\locales\\ar.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/components/skeletons/checkout-skeleton/checkout-skeleton.js#checkout-skeleton",
+    "name": "checkout-skeleton",
+    "type": "react_component",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\skeletons\\checkout-skeleton\\checkout-skeleton.js"
+  },
+  {
+    "id": "{harrir-web-admin}/app/(admin)/settings/user-roles/page.tsx#dynamic",
+    "name": "dynamic",
+    "type": "variable",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\app\\(admin)\\settings\\user-roles\\page.tsx"
+  },
+  {
+    "id": "{harrir-backend-user-service}/src/shared/my-look-error-codes.ts#MyLookErrorCode_type",
+    "name": "MyLookErrorCode",
+    "type": "type_alias",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\shared\\my-look-error-codes.ts"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/repositories/FeatureCategoryBrandRepository.ts#FeaturedCategoryBrandRepository.findById",
+    "name": "findById",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\repositories\\FeatureCategoryBrandRepository.ts"
+  },
+  {
+    "id": "{harrir-web-admin}/eslint.config.mjs#eslintConfig",
+    "name": "eslintConfig",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\eslint.config.mjs"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/search-results/index.js#Page.onProductTap",
+    "name": "onProductTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\search-results\\index.js"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/functions/SuggestedCategory/schema.ts#schema.ts:SuggestedCategorySchema",
+    "name": "SuggestedCategorySchema",
+    "type": "validator",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\SuggestedCategory\\schema.ts"
+  },
+  {
+    "id": "{harrir-web}/store/productDetailsSlice.ts#productDetailsSlice.clearProductDetails",
+    "name": "clearProductDetails",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\store\\productDetailsSlice.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/profile/index.js#Page.onLanguageTap",
+    "name": "onLanguageTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\profile\\index.js"
+  },
+  {
+    "id": "{harrir-web}/app/user/(profile)/orders/[orderId]/loading.tsx#OrderDetailLoading",
+    "name": "OrderDetailLoading",
+    "type": "react_component",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\user\\(profile)\\orders\\[orderId]\\loading.tsx"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/recommendations/index.js#Page.onFavoriteTap",
+    "name": "onFavoriteTap",
+    "type": "function",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\recommendations\\index.js"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/controllers/BrandController.ts#BrandController.syncBrand",
+    "name": "syncBrand",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\BrandController.ts"
+  },
+  {
+    "id": "{harrir-backend-order-service}/src/functions/GetOrderProductDetails/schema.ts#GetOrderProductDetailsSchema",
+    "name": "GetOrderProductDetailsSchema",
+    "type": "validator",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-order-service\\src\\functions\\GetOrderProductDetails\\schema.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/product-detail/index.js#Page.onRelatedTap",
+    "name": "onRelatedTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\product-detail\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/profile-details/index.js#Page.onPersonalTap",
+    "name": "onPersonalTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\profile-details\\index.js"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/repositories/CategoryRepository.ts#CategoryRepository.removeParentIdFromCategories",
+    "name": "removeParentIdFromCategories",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\repositories\\CategoryRepository.ts"
+  },
+  {
+    "id": "{harrir-express-backend}/src/routes/adminUserManagement.ts#router",
+    "name": "router",
+    "type": "variable",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\routes\\adminUserManagement.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/product-detail/index.js#Page.onShareAppMessage",
+    "name": "onShareAppMessage",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\product-detail\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/product-detail/index.js#Page.onModalSearch",
+    "name": "onModalSearch",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\product-detail\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/components/subcategory-item/subcategory-item.js#SubcategoryItemComponent.handleTouchStart",
+    "name": "handleTouchStart",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\subcategory-item\\subcategory-item.js"
+  },
+  {
+    "id": "{harrir-web}/app/opengraph-image.tsx#contentType",
+    "name": "contentType",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web\\app\\opengraph-image.tsx"
+  },
+  {
+    "id": "{harrir-backend-user-service}/src/services/api/v1/CheckoutPaymentService.ts#CheckoutPaymentService.verifyWebhookSignature",
+    "name": "verifyWebhookSignature",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\services\\api\\v1\\CheckoutPaymentService.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/add-address/index.js#Page.onTownSheetSelect",
+    "name": "onTownSheetSelect",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\add-address\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/add-address/index.js#Page.onPhoneSheetClose",
+    "name": "onPhoneSheetClose",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\add-address\\index.js"
+  },
+  {
+    "id": "{harrir-express-backend}/src/routes/categories.ts#router",
+    "name": "router",
+    "type": "router",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\routes\\categories.ts"
+  },
+  {
+    "id": "{harrir-backend-zoho-service}/src/shared/const.ts#FIREBASE_API_KEY",
+    "name": "FIREBASE_API_KEY",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\shared\\const.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/components/rating-stars/rating-stars.js#RatingStarsComponent.didMount",
+    "name": "didMount",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\rating-stars\\rating-stars.js"
+  },
+  {
+    "id": "{harrir-express-backend}/src/routes/homepage.ts#router",
+    "name": "router",
+    "type": "router",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-express-backend\\src\\routes\\homepage.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/profile/index.js#Page.onHelpTap",
+    "name": "onHelpTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\profile\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/components/subcategory-item/subcategory-item.js#SubcategoryItemComponent.handleTap",
+    "name": "handleTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\subcategory-item\\subcategory-item.js"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/search-results/index.js#Page.onQuickFilterTap",
+    "name": "onQuickFilterTap",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\search-results\\index.js"
+  },
+  {
+    "id": "{harrir-backend-user-service}/src/controllers/api/v1/MockAuthController.ts#MockAuthController.refresh",
+    "name": "refresh",
+    "type": "api_endpoint",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-user-service\\src\\controllers\\api\\v1\\MockAuthController.ts"
+  },
+  {
+    "id": "{harrir-web-admin}/postcss.config.mjs#config",
+    "name": "config",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-web-admin\\postcss.config.mjs"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/controllers/SearchController.ts#SearchController.formatSearchRecord",
+    "name": "formatSearchRecord",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\SearchController.ts"
+  },
+  {
+    "id": "{harrir-backend-zoho-service}/src/shared/const.ts#SHIPPING_DATA",
+    "name": "SHIPPING_DATA",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\shared\\const.ts"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/functions/UpdateProduct/schema.ts#UpdateProductSchema",
+    "name": "UpdateProductSchema",
+    "type": "nest_schema",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\functions\\UpdateProduct\\schema.ts"
+  },
+  {
+    "id": "{harrir-backend-zoho-service}/src/shared/const.ts#DEFAULT_SEARCHING_FIELDS_VARIANTS",
+    "name": "DEFAULT_SEARCHING_FIELDS_VARIANTS",
+    "type": "constant",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-zoho-service\\src\\shared\\const.ts"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/add-address/index.js#Page.openBuildingSheet",
+    "name": "openBuildingSheet",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\add-address\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/pages/orders/index.js#Page.onOrdersChanged",
+    "name": "onOrdersChanged",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\pages\\orders\\index.js"
+  },
+  {
+    "id": "{harrir-mini-app}/components/wishlist-items/wishlist-items.js#moveToCartValue",
+    "name": "moveToCartValue",
+    "type": "variable",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-mini-app\\components\\wishlist-items\\wishlist-items.js"
+  },
+  {
+    "id": "{harrir-backend-products-service}/src/controllers/SearchController.ts#SearchController.handleNotEqualFilter",
+    "name": "handleNotEqualFilter",
+    "type": "method",
+    "file_path": "C:\\work\\Hanoot\\backend\\lamda\\harrir-backend-products-service\\src\\controllers\\SearchController.ts"
+  }
+]

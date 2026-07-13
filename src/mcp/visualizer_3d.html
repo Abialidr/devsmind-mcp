@@ -11,27 +11,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   
-  <!-- Use Import Map to cleanly resolve module dependencies in the browser without global collisions -->
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
-        "3d-force-graph": "https://unpkg.com/3d-force-graph@1.73.0/dist/3d-force-graph.module.js"
-      }
-    }
-  </script>
-  
-  <script type="module">
-    import * as THREE from 'three';
-    import ForceGraph3D from '3d-force-graph';
-
-    // Safely expose imports on window for Visualizer script execution
-    window.THREE = THREE;
-    window.ForceGraph3D = ForceGraph3D;
-    
-    // Dispatch custom event to notify main script that dependencies are fully loaded
-    window.dispatchEvent(new CustomEvent('deps-loaded'));
-  </script>
+  <!-- Three.js and 3D Force Graph (UMD builds — no import map needed) -->
+  <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/3d-force-graph@1.73.5/dist/3d-force-graph.min.js"></script>
 
   <script>
     tailwind.config = {
@@ -255,18 +237,14 @@
     const urlParams = new URLSearchParams(window.location.search);
     const pathParam = urlParams.get('path') || '';
 
-    // Initialize Page (wait for custom event from ES Modules script block)
-    window.addEventListener('deps-loaded', () => {
-      console.log("ES Module dependencies loaded successfully!");
+    // Initialize Page — UMD scripts are loaded synchronously, so globals are ready on DOMContentLoaded
+    document.addEventListener('DOMContentLoaded', () => {
+      if (!window.ForceGraph3D) {
+        console.error('3D Force Graph failed to load. Check CDN connectivity.');
+        return;
+      }
       init();
     });
-
-    // Fallback in case the custom event doesn't fire or libraries load instantly
-    window.onload = () => {
-      if (window.ForceGraph3D) {
-        init();
-      }
-    };
 
     async function init() {
       await refreshData();
@@ -461,7 +439,9 @@
       selectedNodeId = d.id;
       
       if (graph3dInstance) {
-        graph3dInstance.nodeThreeObject(graph3dInstance.nodeThreeObject());
+        // Re-trigger nodeThreeObject by refreshing the accessor — forces label/color repaint
+        const threeObjFn = graph3dInstance.nodeThreeObject();
+        graph3dInstance.nodeThreeObject(threeObjFn);
 
         graph3dInstance
           .linkWidth(l => {
@@ -598,10 +578,15 @@
 
       selectNode(target);
 
+      // Guard against NaN when simulation hasn't settled yet (x/y/z may be undefined)
+      const nx = target.x || 0;
+      const ny = target.y || 0;
+      const nz = target.z || 0;
       const distance = 80;
-      const distRatio = 1 + distance/Math.hypot(target.x, target.y, target.z);
+      const hypot = Math.hypot(nx, ny, nz);
+      const distRatio = hypot > 0 ? 1 + distance / hypot : 1;
       graph3dInstance.cameraPosition(
-        { x: target.x * distRatio, y: target.y * distRatio, z: target.z * distRatio },
+        { x: nx * distRatio, y: ny * distRatio, z: nz * distRatio },
         target,
         1200
       );

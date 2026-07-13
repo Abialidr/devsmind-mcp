@@ -1,0 +1,238 @@
+Total graph JSON files: 1014
+
+=== CHECK 2: Graph folder integrity ===
+Parse errors: 0 []
+Total nodes in graph/: 7302  unique ids: 7302
+Total connections in graph/: 27307
+Malformed nodes: 0
+[]
+Duplicate IDs within same file: 0
+[]
+Dangling connection target refs (target id not in any graph file): 3
+[
+  {
+    "file": "C:\\work\\Hanoot\\backend\\lamda\\harrir-docs-information\\harrir-brains\\.devmind\\graph\\harrir-web\\components\\ui\\dropdown-menu.json",
+    "conn": {
+      "source_node_id": "{harrir-web}/components/ui/dropdown-menu.tsx#DropdownMenuTrigger",
+      "target_node_id": "{harrir-web}/../harrir-web-admin/components/ui/dropdown-menu.tsx#DropdownMenuTrigger"
+    }
+  },
+  {
+    "file": "C:\\work\\Hanoot\\backend\\lamda\\harrir-docs-information\\harrir-brains\\.devmind\\graph\\harrir-web\\components\\ui\\dropdown-menu.json",
+    "conn": {
+      "source_node_id": "{harrir-web}/components/ui/dropdown-menu.tsx#DropdownMenuContent",
+      "target_node_id": "{harrir-web}/../harrir-web-admin/components/ui/dropdown-menu.tsx#DropdownMenuContent"
+    }
+  },
+  {
+    "file": "C:\\work\\Hanoot\\backend\\lamda\\harrir-docs-information\\harrir-brains\\.devmind\\graph\\harrir-web\\components\\ui\\dropdown-menu.json",
+    "conn": {
+      "source_node_id": "{harrir-web}/components/ui/dropdown-menu.tsx#DropdownMenuItem",
+      "target_node_id": "{harrir-web}/../harrir-web-admin/components/ui/dropdown-menu.tsx#DropdownMenuItem"
+    }
+  }
+]
+Dangling connection source refs: 0
+[]
+
+DB node count: 7270 unique: 7270
+IDs in graph/ but NOT in brain.db: 32
+[
+  "{harrir-web}/app/api/get-link-criteria/route.ts#getErrorMessage",
+  "{harrir-web}/app/api/get-link-criteria/route.ts#readJsonBody",
+  "{harrir-web}/app/api/get-link-criteria/route.ts#POST",
+  "{harrir-web}/app/layout.tsx#geistMono",
+  "{harrir-web}/app/layout.tsx#bahijTheSansArabic",
+  "{harrir-web}/app/layout.tsx#sofiaPro",
+  "{harrir-web}/app/layout.tsx#prod",
+  "{harrir-web}/app/layout.tsx#defaultTitle",
+  "{harrir-web}/app/layout.tsx#titleTemplate",
+  "{harrir-web}/app/layout.tsx#metadata",
+  "{harrir-web}/app/layout.tsx#getInitialLanguage",
+  "{harrir-web}/app/layout.tsx#getOnboardingDraftRedirectScript",
+  "{harrir-web}/app/layout.tsx#RootLayout",
+  "{harrir-web}/app/user/onboarding/components/Header.tsx#Header",
+  "{harrir-web}/app/user/onboarding/components/Header.tsx#Header.handleLanguageToggle",
+  "{harrir-web}/components/ui/button.tsx#cn",
+  "{harrir-web}/components/ui/button.tsx#Button",
+  "{harrir-web}/components/ui/dropdown-menu.tsx#cn",
+  "{harrir-web}/components/ui/dropdown-menu.tsx#DropdownMenu",
+  "{harrir-web}/components/ui/dropdown-menu.tsx#DropdownMenuTrigger"
+]
+IDs in brain.db but NOT in graph/: 0
+[]
+
+=== CHECK 3: Node type taxonomy conformance ===
+Active nodes: 7270
+Conforming: 7254 / 7270 = 99.78 %
+Distinct off-taxonomy types: 6
+[
+  [
+    "schema",
+    7
+  ],
+  [
+    "schema_model",
+    4
+  ],
+  [
+    "service",
+    2
+  ],
+  [
+    "express_router",
+    1
+  ],
+  [
+    "miniapp_page",
+    1
+  ],
+  [
+    "utility",
+    1
+  ]
+]
+
+All type distribution:
+[
+  [
+    "function",
+    2183
+  ],
+  [
+    "method",
+    1699
+  ],
+  [
+    "type_alias",
+    654
+  ],
+  [
+    "variable",
+    586
+  ],
+  [
+    "constant",
+    568
+  ],
+  [
+    "react_component",
+    466
+  ],
+  [
+    "interface",
+    304
+  ],
+  [
+    "api_endpoint",
+    174
+  ],
+  [
+    "route_handler",
+    157
+  ],
+  [
+    "class",
+    123
+  ],
+  [
+    "next_api_route",
+    96
+  ],
+  [
+    "react_hook",
+    53
+  ],
+  [
+    "util_function",
+    44
+  ],
+  [
+    "next_page",
+    35
+  ],
+  [
+    "validator",
+    32
+  ],
+  [
+    "nest_schema",
+    15
+  ],
+  [
+    "router",
+    10
+  ],
+  [
+    "helper",
+    9
+  ],
+  [
+    "middleware",
+    8
+  ],
+  [
+    "schema",
+    7
+  ],
+  [
+    "enum",
+    7
+  ],
+  [
+    "module",
+    7
+  ],
+  [
+    "next_layout",
+    6
+  ],
+  [
+    "rest_controller",
+    5
+  ],
+  [
+    "schema_model",
+    4
+  ],
+  [
+    "react_page",
+    4
+  ],
+  [
+    "nest_service",
+    3
+  ],
+  [
+    "nest_controller",
+    2
+  ],
+  [
+    "formatter",
+    2
+  ],
+  [
+    "service",
+    2
+  ],
+  [
+    "express_router",
+    1
+  ],
+  [
+    "miniapp_page",
+    1
+  ],
+  [
+    "utility",
+    1
+  ],
+  [
+    "nest_provider",
+    1
+  ],
+  [
+    "react_context",
+    1
+  ]
+]
