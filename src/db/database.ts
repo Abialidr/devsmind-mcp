@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { INIT_SCHEMA_SQL, DbNode, DbHistory, DbConnection } from './schema';
 import { loadProjectContext, resolveRepoPath, ProjectContext } from '../utils/config';
+import { parseNodeId, extractNodeFromFile } from '../utils/ast';
 
 function compressText(text: string): Buffer {
   return zlib.deflateSync(Buffer.from(text, 'utf-8'));
@@ -30,6 +31,40 @@ export interface ReasoningObject {
   decision?: string;
   developer?: string;
   model?: string;
+}
+
+/** Where a returned code body came from: parsed off disk, or served from the cached snapshot. */
+export type CodeSource = 'live' | 'cached';
+
+export interface LiveCodeResult {
+  exists: boolean;
+  node_id: string;
+  file_path?: string;
+  code?: string;
+  source?: CodeSource;
+  /** True when the cached snapshot disagrees with disk, or could not be checked against it. */
+  snapshot_outdated?: boolean;
+  updated_at?: string;
+  message?: string;
+}
+
+export type GraphNode = DbNode & { code?: string; code_source?: CodeSource };
+
+export interface GraphOptions {
+  /** 'out' = callees only (call-flow trace), 'in' = callers only, 'both' = neighborhood. */
+  direction?: 'out' | 'in' | 'both';
+  includeCode?: boolean;
+  codeCharBudget?: number;
+}
+
+export interface GraphResult {
+  nodes: GraphNode[];
+  connections: DbConnection[];
+  /** Total characters of code attached (only set when includeCode is true). */
+  code_chars?: number;
+  /** Set when some nodes came back without code (budget exhausted, or no code available). */
+  code_truncated?: boolean;
+  nodes_without_code?: number;
 }
 
 export function formatReasoning(r: string | ReasoningObject): string {
@@ -572,12 +607,82 @@ export class DevMindDatabase {
     };
   }
 
+  /**
+   * Parse a node's CURRENT source straight off disk via the AST, bypassing the stored snapshot.
+   * `nodes.file_path` is already absolute, and may be a ", "-joined list when a symbol spans
+   * files — try each until one resolves. Returns null for non-TS/JS files, or when the symbol
+   * no longer exists in the file (renamed / moved / deleted).
+   */
+  private extractLiveCode(node: DbNode): string | null {
+    const parsed = parseNodeId(node.id);
+    // Pass the FULL symbol name ("Foo.bar") — extractNodeFromFile re-derives the class itself.
+    const symbol = parsed ? parsed.symbolName : node.id.split('#').pop() || node.name;
+    if (!symbol) return null;
 
-  getGraph(nodeId: string, maxDepth: number = 6): { nodes: DbNode[]; connections: DbConnection[] } {
+    for (const p of String(node.file_path).split(',').map(s => s.trim()).filter(Boolean)) {
+      const derived = extractNodeFromFile(p, symbol);
+      if (derived) return derived.codeSnapshot;
+    }
+    return null;
+  }
+
+  /**
+   * Current code for a node, read from the file on disk (the source of truth) rather than the
+   * cached snapshot. Falls back to the snapshot only when the file can't be parsed for this
+   * symbol, and flags that fallback as unverified. When live code IS available, comparing it to
+   * the snapshot is free — so drift between the graph and disk is reported rather than hidden.
+   */
+  getLiveCode(nodeId: string): LiveCodeResult {
+    const node = this.getNode(nodeId);
+    const resolvedId = node ? node.id : nodeId;
+    const snapshot = this.getLatestCode(resolvedId);
+
+    if (node) {
+      const live = this.extractLiveCode(node);
+      if (live !== null) {
+        return {
+          exists: true,
+          node_id: node.id,
+          file_path: node.file_path,
+          code: live,
+          source: 'live',
+          // Snapshot exists but disagrees with disk → the graph has drifted.
+          snapshot_outdated: snapshot ? snapshot.code_snapshot !== live : undefined,
+          updated_at: snapshot?.updated_at
+        };
+      }
+    }
+
+    if (snapshot) {
+      return {
+        exists: true,
+        node_id: resolvedId,
+        file_path: node?.file_path,
+        code: snapshot.code_snapshot,
+        source: 'cached',
+        // Could not confirm against disk (non-TS/JS file, or symbol gone) — treat as suspect.
+        snapshot_outdated: true,
+        updated_at: snapshot.updated_at,
+        message:
+          'Could not locate this symbol in its source file — the file may not be TS/JS, or the symbol was renamed, moved, or deleted. Returning the last cached snapshot, which may be out of date. Verify against the file before relying on it.'
+      };
+    }
+
+    return {
+      exists: false,
+      node_id: resolvedId,
+      message:
+        'No code found on disk or in cache. Read the source file, then stage_change + commit_changes so future agents skip the file read entirely.'
+    };
+  }
+
+  getGraph(nodeId: string, maxDepth: number = 6, opts: GraphOptions = {}): GraphResult {
+    const direction = opts.direction ?? 'both';
+    const codeCharBudget = opts.codeCharBudget ?? 60_000;
+
     const maxNodesLimit = 500;
     const visited = new Set<string>();
-    const queue: { id: string; depth: number }[] = [{ id: nodeId, depth: 0 }];
-    const nodes: DbNode[] = [];
+    const nodes: GraphNode[] = [];
     const connections: DbConnection[] = [];
     const connSet = new Set<string>();
 
@@ -586,7 +691,11 @@ export class DevMindDatabase {
       return { nodes, connections };
     }
 
-    visited.add(nodeId);
+    // Seed with the CANONICAL id. getNode() resolves a bare, unqualified symbol name, but
+    // node_connections is keyed by the fully-qualified id — seeding the queue with the raw
+    // argument would find zero edges and return a lone root.
+    const queue: { id: string; depth: number }[] = [{ id: rootNode.id, depth: 0 }];
+    visited.add(rootNode.id);
     nodes.push(rootNode);
 
     const usesStmt = this.db.prepare(`
@@ -602,50 +711,86 @@ export class DevMindDatabase {
         continue;
       }
 
-      // Get outbound connections (what this node uses)
-      const outbound = usesStmt.all(current.id) as { target_node_id: string }[];
-      for (const row of outbound) {
-        const targetId = row.target_node_id;
-        const connKey = `${current.id}->${targetId}`;
-        if (!connSet.has(connKey)) {
-          connSet.add(connKey);
-          connections.push({ source_node_id: current.id, target_node_id: targetId });
-        }
-        if (!visited.has(targetId)) {
-          visited.add(targetId);
-          const targetNode = this.getNode(targetId);
-          if (targetNode) {
-            nodes.push(targetNode);
-            if (nodes.length >= maxNodesLimit) break;
+      // Outbound — what this node uses (callees). Skipped when tracing callers only.
+      if (direction !== 'in') {
+        const outbound = usesStmt.all(current.id) as { target_node_id: string }[];
+        for (const row of outbound) {
+          const targetId = row.target_node_id;
+          const connKey = `${current.id}->${targetId}`;
+          if (!connSet.has(connKey)) {
+            connSet.add(connKey);
+            connections.push({ source_node_id: current.id, target_node_id: targetId });
           }
-          queue.push({ id: targetId, depth: current.depth + 1 });
+          if (!visited.has(targetId)) {
+            visited.add(targetId);
+            const targetNode = this.getNode(targetId);
+            if (targetNode) {
+              nodes.push(targetNode);
+              if (nodes.length >= maxNodesLimit) break;
+            }
+            queue.push({ id: targetId, depth: current.depth + 1 });
+          }
         }
       }
 
       if (nodes.length >= maxNodesLimit) break;
 
-      // Get inbound connections (what uses this node)
-      const inbound = usedByStmt.all(current.id) as { source_node_id: string }[];
-      for (const row of inbound) {
-        const sourceId = row.source_node_id;
-        const connKey = `${sourceId}->${current.id}`;
-        if (!connSet.has(connKey)) {
-          connSet.add(connKey);
-          connections.push({ source_node_id: sourceId, target_node_id: current.id });
-        }
-        if (!visited.has(sourceId)) {
-          visited.add(sourceId);
-          const sourceNode = this.getNode(sourceId);
-          if (sourceNode) {
-            nodes.push(sourceNode);
-            if (nodes.length >= maxNodesLimit) break;
+      // Inbound — what uses this node (callers). Skipped when tracing a call flow outward.
+      if (direction !== 'out') {
+        const inbound = usedByStmt.all(current.id) as { source_node_id: string }[];
+        for (const row of inbound) {
+          const sourceId = row.source_node_id;
+          const connKey = `${sourceId}->${current.id}`;
+          if (!connSet.has(connKey)) {
+            connSet.add(connKey);
+            connections.push({ source_node_id: sourceId, target_node_id: current.id });
           }
-          queue.push({ id: sourceId, depth: current.depth + 1 });
+          if (!visited.has(sourceId)) {
+            visited.add(sourceId);
+            const sourceNode = this.getNode(sourceId);
+            if (sourceNode) {
+              nodes.push(sourceNode);
+              if (nodes.length >= maxNodesLimit) break;
+            }
+            queue.push({ id: sourceId, depth: current.depth + 1 });
+          }
         }
       }
     }
 
-    return { nodes, connections };
+    const result: GraphResult = { nodes, connections };
+
+    if (opts.includeCode) {
+      let spent = 0;
+      let withoutCode = 0;
+      // `nodes` is in BFS order (nearest the root first), so the budget is spent on the most
+      // relevant code before anything is dropped.
+      for (const [i, n] of nodes.entries()) {
+        const live = this.extractLiveCode(n);
+        const code = live ?? this.getLatestCode(n.id)?.code_snapshot ?? null;
+        if (!code) {
+          withoutCode++;
+          continue;
+        }
+        // The root always gets its code — it is what was asked for, and dropping it would make
+        // the response useless. Every other node must fit in the REMAINING budget, so a single
+        // large node can't blow past the cap (it is skipped and counted, not truncated).
+        if (i > 0 && spent + code.length > codeCharBudget) {
+          withoutCode++;
+          continue;
+        }
+        n.code = code;
+        n.code_source = live !== null ? 'live' : 'cached';
+        spent += code.length;
+      }
+      result.code_chars = spent;
+      if (withoutCode > 0) {
+        result.code_truncated = true;
+        result.nodes_without_code = withoutCode;
+      }
+    }
+
+    return result;
   }
 
   updateHistory(params: {

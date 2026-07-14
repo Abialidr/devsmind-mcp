@@ -169,7 +169,7 @@ function createMcpServer(): Server {
         {
           name: 'get_node_code',
           description:
-            'Returns only the latest code snapshot stored for a node. Token-efficient alternative to get_node_history when you only need the current code. Returns null if no snapshot exists â€” in that case you MUST read the file, then stage_change + commit_changes to store the code so future agents benefit from the cache.',
+            "Get a single node's CURRENT source code, parsed live from its file on disk — token-efficient, since it returns only that function/class/route rather than the whole file. Call this instead of reading a file whenever you need one specific entity. Response fields: `source: \"live\"` means the code was read from disk and is current. `source: \"cached\"` means the symbol could not be located in its file (not a TS/JS file, or it was renamed/moved/deleted) so a possibly-stale cached snapshot was returned — verify it against the file before relying on it. `snapshot_outdated: true` means the stored graph has drifted from disk; re-stage the node with stage_change + commit_changes to bring the brain back in sync. To fetch a whole call flow at once, prefer get_node_graph with include_code instead of calling this repeatedly.",
           inputSchema: {
             type: 'object',
             properties: {
@@ -321,13 +321,27 @@ function createMcpServer(): Server {
         },
         {
           name: 'get_node_graph',
-          description: 'Get a localized node dependency graph up to a specified depth (default 6). Returns connected nodes and relationships.',
+          description:
+            'Get a node\'s dependency graph — connected nodes and the relationships between them. Set direction:"out" AND include_code:true to pull an ENTIRE CALL FLOW in a single call: the starting node plus everything it transitively calls, each with its current source code read from disk. Use that combination whenever you are tracing how a request, endpoint, or feature flows through the codebase — it replaces a long chain of get_node_code calls with one round trip. Use direction:"in" to find every caller of a node (impact analysis before a change). If `code_truncated` is true in the response, the character budget ran out and `nodes_without_code` nodes came back with metadata but no code — fetch those individually with get_node_code, or raise code_char_budget.',
           inputSchema: {
             type: 'object',
             properties: {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
               node_id: { type: 'string', description: 'Unique identifier for the starting node (e.g. function or class name)' },
-              max_depth: { type: 'number', description: 'Maximum depth to traverse (optional, default 6)' }
+              max_depth: { type: 'number', description: 'Maximum depth to traverse (optional, default 6). For a call flow with include_code, 2-3 is usually right.' },
+              direction: {
+                type: 'string',
+                enum: ['out', 'in', 'both'],
+                description: '"out" = only what this node calls, transitively (a call flow — use this for tracing). "in" = only what calls this node (impact analysis). "both" = the surrounding neighborhood in both directions (default).'
+              },
+              include_code: {
+                type: 'boolean',
+                description: 'Attach each node\'s current source code, read live from disk (default: false). Combine with direction:"out" to retrieve a whole call flow in one call.'
+              },
+              code_char_budget: {
+                type: 'number',
+                description: 'Max total characters of code to return, spent on the nodes nearest the starting node first (default: 60000). Only applies when include_code is true.'
+              }
             },
             required: ['devmind_path', 'node_id']
           }
@@ -524,23 +538,9 @@ function createMcpServer(): Server {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const db = getDatabase(devmindPath);
-          const result = db.getLatestCode(nodeId);
-          if (!result) {
-            return {
-              content: [{ type: 'text', text: JSON.stringify({
-                exists: false,
-                node_id: nodeId,
-                message: 'No code snapshot found. Read the source file, then stage_change + commit_changes to cache the code so future agents skip the file read entirely.'
-              }) }]
-            };
-          }
+          const result = db.getLiveCode(nodeId);
           return {
-            content: [{ type: 'text', text: JSON.stringify({
-              exists: true,
-              node_id: nodeId,
-              updated_at: result.updated_at,
-              code_snapshot: result.code_snapshot
-            }) }]
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
           };
         }
 
@@ -825,8 +825,16 @@ function createMcpServer(): Server {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const nodeId = String(args.node_id);
           const maxDepth = args.max_depth ? Number(args.max_depth) : 6;
+          const direction =
+            args.direction === 'out' || args.direction === 'in' || args.direction === 'both'
+              ? args.direction
+              : 'both';
           const db = getDatabase(devmindPath);
-          const graph = db.getGraph(nodeId, maxDepth);
+          const graph = db.getGraph(nodeId, maxDepth, {
+            direction,
+            includeCode: args.include_code === true,
+            codeCharBudget: args.code_char_budget ? Number(args.code_char_budget) : undefined
+          });
           return {
             content: [{ type: 'text', text: JSON.stringify(graph, null, 2) }]
           };
