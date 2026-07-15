@@ -11,8 +11,22 @@ import {
   StandaloneRepoConfig,
   TechStack
 } from '../utils/config';
+import { pickDirectory, CancelledError } from './integrations/prompt';
 
 // ─── Detection Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Interactive folder picker for init. Returns the chosen absolute directory, or
+ * null if the user cancelled (so callers can abort init cleanly).
+ */
+async function browseForDir(message: string, startDir: string): Promise<string | null> {
+  try {
+    return await pickDirectory(startDir, message);
+  } catch (err) {
+    if (err instanceof CancelledError) return null;
+    throw err;
+  }
+}
 
 /** Read a global git config value (user.name, user.email, etc.) */
 function readGitConfig(key: string): string {
@@ -452,23 +466,17 @@ async function handleExistingInit(
       for (const repo of reposToPrompt) {
         if ('path_key' in repo && repo.path_key) {
           const initialPath = envConfig[repo.path_key] || process.cwd();
-          const response = await prompts({
-            type: 'text',
-            name: 'localPath',
-            message: `Local path for repo "${repo.name}" (${repo.path_key})?`,
-            initial: initialPath,
-            validate: (val: string) => {
-              const resolved = path.resolve(val);
-              return fs.existsSync(resolved) ? true : `Directory does not exist: ${resolved}`;
-            }
-          });
+          const localPath = await browseForDir(
+            `Select the local folder for repo "${repo.name}" (${repo.path_key})`,
+            initialPath
+          );
 
-          if (response.localPath === undefined) {
+          if (localPath === null) {
             console.log('❌ Initialization cancelled.');
             return;
           }
 
-          envLines.push(`${repo.path_key}=${path.resolve(response.localPath)}`);
+          envLines.push(`${repo.path_key}=${localPath}`);
         }
       }
     }
@@ -536,31 +544,25 @@ async function handleNewInit(cwd: string) {
   } else {
     const defaultFolderName = `${baseResponse.projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-brain`;
 
-    const folderResponse = await prompts([
-      {
-        type: 'text',
-        name: 'folderName',
-        message: "Brain's folder name?",
-        initial: defaultFolderName
-      },
-      {
-        type: 'text',
-        name: 'folderParent',
-        message: 'Where do you want it to live?',
-        initial: cwd,
-        validate: (val: string) => {
-          const resolved = path.resolve(val);
-          return fs.existsSync(resolved) ? true : `Directory does not exist: ${resolved}`;
-        }
-      }
-    ]);
+    const folderNameResponse = await prompts({
+      type: 'text',
+      name: 'folderName',
+      message: "Brain's folder name?",
+      initial: defaultFolderName
+    });
 
-    if (folderResponse.folderName === undefined || folderResponse.folderParent === undefined) {
+    if (folderNameResponse.folderName === undefined) {
       console.log('❌ Initialization cancelled.');
       return;
     }
 
-    targetDir = path.join(path.resolve(folderResponse.folderParent), folderResponse.folderName);
+    const folderParent = await browseForDir('Where do you want the brain folder to live?', cwd);
+    if (folderParent === null) {
+      console.log('❌ Initialization cancelled.');
+      return;
+    }
+
+    targetDir = path.join(folderParent, folderNameResponse.folderName);
     devmindDir = path.join(targetDir, '.devmind');
 
     if (!fs.existsSync(targetDir)) {
@@ -605,39 +607,36 @@ async function handleNewInit(cwd: string) {
       console.log(`\n📦 Configuring Repository #${repoIndex}:`);
       const defaultName = repoIndex === 1 ? baseResponse.projectName : `service-${repoIndex}`;
 
-      const repoResponse = await prompts([
-        {
-          type: 'text',
-          name: 'name',
-          message: 'Repository name?',
-          initial: defaultName
-        },
-        {
-          type: 'text',
-          name: 'localPath',
-          message: 'Local absolute path to this repository?',
-          initial: cwd,
-          validate: (val: string) => {
-            const resolved = path.resolve(val);
-            return fs.existsSync(resolved) ? true : `Directory does not exist: ${resolved}`;
-          }
-        }
-      ]);
+      const repoNameResponse = await prompts({
+        type: 'text',
+        name: 'name',
+        message: 'Repository name?',
+        initial: defaultName
+      });
 
-      if (repoResponse.name === undefined || repoResponse.localPath === undefined) {
+      if (repoNameResponse.name === undefined) {
         console.log('❌ Initialization cancelled.');
         return;
       }
 
-      const pathKey = `REPO_${repoResponse.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
-      repos.push({ name: repoResponse.name, path_key: pathKey } as StandaloneRepoConfig);
-      envLines.push(`${pathKey}=${path.resolve(repoResponse.localPath)}`);
-      
-      const absoluteRepoPath = path.resolve(repoResponse.localPath);
+      const localPath = await browseForDir(
+        `Select the local folder for repository "${repoNameResponse.name}"`,
+        cwd
+      );
+      if (localPath === null) {
+        console.log('❌ Initialization cancelled.');
+        return;
+      }
+
+      const pathKey = `REPO_${repoNameResponse.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+      repos.push({ name: repoNameResponse.name, path_key: pathKey } as StandaloneRepoConfig);
+      envLines.push(`${pathKey}=${localPath}`);
+
+      const absoluteRepoPath = localPath;
       repoPaths.push(absoluteRepoPath);
 
       // Now configure exclusions for this standalone repository
-      console.log(`\n📂 Exclusions setup for repository "${repoResponse.name}":`);
+      console.log(`\n📂 Exclusions setup for repository "${repoNameResponse.name}":`);
       
       const currentExcluded = new Set<string>();
       // showIgnorePresets will prompt user for .gitignore patterns AND common presets

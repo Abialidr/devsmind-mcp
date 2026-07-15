@@ -155,6 +155,23 @@ export class DevMindDatabase {
     this.db.close();
   }
 
+  /** Snapshot of active-node / connection / history row counts (used by `devsmind sync`). */
+  getCounts(): { nodes: number; connections: number; history: number } {
+    const one = (sql: string): number => {
+      try {
+        const row = this.db.prepare(sql).get() as { c: number } | undefined;
+        return row ? row.c : 0;
+      } catch {
+        return 0;
+      }
+    };
+    return {
+      nodes: one('SELECT COUNT(*) AS c FROM nodes WHERE deprecated = 0'),
+      connections: one('SELECT COUNT(*) AS c FROM node_connections'),
+      history: one('SELECT COUNT(*) AS c FROM history'),
+    };
+  }
+
   vacuum() {
     try {
       this.db.exec('VACUUM');

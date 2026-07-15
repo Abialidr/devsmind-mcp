@@ -1,48 +1,23 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { DevMindConfig } from '../utils/config';
+import { DevMindConfig, resolveDevmindDir } from '../utils/config';
+import {
+  pickTarget,
+  pickMode,
+  pickRuleScope,
+  pickDirectory,
+  confirmPrompt,
+  mergeRuleFile,
+  writeConfigFile,
+  CancelledError,
+} from './integrations/prompt';
+import { resolveScopeFile, resolveOsPath } from './integrations/registry';
 
-function findDevmindDir(startDir: string): string | null {
-  let current = path.resolve(startDir);
-  while (true) {
-    const candidate = path.join(current, '.devmind');
-    if (fs.existsSync(path.join(candidate, 'config.json'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
-
-export function handleRule(opts: { path?: string }) {
-  const cwd = process.cwd();
-
-  let devmindDir: string | null;
-  if (opts.path) {
-    const resolved = path.resolve(opts.path);
-    devmindDir = fs.existsSync(path.join(resolved, 'config.json')) ? resolved : null;
-  } else {
-    devmindDir = findDevmindDir(cwd);
-  }
-
-  if (!devmindDir) {
-    console.error(
-      `❌ No .devmind directory found.\n` +
-      `   Run from inside a DevsMind brain folder, or pass --path <devmind_path>.`
-    );
-    process.exit(1);
-  }
-
-  const configPath = path.join(devmindDir, 'config.json');
-  let config: DevMindConfig;
-  try {
-    config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as DevMindConfig;
-  } catch {
-    console.error(`❌ Failed to read config.json at ${configPath}`);
-    process.exit(1);
-  }
-
+/**
+ * Build the ready-to-paste DevsMind workspace rule from a project's config.
+ * Pure string builder — no I/O — so it can be printed or written to a file.
+ */
+export function buildRule(config: DevMindConfig, devmindDir: string): string {
   const projectName = config.project_name;
   const mode = config.mode;
   const notes = config.notes;
@@ -152,17 +127,111 @@ export function handleRule(opts: { path?: string }) {
     '> All tool argument schemas are exposed automatically by the MCP server.'
   ];
 
-  const rule = lines.filter(l => l !== null).join('\n');
+  return lines.filter(l => l !== null).join('\n');
+}
 
+function printRuleBanner(rule: string, projectName: string, tip?: string): void {
   const divider = '═'.repeat(70);
-
   console.log(`\n${divider}`);
   console.log(` DevsMind Workspace Rule — "${projectName}"`);
   console.log(` Copy the block below into your AI workspace rules file`);
   console.log(`${divider}\n`);
   console.log(rule);
   console.log(`\n${divider}`);
-  console.log(` 💡 Tip: save this to .agents/AGENTS.md in your workspace root`);
-  console.log(`    or paste directly into your IDE's AI rules/instructions panel.`);
+  if (tip) {
+    console.log(tip);
+  } else {
+    console.log(` 💡 Tip: save this to .agents/AGENTS.md in your workspace root`);
+    console.log(`    or paste directly into your IDE's AI rules/instructions panel.`);
+  }
   console.log(`${divider}\n`);
+}
+
+/**
+ * `devsmind rule` — print the workspace rule and, interactively, help place it
+ * in the chosen tool's native rules file (manual snippet or automatic write).
+ * Falls back to plain printing when piped/non-TTY or when `--print` is passed,
+ * preserving `devsmind rule > file` usage.
+ */
+export async function handleRule(opts: { path?: string; print?: boolean }): Promise<void> {
+  const devmindDir = resolveDevmindDir(opts.path);
+
+  if (!devmindDir) {
+    console.error(
+      `❌ No .devmind directory found.\n` +
+      `   Run from inside a DevsMind brain folder, or pass --path <devmind_path>.`
+    );
+    process.exit(1);
+  }
+
+  const configPath = path.join(devmindDir, 'config.json');
+  let config: DevMindConfig;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as DevMindConfig;
+  } catch {
+    console.error(`❌ Failed to read config.json at ${configPath}`);
+    process.exit(1);
+    return;
+  }
+
+  const rule = buildRule(config, devmindDir);
+  const projectName = config.project_name;
+
+  // Backward-compat: piped/redirected output or explicit --print → plain print.
+  if (opts.print || !process.stdout.isTTY) {
+    printRuleBanner(rule, projectName);
+    return;
+  }
+
+  const workspaceRoot = path.dirname(devmindDir);
+
+  try {
+    const target = await pickTarget();
+    const mode = await pickMode();
+
+    if (mode === 'manual') {
+      const scope = target.rules.scopes[0];
+      const file = resolveScopeFile(scope.file, scope.scope, workspaceRoot);
+      const noteFrontmatter = target.rules.wrap
+        ? '\n    (this file needs frontmatter — automatic mode adds it for you)'
+        : '';
+      printRuleBanner(
+        rule,
+        projectName,
+        ` 💡 Save this to ${file.replace(/\\/g, '/')}${noteFrontmatter}`
+      );
+      return;
+    }
+
+    // Automatic mode.
+    const scope = await pickRuleScope(target);
+    let filePath: string;
+    if (scope.scope === 'project') {
+      const base = await pickDirectory(workspaceRoot, `Where is the project root for ${target.label}?`);
+      filePath = path.join(base, resolveOsPath(scope.file));
+    } else {
+      filePath = resolveScopeFile(scope.file, 'global', workspaceRoot);
+    }
+
+    const merged = mergeRuleFile(filePath, rule, target.rules.style, target.rules.wrap);
+
+    console.log(`\n📝 Target: ${filePath.replace(/\\/g, '/')}  (${merged.existed ? (target.rules.style === 'append-section' ? 'merge DevsMind block into existing' : 'overwrite dedicated file') : 'create new'})`);
+    console.log(`\n${target.rules.style === 'append-section' ? 'The DevsMind block to be written:' : 'File contents to be written:'}\n`);
+    console.log(merged.preview.split('\n').map(l => '   ' + l).join('\n'));
+
+    const ok = await confirmPrompt('Write this?', true);
+    if (!ok) {
+      console.log('\nAborted — nothing written.');
+      return;
+    }
+
+    writeConfigFile(filePath, merged.content);
+    console.log(`\n✅ DevsMind rule written to ${filePath.replace(/\\/g, '/')} for ${target.label}.`);
+  } catch (err) {
+    if (err instanceof CancelledError) {
+      console.log('\nCancelled.');
+      return;
+    }
+    throw err;
+  }
 }

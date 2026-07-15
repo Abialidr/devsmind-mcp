@@ -45,6 +45,36 @@ export interface ProjectContext {
 }
 
 /**
+ * Walk up from `startDir` looking for a `.devmind/config.json`. Returns the
+ * absolute path to the `.devmind` directory, or null if none is found.
+ */
+export function findDevmindDir(startDir: string): string | null {
+  let current = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(current, '.devmind');
+    if (fs.existsSync(path.join(candidate, 'config.json'))) {
+      return candidate;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+/**
+ * Resolve the `.devmind` directory for a command: honour an explicit `--path`
+ * (which must itself contain a config.json), otherwise auto-detect by walking
+ * up from the current working directory. Returns null when nothing is found.
+ */
+export function resolveDevmindDir(explicitPath?: string): string | null {
+  if (explicitPath) {
+    const resolved = path.resolve(explicitPath);
+    return fs.existsSync(path.join(resolved, 'config.json')) ? resolved : null;
+  }
+  return findDevmindDir(process.cwd());
+}
+
+/**
  * Loads project config.json and .env from the given .devmind directory path.
  */
 export function loadProjectContext(devmindPath: string): ProjectContext {

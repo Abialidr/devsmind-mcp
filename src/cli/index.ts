@@ -5,6 +5,8 @@ import { handleInit } from './init';
 import { handleRule } from './rule';
 import { handleView } from './view';
 import { handlePrune } from './prune';
+import { handleSync } from './sync';
+import { handleMcp } from './integrations/mcp';
 import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
 
@@ -63,10 +65,42 @@ program
 
 program
   .command('rule')
-  .description('Print the ready-to-paste AI workspace rule for this brain')
+  .description('Get the AI workspace rule and place it in your tool (guided), or print it')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .action((opts: { path?: string }) => {
-    handleRule(opts);
+  .option('--print', 'Just print the rule to stdout (no interactive placement)')
+  .action(async (opts: { path?: string; print?: boolean }) => {
+    try {
+      await handleRule(opts);
+    } catch (err) {
+      console.error(`❌ Rule failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('mcp')
+  .description('Add DevsMind as an MCP server to your IDE or CLI (guided, per-tool)')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (opts: { path?: string }) => {
+    try {
+      await handleMcp(opts);
+    } catch (err) {
+      console.error(`❌ MCP setup failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('sync')
+  .description('Sync the committed graph + history from disk into the local brain.db')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (opts: { path?: string }) => {
+    try {
+      await handleSync(opts);
+    } catch (err) {
+      console.error(`❌ Sync failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
   });
 
 program
