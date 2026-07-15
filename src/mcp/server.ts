@@ -15,7 +15,7 @@ import {
   updateScratchpad,
   completeScratchpad
 } from '../db/indexer';
-import { scanRepoFiles } from '../utils/scanner';
+import { scanRepoFiles, INDEXABLE_EXTENSIONS } from '../utils/scanner';
 import { stageEntry, readStaged, clearStaged, commitStagedChanges, StagedEntry } from '../db/staging';
 
 // â”€â”€â”€ Port: devsâ†’D(4)E(5)=45 + mindâ†’M(13)=13 â†’ 4513 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -38,7 +38,8 @@ Non-negotiable workflow:
 2. To read one function/class: call get_node_code instead of opening the file. It parses live from disk, so it's cheaper and always current.
 3. Before touching any function's signature: call get_node_graph. Git shows you what changed; it never shows you what depends on it. Find out before you break something, not after.
 4. Before refactoring: call get_node_history. Git blame tells you who and when; it never tells you why. The actual decision context only exists here.
-5. After ANY code change, in the SAME turn: call stage_change once per touched entity, then commit_changes exactly once. This is the only moment this reasoning can ever be captured — never end a turn with it undone.`;
+5. After ANY code change, in the SAME turn: call stage_change once per touched entity, then commit_changes exactly once. This is the only moment this reasoning can ever be captured — never end a turn with it undone.
+6. Scope: stage_change is for source code only (functions/classes/logic) and will be REJECTED for stylesheets, markup, JSON/config, docs, images, or any other non-code asset. Do not stage those files — they have no callers/callees to resolve and only bloat the graph.`;
 
 // Shared node-type taxonomy description, reused by update_history and stage_change.
 const NODE_TYPE_DESCRIPTION =
@@ -273,7 +274,7 @@ function createMcpServer(): Server {
         {
           name: 'stage_change',
           description:
-            'Stage ONE changed code node (function/class/method/etc.) into a buffer without writing to the graph yet. Call this once for EVERY file/entity you touched during a task — passing only the code and reasoning; you do NOT reason about connections here. The `reasoning` you write here — why, goal, what was broken before, what ticket — exists nowhere else once this turn ends; it is not in the diff or the commit message, and no later reindex can reconstruct it, so this is the only chance to capture it. When you are done with all the files, call commit_changes ONCE — it creates every node, writes every history entry, and resolves all connections between them via local AST in a single pass (so a call from one changed file into another resolves correctly no matter which order you staged them). Staging is buffered on disk, so it survives a context reset. ⚠️ YOU MUST CALL commit_changes at the end, or nothing is written to the graph — staging alone leaves this reasoning stranded in a buffer no one else will ever see.',
+            `Stage ONE changed code node (function/class/method/etc.) into a buffer without writing to the graph yet. SCOPE: only source code files — ${Array.from(INDEXABLE_EXTENSIONS).sort().join(', ')}. Do NOT call this for stylesheets (.css/.scss/.less), markup, JSON/config, docs, or other non-code assets — DevsMind models logic entities with callers/callees, not static files, and staging them only bloats the graph; the call will be rejected. Call this once for EVERY file/entity you touched during a task — passing only the code and reasoning; you do NOT reason about connections here. The \`reasoning\` you write here — why, goal, what was broken before, what ticket — exists nowhere else once this turn ends; it is not in the diff or the commit message, and no later reindex can reconstruct it, so this is the only chance to capture it. When you are done with all the files, call commit_changes ONCE — it creates every node, writes every history entry, and resolves all connections between them via local AST in a single pass (so a call from one changed file into another resolves correctly no matter which order you staged them). Staging is buffered on disk, so it survives a context reset. ⚠️ YOU MUST CALL commit_changes at the end, or nothing is written to the graph — staging alone leaves this reasoning stranded in a buffer no one else will ever see.`,
           inputSchema: {
             type: 'object',
             properties: {
@@ -726,9 +727,26 @@ function createMcpServer(): Server {
 
         case 'stage_change': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
+          const filePath = String(args.file_path);
+          const ext = path.extname(filePath).toLowerCase();
+          if (!INDEXABLE_EXTENSIONS.has(ext)) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  staged: false,
+                  error: `'${ext || '(no extension)'}' is not a supported node file type — nothing was staged.`,
+                  reason:
+                    'DevsMind models functions, classes, and logic entities in source code. Stylesheets (.css/.scss/.less), markup, JSON/config, docs, and other non-code assets are intentionally out of scope, not oversights — staging them would only bloat the graph with nodes that have no callers/callees to resolve. Do not retry this file.',
+                  supported_extensions: Array.from(INDEXABLE_EXTENSIONS).sort()
+                })
+              }]
+            };
+          }
           const entry: StagedEntry = {
             node_id: String(args.node_id),
-            file_path: String(args.file_path),
+            file_path: filePath,
             code_snapshot: String(args.code_snapshot),
             reasoning: args.reasoning as any,
             name: args.name ? String(args.name) : undefined,

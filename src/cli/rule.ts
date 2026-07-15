@@ -12,6 +12,7 @@ import {
   CancelledError,
 } from './integrations/prompt';
 import { resolveScopeFile, resolveOsPath } from './integrations/registry';
+import { INDEXABLE_EXTENSIONS } from '../utils/scanner';
 
 /**
  * Build the ready-to-paste DevsMind workspace rule from a project's config.
@@ -90,6 +91,8 @@ export function buildRule(config: DevMindConfig, devmindDir: string): string {
     '### ⚠️ MANDATORY: Record Every Code Change in the Graph',
     '',
     'This is NOT optional. Whenever you add, modify, rename, or delete code, you MUST record it in the graph in the SAME turn — before you consider the task done. An answer that changed code but did not update the graph is INCOMPLETE: the code changed, but every other developer\'s AI agent querying this project still sees the old version and none of the reasoning behind the new one.',
+    '',
+    `**Scope — this applies to source code only.** ${bt}stage_change${bt} models functions/classes/logic entities and will be REJECTED for anything outside: ${Array.from(INDEXABLE_EXTENSIONS).sort().join(', ')}. Do NOT stage stylesheets (${bt}.css${bt}/${bt}.scss${bt}/${bt}.less${bt}), markup, JSON/config, docs, images, or other non-code assets — they have no callers/callees to resolve and only bloat the graph with dead-end nodes. If a file's extension isn't in that list, skip it; do not retry.`,
     '',
     `1. **For ANY change (one file or many):** call ${bt}stage_change${bt} EXACTLY ONCE for EVERY function/class/entity you touched — pass its ${bt}node_id${bt}, ${bt}file_path${bt}, ${bt}code_snapshot${bt}, and ${bt}reasoning${bt}. You do NOT reason about connections. The ${bt}reasoning${bt} you write is the whole point — it's the only place "why" ever gets recorded, and it only exists if you write it down right now. When every touched entity is staged, call ${bt}commit_changes${bt} EXACTLY ONCE.`,
     `2. **⚠️ ${bt}commit_changes${bt} IS REQUIRED.** Staging alone writes NOTHING to the graph — it just buffers to a local file no one else will ever read. If you call ${bt}stage_change${bt} and forget ${bt}commit_changes${bt}, the reasoning you just wrote is stranded and effectively lost: the next session (yours or a teammate's) starts from a graph that never learned about this change. NEVER end your turn with un-committed staged changes.`,

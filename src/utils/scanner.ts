@@ -2,8 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { DevMindConfig, loadProjectContext, resolveRepoPath } from './config';
 
-/** Extensions we consider indexable source files */
-const INDEXABLE_EXTENSIONS = new Set([
+/**
+ * Extensions we consider indexable source files. Also the source of truth for
+ * what `stage_change` will accept — DevsMind models functions/classes/logic
+ * entities, not stylesheets, markup, config, or other non-code assets, so
+ * anything outside this set is out of scope by design, not an oversight.
+ */
+export const INDEXABLE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.java', '.cs', '.rb', '.php',
   '.rs', '.swift', '.kt', '.dart', '.vue', '.svelte'
