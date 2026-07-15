@@ -348,12 +348,15 @@ function createMcpServer(): Server {
         },
         {
           name: 'search_nodes',
-          description: 'Search node names, identifiers, or reasoning logs matching a query.',
+          description:
+            'Search for code by name/id/reasoning first; if nothing matches, automatically falls back to a full code-content search (regex or substring) over every node\'s current code — so this is the ONE search tool to call, in ONE turn, whether the term is an identifier or only appears in the code body. Each result is tagged `matched_via: "identifier"` or `matched_via: "code"` so you know how it was found; code matches also include line-level `matches`, `match_count`, and `match_ratio`. Prefer this over grep/filesystem search.',
           inputSchema: {
             type: 'object',
             properties: {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              query: { type: 'string', description: 'Search term or query string' }
+              query: { type: 'string', description: 'Search term, substring, or (with is_regex) regex pattern' },
+              is_regex: { type: 'boolean', description: 'Treat query as a regex pattern when falling back to code search (default: false)' },
+              case_insensitive: { type: 'boolean', description: 'Case-insensitive code-fallback search (default: true)' }
             },
             required: ['devmind_path', 'query']
           }
@@ -434,20 +437,10 @@ function createMcpServer(): Server {
             required: ['devmind_path', 'query']
           }
         },
-        {
-          name: 'search_code',
-          description: 'Regex or string search over cached codebase code snapshots. Returns matches grouped by DevsMind Node ID, file path, and matching lines, along with matching statistics (ratio, count). Prefer this over direct grep search.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              query: { type: 'string', description: 'Regex or substring pattern to search for in code' },
-              is_regex: { type: 'boolean', description: 'Whether the query is a regex pattern (default: false)' },
-              case_insensitive: { type: 'boolean', description: 'Perform case-insensitive search (default: true)' }
-            },
-            required: ['devmind_path', 'query']
-          }
-        },
+        // NOTE: `search_code` is intentionally NOT listed here anymore. `search_nodes` now
+        // falls back to the same code-content search automatically when the identifier
+        // match is empty, so there is no longer a reason to advertise two search tools.
+        // The handler below is retained so any direct/legacy call still works.
         {
           name: 'get_orphaned_nodes',
           description: 'Find disconnected code nodes in the graph that have no incoming or outgoing connections.',
@@ -843,8 +836,10 @@ function createMcpServer(): Server {
         case 'search_nodes': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const query = String(args.query);
+          const isRegex = args.is_regex === true;
+          const caseInsensitive = args.case_insensitive !== false;
           const db = getDatabase(devmindPath);
-          const results = db.searchNodes(query);
+          const results = db.searchNodes(query, { is_regex: isRegex, case_insensitive: caseInsensitive });
           return {
             content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
           };

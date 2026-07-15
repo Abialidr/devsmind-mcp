@@ -879,7 +879,17 @@ export class DevMindDatabase {
 
   // --- Search Operations ---
 
-  searchNodes(query: string): DbNode[] {
+  /**
+   * Search for nodes by name/id/reasoning first (cheap, SQL-only). If that finds
+   * nothing, transparently fall back to a code-content search (same engine as
+   * {@link searchCode}) so a query like "alipay" still succeeds even when no
+   * node's name/id/reasoning mentions it but the code itself does. Every result
+   * is tagged `matched_via` so the caller knows which path found it.
+   */
+  searchNodes(
+    query: string,
+    opts: { is_regex?: boolean; case_insensitive?: boolean } = {}
+  ): Array<(DbNode & { matched_via: 'identifier' }) | (ReturnType<DevMindDatabase['searchCode']>[number] & { matched_via: 'code' })> {
     const stmt = this.db.prepare(`
       SELECT DISTINCT n.* FROM nodes n
       LEFT JOIN history h ON n.id = h.node_id
@@ -887,7 +897,18 @@ export class DevMindDatabase {
       LIMIT 50
     `);
     const wildcard = `%${query}%`;
-    return stmt.all(wildcard, wildcard, wildcard) as DbNode[];
+    const identifierMatches = stmt.all(wildcard, wildcard, wildcard) as DbNode[];
+
+    if (identifierMatches.length > 0) {
+      return identifierMatches.map(n => ({ ...n, matched_via: 'identifier' as const }));
+    }
+
+    const codeMatches = this.searchCode({
+      query,
+      is_regex: opts.is_regex,
+      case_insensitive: opts.case_insensitive
+    });
+    return codeMatches.map(m => ({ ...m, matched_via: 'code' as const }));
   }
 
   getRecentChanges(hours: number = 24, analyzeImpact: boolean = true): {
