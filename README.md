@@ -519,6 +519,33 @@ By placing `.devmind/config.json` and `.devmind/brain.db` in Git, you share the 
 
 ### Version 1.2.2
 *   **Node.js v24 LTS & npm Dependency Conflict Resolution**: Fixed native compilation conflicts (like `better-sqlite3` and `node-gyp` errors) that crashed on Node v24, ensuring DevsMind builds and installs out-of-the-box on both Node v22 and Node v24 environments.
+*   **Robust LLM JSON Parsing**: Added extraction/repair utilities for the indexer's LLM responses, so malformed or fenced JSON (trailing commas, markdown code fences, truncated output) is recovered instead of aborting the extraction step.
+*   **Duplicate Node Location Support**: Fixed indexing failures when two distinct code entities legitimately shared the same declared location (e.g. overloaded members), instead of one silently clobbering the other.
+
+### Version 1.2.1
+*   **Vertex AI Gemini Provider**: Added `--provider vertex` as an alternative to the direct Gemini API for `index`/`reindex`, authenticating via a Google Cloud service account instead of a raw API key — the option teams already using GCP IAM and billing need instead of managing a separate Gemini key.
+*   **Fixed: 3 Bugs in the Interactive Configuration Browser**: The tree-based folder browser introduced in 1.2.0 could let navigation escape above the repo root, didn't visually show that a folder was excluded *because* its parent was excluded (only directly-excluded entries were marked), and mishandled the `.gitignore`-import confirmation step. All three fixed.
+*   **Cursor Position Preserved in the File Browser**: Toggling a file or folder's include/exclude state used to reset the browser's cursor to the top of the list, making it tedious to toggle several entries in a row in a large tree. The cursor position is now retained across toggles.
+
+### Version 1.2.0
+*   **Interactive Tree-Based Configuration Browser for `devsmind init`**: Replaced manually typing comma-separated ignore patterns with a navigable folder tree — browse into subdirectories, toggle files/folders to include or exclude them (with inherited-exclusion status shown for anything under an excluded parent), and optionally seed exclusions from the repo's `.gitignore` or a common-preset list (lockfiles, build configs, etc.) before fine-tuning by hand.
+
+### Version 1.1.1
+*   **Fixed: Foreign Key Constraint Failures in `addConnection`**: Creating a connection could fail outright if the target node hadn't been inserted yet (an ordering issue during indexing), instead of being handled gracefully. Connection writes are now resilient to out-of-order node creation.
+
+### Version 1.1.0
+*   **Native Background Index Runner (`devsmind index --run`)**: Indexing could previously only be driven in-chat via MCP tools, burning the IDE agent's own token budget per file. This release moved the Gemini and Ollama LLM integrations directly into the CLI runner, so a full first-pass index can run in the background from the terminal instead — the predecessor to today's `index`/`reindex` commands.
+*   **Compressed History Snapshots**: History code snapshots are now transparently zlib-compressed on write and decompressed on read, substantially shrinking `brain.db`'s on-disk size as a project's change history grows.
+*   **SQLite `VACUUM` on Index Completion & Graph Recheck**: Reclaims space freed by deletions/compaction automatically at the end of an index run and during `recheck_graph`, instead of the database file only ever growing.
+
+### Version 1.0.1
+*   **MCP Server & Rule Generator Scaffolding**: Wired the initial `devsmind rule` generator, a versioned SQLite database schema, and the first MCP server tool surface together as a coherent baseline for the releases that followed.
+
+### Version 1.0.0 (Initial Release)
+*   **Core MCP Toolset**: Shipped the first working tool surface — including `deprecate_node` and `get_node_code` (with a stale-snapshot refresh protocol referenced from the workspace rule) — plus the `devsmind prune` command, replacing an earlier `get_project_context` / `delete_node` pairing with the deprecate-first model DevsMind still uses today.
+*   **Workspace Rule Tuning**: Slimmed the generated rule to roughly 400 tokens by cutting redundant inline tool-argument JSON, then reorganized the remaining guidance into an "Available Tools" table with a one-line use-case per tool for faster agent lookup.
+*   **Cross-Platform Path Fixes**: Fixed `DEVMIND_PATH` printing with backslashes on Windows (which broke downstream parsing) in favor of forward slashes, added a descriptive error when `getDatabase` can't find the target directory, and added `resolveDevmindPath` auto-detection so tools still work if the calling agent forgot to pass `devmind_path` explicitly.
+*   **Initial Documentation**: First pass of the README — workspace topologies, the full MCP tool list, `devsmind init` re-initialization behavior, a simplified quick start, and the `delete_node`-to-`deprecate_node` policy — plus an internal roadmap doc for planned "next core" features.
 
 ---
 
