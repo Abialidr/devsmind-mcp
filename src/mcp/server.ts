@@ -191,7 +191,7 @@ function createMcpServer(): Server {
         {
           name: 'get_node_code',
           description:
-            "Get a single node's CURRENT source code, parsed live from its file on disk — token-efficient, since it returns only that function/class/route rather than the whole file. Call this instead of reading a file whenever you need one specific entity. Response fields: `source: \"live\"` means the code was read from disk and is current. `source: \"cached\"` means the symbol could not be located in its file (not a TS/JS file, or it was renamed/moved/deleted) so a possibly-stale cached snapshot was returned — verify it against the file before relying on it. `snapshot_outdated: true` means the stored graph has drifted from disk; re-stage the node with stage_change + commit_changes to bring the brain back in sync. To fetch a whole call flow at once, prefer get_node_graph with include_code instead of calling this repeatedly.",
+            "Get a single node's CURRENT source code, parsed live from its file on disk — token-efficient, since it returns only that function/class/route rather than the whole file. Call this instead of reading a file whenever you need one specific entity: reading the raw file instead means the graph never learns you looked at it, so drift between what's recorded and what's actually on disk goes undetected. Response fields: `source: \"live\"` means the code was read from disk and is current. `source: \"cached\"` means the symbol could not be located in its file (not a TS/JS file, or it was renamed/moved/deleted) so a possibly-stale cached snapshot was returned — verify it against the file before relying on it. `snapshot_outdated: true` means the stored graph has drifted from disk; re-stage the node with stage_change + commit_changes to bring the brain back in sync. To fetch a whole call flow at once, prefer get_node_graph with include_code instead of calling this repeatedly.",
           inputSchema: {
             type: 'object',
             properties: {
@@ -273,7 +273,7 @@ function createMcpServer(): Server {
         {
           name: 'stage_change',
           description:
-            'Stage ONE changed code node (function/class/method/etc.) into a buffer without writing to the graph yet. Call this once for EVERY file/entity you touched during a task — passing only the code and reasoning; you do NOT reason about connections here. When you are done with all the files, call commit_changes ONCE — it creates every node, writes every history entry, and resolves all connections between them via local AST in a single pass (so a call from one changed file into another resolves correctly no matter which order you staged them). Staging is buffered on disk, so it survives a context reset. ⚠️ YOU MUST CALL commit_changes at the end, or nothing is written to the graph.',
+            'Stage ONE changed code node (function/class/method/etc.) into a buffer without writing to the graph yet. Call this once for EVERY file/entity you touched during a task — passing only the code and reasoning; you do NOT reason about connections here. The `reasoning` you write here — why, goal, what was broken before, what ticket — exists nowhere else once this turn ends; it is not in the diff or the commit message, and no later reindex can reconstruct it, so this is the only chance to capture it. When you are done with all the files, call commit_changes ONCE — it creates every node, writes every history entry, and resolves all connections between them via local AST in a single pass (so a call from one changed file into another resolves correctly no matter which order you staged them). Staging is buffered on disk, so it survives a context reset. ⚠️ YOU MUST CALL commit_changes at the end, or nothing is written to the graph — staging alone leaves this reasoning stranded in a buffer no one else will ever see.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -307,7 +307,7 @@ function createMcpServer(): Server {
         {
           name: 'commit_changes',
           description:
-            'Commit all buffered stage_change entries in one atomic pass: creates/updates every staged node, writes every history snapshot, then resolves all connections between the staged nodes (and into the existing graph) via local AST — auto-creating any referenced-but-missing target nodes. Clears the buffer on success. Call this exactly once after you have finished staging every file you touched.',
+            'Commit all buffered stage_change entries in one atomic pass: creates/updates every staged node, writes every history snapshot, then resolves all connections between the staged nodes (and into the existing graph) via local AST — auto-creating any referenced-but-missing target nodes. Clears the buffer on success. Call this exactly once after you have finished staging every file you touched, in the SAME turn — every teammate\'s AI agent reads this same graph, so an uncommitted turn is not just your own missed step, it\'s a gap in what the whole team sees next time they look here.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -331,7 +331,7 @@ function createMcpServer(): Server {
         },
         {
           name: 'get_node_history',
-          description: 'Get the full version history of a code node, including all past code snapshots and change reasoning.',
+          description: 'Get the full version history of a code node, including all past code snapshots and change reasoning. Git blame tells you who and when; it never tells you why — the actual decision, ticket, and what was rejected only exists here. Skip this before refactoring and you risk re-breaking a bug that was already fixed once, or undoing a decision made for a reason you never saw.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -344,7 +344,7 @@ function createMcpServer(): Server {
         {
           name: 'get_node_graph',
           description:
-            'Get a node\'s dependency graph — connected nodes and the relationships between them. Set direction:"out" AND include_code:true to pull an ENTIRE CALL FLOW in a single call: the starting node plus everything it transitively calls, each with its current source code read from disk. Use that combination whenever you are tracing how a request, endpoint, or feature flows through the codebase — it replaces a long chain of get_node_code calls with one round trip. Use direction:"in" to find every caller of a node (impact analysis before a change). If `code_truncated` is true in the response, the character budget ran out and `nodes_without_code` nodes came back with metadata but no code — fetch those individually with get_node_code, or raise code_char_budget.',
+            'Get a node\'s dependency graph — connected nodes and the relationships between them. Set direction:"out" AND include_code:true to pull an ENTIRE CALL FLOW in a single call: the starting node plus everything it transitively calls, each with its current source code read from disk. Use that combination whenever you are tracing how a request, endpoint, or feature flows through the codebase — it replaces a long chain of get_node_code calls with one round trip. Use direction:"in" to find every caller of a node before you change its signature — git shows you what changed, never what depends on it, so this is the only way to know what breaks before a teammate hits it. If `code_truncated` is true in the response, the character budget ran out and `nodes_without_code` nodes came back with metadata but no code — fetch those individually with get_node_code, or raise code_char_budget.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -371,7 +371,7 @@ function createMcpServer(): Server {
         {
           name: 'search_nodes',
           description:
-            'Search for code by name/id/reasoning first; if nothing matches, automatically falls back to a full code-content search (regex or substring) over every node\'s current code — so this is the ONE search tool to call, in ONE turn, whether the term is an identifier or only appears in the code body. Each result is tagged `matched_via: "identifier"` or `matched_via: "code"` so you know how it was found; code matches also include line-level `matches`, `match_count`, and `match_ratio`. Prefer this over grep/filesystem search.',
+            'Search for code by name/id/reasoning first; if nothing matches, automatically falls back to a full code-content search (regex or substring) over every node\'s current code — so this is the ONE search tool to call, in ONE turn, whether the term is an identifier or only appears in the code body. Each result is tagged `matched_via: "identifier"` or `matched_via: "code"` so you know how it was found; code matches also include line-level `matches`, `match_count`, and `match_ratio`. Prefer this over grep/filesystem search — a raw grep finds text, but misses every bit of recorded reasoning behind why that code looks the way it does.',
           inputSchema: {
             type: 'object',
             properties: {
