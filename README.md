@@ -87,8 +87,9 @@ npm install -g devsmind-mcp
 > ```bash
 > npm install -g devsmind-mcp@latest   # pull the latest CLI
 > devsmind rule                        # re-paste — rule content changed in 2.2.1
+> devsmind memory                      # new in 2.2.2 — seed your tool's own memory too (optional)
 > ```
-> As of **2.2.1**, the generated rule's content changed (a new "why this matters" section, and a scope restriction on `stage_change`) — an old pasted rule still works, but re-running `devsmind rule` and re-pasting it into your IDE picks up the update. Check the [Changelog](#changelog) each time you upgrade to see if a given release calls for this.
+> As of **2.2.1**, the generated rule's content changed (a new "why this matters" section, and a scope restriction on `stage_change`) — an old pasted rule still works, but re-running `devsmind rule` and re-pasting it into your IDE picks up the update. **2.2.2** adds `devsmind memory` as an entirely new, optional command — nothing to re-run for it, just something new you can now do. Check the [Changelog](#changelog) each time you upgrade to see if a given release calls for this.
 
 The MCP connection and the workspace rule are **per-developer, per-tool** — they live in your IDE/CLI's own config files on your machine and are **not** committed to git. So every teammate runs `devsmind mcp` and `devsmind rule` once on their own machine, even when the brain itself is already set up.
 
@@ -111,12 +112,17 @@ devsmind mcp
 #    is connected but your agent won't know to use it.
 devsmind rule
 
-# 4. Start the MCP server. Run from the folder containing .devmind (or pass
+# 4. (Optional) Seed your tool's OWN persistent memory/skills store too — a
+#    different mechanism from the rule file above, only available for a
+#    couple of tools (see why below). Safe to skip; the rule alone is enough.
+devsmind memory
+
+# 5. Start the MCP server. Run from the folder containing .devmind (or pass
 #    --path <devmind_path>). Skip this if you connected via stdio in step 2 —
 #    then your IDE launches the server itself.
 devsmind start
 
-# 5. (Optional, recommended) Index your codebase so the graph actually has
+# 6. (Optional, recommended) Index your codebase so the graph actually has
 #    content to look up. This is the one step unique to a NEW project. It's
 #    skippable — you can instead let the graph "grow as you go" as your agent
 #    records changes — but until the code is indexed (or enough organic usage
@@ -125,7 +131,7 @@ devsmind index --run --provider gemini --key YOUR_GEMINI_KEY
 #    (see the `index` / `reindex` reference below for providers, flags, and the
 #     zero-setup grow-as-you-go alternative)
 
-# 6. Commit .devmind/ so your team shares the same brain.
+# 7. Commit .devmind/ so your team shares the same brain.
 git add .devmind && git commit -m "Add DevsMind brain"
 ```
 
@@ -149,13 +155,17 @@ devsmind mcp
 # 4. Place the workspace rule for your tool.
 devsmind rule
 
-# 5. Sync the committed graph/ + history/ JSONs into your local brain.db.
+# 5. (Optional) Seed your tool's own persistent memory/skills store, if it
+#    has one DevsMind can safely write to (see why below). Skippable.
+devsmind memory
+
+# 6. Sync the committed graph/ + history/ JSONs into your local brain.db.
 #    Especially important for stdio setups (VS Code and most CLI tools): the
 #    editor spawns the server itself and only loads the graph once per process,
 #    so after every `git pull` run this to pick up teammates' changes.
 devsmind sync
 
-# 6. Start the server (skip if you connected via stdio — the IDE runs it).
+# 7. Start the server (skip if you connected via stdio — the IDE runs it).
 devsmind start
 ```
 
@@ -165,7 +175,13 @@ That's the whole loop. For what each step actually does under the hood — `init
 
 ## 🔌 Adding DevsMind to your IDE / CLI: `devsmind mcp`, `devsmind rule` & `devsmind memory`
 
-Both commands are **guided and per-tool**. They ask what you're working in (Cursor, VS Code, Windsurf, Kiro, Antigravity, Claude Code, Codex CLI, Qwen Code CLI, …), then either **print the exact snippet to copy-paste (manual)** or **create/merge the config file for you (automatic)** — with a preview and confirmation, never clobbering your existing servers.
+These three commands solve three genuinely different problems, and it helps to understand *why* there are three instead of one:
+
+1. **`devsmind mcp` — can your agent even reach the tools?** Connecting the MCP server is what makes `search_nodes`, `get_node_graph`, `stage_change`, and every other DevsMind tool *exist* from your agent's point of view. Skip this and DevsMind is just files sitting on disk — nothing in your IDE or CLI knows they're there to query at all. This is pure capability, wired up per tool since every one of them expects the server in a different config file, key, and shape.
+2. **`devsmind rule` — does your agent know it should use them?** Being *connectable* isn't the same as being *used*. Without the workspace rule, an agent with DevsMind fully wired up will often still default to grep and raw file reads out of habit, because nothing told it DevsMind exists or why it matters more than what it already knows how to do. The rule is what actually changes behavior — it's where DevsMind explains the team-brain framing, the consequence of skipping `stage_change`/`commit_changes`, and exactly which tool to reach for and when.
+3. **`devsmind memory` — does that behavior survive without you re-pasting anything?** The rule file is still a static file *you* maintain and paste in once. Several tools now have their own persistent, agent-written memory or "skills" store — a place the agent records a lesson itself and reads it back automatically forever after, independent of whether the pasted rule ever goes stale or gets skipped during a teammate's setup. Where it's safe to do so, this seeds that store directly with the same content, so the workflow contract lives in a place the *tool itself* owns and refreshes, not just a copy-pasted file.
+
+`mcp` and `rule` are both **guided and per-tool**: they ask what you're working in (Cursor, VS Code, Windsurf, Kiro, Antigravity, Claude Code, Codex CLI, Qwen Code CLI, …), then either **print the exact snippet to copy-paste (manual)** or **create/merge the config file for you (automatic)** — with a preview and confirmation, never clobbering your existing servers.
 
 ```bash
 # Add the MCP server connection. Picks the right transport per tool
@@ -186,7 +202,7 @@ Under `--stdio` (how VS Code and most CLI tools run the server), the editor spaw
 devsmind sync
 ```
 
-**`devsmind memory`** — beyond the rule file, some IDEs/CLIs have their own persistent, agent-managed memory or "skills" store — a place the agent itself writes a lesson to once and reads back automatically in every future session, no re-pasting required. This is a *different* mechanism per tool, under genuinely different names (Claude Code's "Auto Memory," Antigravity's "Skills" / `/learn`, Cursor's "Memories," Windsurf's "Cascade Memories," …), and not every one of them is safe to write into — some are backed by an undocumented database, gated behind manual approval, or explicitly documented as internal, regenerated state that a manual edit would just get overwritten. `devsmind memory` only writes where research confirmed the tool actually reads back a file it didn't create:
+**`devsmind memory`** — beyond the rule file, some IDEs/CLIs have their own persistent, agent-managed memory or "skills" store — a place the agent itself writes a lesson to once and reads back automatically in every future session, no re-pasting required. This is a *different* mechanism per tool, under genuinely different names (Claude Code's "Auto Memory," Antigravity's "Skills" / `/learn`, Cursor's "Memories," Windsurf's "Cascade Memories," …), and not every one of them is safe to write into — some are backed by an undocumented database, gated behind manual approval, or explicitly documented as internal, regenerated state that a manual edit would just get overwritten. Writing to the wrong one is worse than doing nothing: it looks like it worked and either silently does nothing or gets clobbered by the tool's own background process. So `devsmind memory` only writes where research specifically confirmed the tool reads back a file it didn't create itself — everywhere else, it explains why not and what to do instead:
 
 ```bash
 devsmind memory
@@ -498,7 +514,7 @@ By placing `.devmind/config.json` and `.devmind/brain.db` in Git, you share the 
 
 ## Changelog
 
-### Version 2.3.0 (Current Release)
+### Version 2.2.2 (Current Release)
 *   **`devsmind memory` — Seed Each Tool's Own Persistent Memory/Skills Store**: The rule file and the MCP `instructions` field both get the workflow contract in front of an agent, but neither IS the tool's own memory — several IDEs/CLIs have a separate, agent-managed store (Claude Code's "Auto Memory," Antigravity's "Skills" / `/learn`, Cursor's "Memories," and others, each under genuinely different names, not one shared convention) that the agent writes a lesson to once and reads back automatically forever after, no re-pasting required. A dedicated research pass — not just checking for features branded "memory," but actually verifying whether each tool reads back a file it didn't create, or only trusts content from its own internal mechanism — found only 2 of 8 tools safe to write into: **Antigravity** (IDE + CLI), confirmed by a firsthand test that a manually-placed `SKILL.md` is discovered the same as an agent-created one, and **Claude Code**, which writes a `devsmind.md` topic file plus a one-line pointer appended into `MEMORY.md` (topic files only load "on demand," so the pointer is what makes it actually get found). Everywhere else — Codex CLI, Qwen's background auto-memory tier, Windsurf, Cursor, Kiro, VS Code Copilot — `devsmind memory` prints the tool's own name for the feature and the specific evidence for why writing to it isn't safe (e.g. quoting Codex's own docs: *"these files are treated as generated state... don't rely on editing them by hand"*), instead of a silent no-op that looks like it worked and didn't. Reuses the same `DEVSMIND_INSTRUCTIONS` content as the MCP `instructions` field — one source of truth, not a third hand-maintained copy.
 
 ### Version 2.2.1
