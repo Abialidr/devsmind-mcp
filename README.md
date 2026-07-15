@@ -83,6 +83,13 @@ DevsMind is installed **once per machine**, but there are two different first-ti
 npm install -g devsmind-mcp
 ```
 
+> **🔄 Already using DevsMind? Upgrading an existing install?**
+> ```bash
+> npm install -g devsmind-mcp@latest   # pull the latest CLI
+> devsmind rule                        # re-paste — rule content changed in 2.2.1
+> ```
+> As of **2.2.1**, the generated rule's content changed (a new "why this matters" section, and a scope restriction on `stage_change`) — an old pasted rule still works, but re-running `devsmind rule` and re-pasting it into your IDE picks up the update. Check the [Changelog](#changelog) each time you upgrade to see if a given release calls for this.
+
 The MCP connection and the workspace rule are **per-developer, per-tool** — they live in your IDE/CLI's own config files on your machine and are **not** committed to git. So every teammate runs `devsmind mcp` and `devsmind rule` once on their own machine, even when the brain itself is already set up.
 
 ### 🆕 A) Starting a new brain (first person on the project)
