@@ -9,6 +9,7 @@ import {
   Scope,
   McpScope,
   RuleScope,
+  MemoryScope,
   ConfigFormat,
 } from './registry';
 
@@ -89,6 +90,13 @@ export async function pickMcpScope(target: IdeTarget): Promise<McpScope> {
 
 export async function pickRuleScope(target: IdeTarget): Promise<RuleScope> {
   const scopes = target.rules.scopes;
+  if (scopes.length === 1) return scopes[0];
+  return pickScopeGeneric(scopes, s => s.scope);
+}
+
+/** Assumes `target.memory.supported` and `scopes` are already checked by the caller. */
+export async function pickMemoryScope(target: IdeTarget): Promise<MemoryScope> {
+  const scopes = target.memory.scopes ?? [];
   if (scopes.length === 1) return scopes[0];
   return pickScopeGeneric(scopes, s => s.scope);
 }

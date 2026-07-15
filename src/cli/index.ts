@@ -7,6 +7,7 @@ import { handleView } from './view';
 import { handlePrune } from './prune';
 import { handleSync } from './sync';
 import { handleMcp } from './integrations/mcp';
+import { handleMemory } from './integrations/memory';
 import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
 
@@ -86,6 +87,19 @@ program
       await handleMcp(opts);
     } catch (err) {
       console.error(`❌ MCP setup failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('memory')
+  .description('Seed a tool\'s own persistent agent-memory/skills store (guided, per-tool)')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (opts: { path?: string }) => {
+    try {
+      await handleMemory(opts);
+    } catch (err) {
+      console.error(`❌ Memory setup failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });

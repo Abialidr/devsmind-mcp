@@ -159,11 +159,11 @@ devsmind sync
 devsmind start
 ```
 
-That's the whole loop. For what each step actually does under the hood — `init`'s full prompt flow, `mcp`/`rule`/`sync` in depth, every `index`/`reindex` flag, provider setup, and benchmarks — see the sections below.
+That's the whole loop. For what each step actually does under the hood — `init`'s full prompt flow, `mcp`/`rule`/`sync`/`memory` in depth, every `index`/`reindex` flag, provider setup, and benchmarks — see the sections below.
 
 ---
 
-## 🔌 Adding DevsMind to your IDE / CLI: `devsmind mcp` & `devsmind rule`
+## 🔌 Adding DevsMind to your IDE / CLI: `devsmind mcp`, `devsmind rule` & `devsmind memory`
 
 Both commands are **guided and per-tool**. They ask what you're working in (Cursor, VS Code, Windsurf, Kiro, Antigravity, Claude Code, Codex CLI, Qwen Code CLI, …), then either **print the exact snippet to copy-paste (manual)** or **create/merge the config file for you (automatic)** — with a preview and confirmation, never clobbering your existing servers.
 
@@ -185,6 +185,26 @@ Under `--stdio` (how VS Code and most CLI tools run the server), the editor spaw
 ```bash
 devsmind sync
 ```
+
+**`devsmind memory`** — beyond the rule file, some IDEs/CLIs have their own persistent, agent-managed memory or "skills" store — a place the agent itself writes a lesson to once and reads back automatically in every future session, no re-pasting required. This is a *different* mechanism per tool, under genuinely different names (Claude Code's "Auto Memory," Antigravity's "Skills" / `/learn`, Cursor's "Memories," Windsurf's "Cascade Memories," …), and not every one of them is safe to write into — some are backed by an undocumented database, gated behind manual approval, or explicitly documented as internal, regenerated state that a manual edit would just get overwritten. `devsmind memory` only writes where research confirmed the tool actually reads back a file it didn't create:
+
+```bash
+devsmind memory
+```
+
+| Tool | Feature | Seeded automatically? |
+|---|---|---|
+| Google Antigravity (IDE + CLI) | Skills / `/learn` | ✅ — confirmed by Google's own codelab plus a firsthand test that a manually-placed `SKILL.md` is discovered the same as an agent-created one |
+| Claude Code | Auto Memory | ✅ — writes a `devsmind.md` topic file plus a one-line pointer appended into `MEMORY.md` (topic files only load "on demand," so the pointer is what makes it get found) |
+| Qwen Code CLI | `QWEN.md` | Already handled — it's the same file `devsmind rule` writes to |
+| Codex CLI | Memories | ❌ manual guidance only — Codex's own docs warn these files are "generated state" a background job regenerates; a manual write would likely get silently overwritten |
+| Qwen Code CLI | background auto-memory dir | ❌ manual guidance only — same undocumented, auto-generated pattern as Codex, no source confirms a manual file survives |
+| Cursor | Memories | ❌ manual guidance only — internal database, requires the agent to propose and you to approve, nothing to write a file to |
+| Windsurf | Cascade Memories | ❌ manual guidance only — no source confirms whether a manually-placed file is ever discovered |
+| Kiro | Knowledge / PR-comment learning | ❌ manual guidance only — not file-based (JSON+embeddings or AWS-internal, opaque) |
+| VS Code (Copilot) | Copilot Memory | ❌ manual guidance only — no documented write API, format has changed repeatedly through 2026 |
+
+For everything in the ❌ rows, `devsmind memory` prints the tool's own name for the feature and exactly why it isn't safe to write to, plus what to do instead — never a silent no-op.
 
 ---
 
@@ -478,7 +498,10 @@ By placing `.devmind/config.json` and `.devmind/brain.db` in Git, you share the 
 
 ## Changelog
 
-### Version 2.2.1 (Current Release)
+### Version 2.3.0 (Current Release)
+*   **`devsmind memory` — Seed Each Tool's Own Persistent Memory/Skills Store**: The rule file and the MCP `instructions` field both get the workflow contract in front of an agent, but neither IS the tool's own memory — several IDEs/CLIs have a separate, agent-managed store (Claude Code's "Auto Memory," Antigravity's "Skills" / `/learn`, Cursor's "Memories," and others, each under genuinely different names, not one shared convention) that the agent writes a lesson to once and reads back automatically forever after, no re-pasting required. A dedicated research pass — not just checking for features branded "memory," but actually verifying whether each tool reads back a file it didn't create, or only trusts content from its own internal mechanism — found only 2 of 8 tools safe to write into: **Antigravity** (IDE + CLI), confirmed by a firsthand test that a manually-placed `SKILL.md` is discovered the same as an agent-created one, and **Claude Code**, which writes a `devsmind.md` topic file plus a one-line pointer appended into `MEMORY.md` (topic files only load "on demand," so the pointer is what makes it actually get found). Everywhere else — Codex CLI, Qwen's background auto-memory tier, Windsurf, Cursor, Kiro, VS Code Copilot — `devsmind memory` prints the tool's own name for the feature and the specific evidence for why writing to it isn't safe (e.g. quoting Codex's own docs: *"these files are treated as generated state... don't rely on editing them by hand"*), instead of a silent no-op that looks like it worked and didn't. Reuses the same `DEVSMIND_INSTRUCTIONS` content as the MCP `instructions` field — one source of truth, not a third hand-maintained copy.
+
+### Version 2.2.1
 *   **`search_nodes` Now Falls Back to Code Content — `search_code` Folded In**: `search_nodes` only ever matched a node's name, id, or reasoning text, so a query like "alipay" returned nothing whenever "Alipay" only appeared inside the code body rather than the function name — the agent had to burn a second turn calling `search_code` to actually find it. `search_nodes` now tries the cheap identifier match first and, if that's empty, automatically runs the same code-content search `search_code` used to do, tagging each result `matched_via: "identifier"` or `matched_via: "code"`. `search_code` is no longer advertised as a separate tool — its logic lives inside `search_nodes` now — but its handler is kept for direct/legacy calls, so any existing workspace rule that still names it explicitly keeps working unchanged. **Re-run `devsmind rule` to pick up the updated guidance** (not required — old rules still function, just with one avoidable extra turn on a cold miss).
 *   **MCP `instructions` Field — a Server-Controlled Source of Truth**: The workflow contract (search before grep, read code through the graph, stage + commit after every change) previously lived only in whatever the user pasted from `devsmind rule` — a copy that could go stale the moment the rule template changed, or simply never get pasted at all. The server now also sends this contract via the MCP protocol's own `instructions` field at connection time, so every client gets the current, correct version automatically, with zero setup and no dependency on a rule file existing or being current. This doesn't replace `devsmind rule` (which still carries the per-project config — `DEVMIND_PATH`, tech stack, repos — that a stateless server has no other way to know), but it does mean the cross-cutting behavioral rules are no longer solely dependent on it.
 *   **The Rule Now Explains *Why*, Not Just *What***: The generated rule previously listed tool triggers without motivation. It now opens with why DevsMind is different from a normal opt-in tool — it's the team's shared graph, not a personal scratchpad, and unrecorded reasoning (the *why* behind a change, not just the diff) is unrecoverable once the turn ends — and explains the specific gap `get_node_graph` (dependency impact git can't show) and `get_node_history` (the *why* behind a change, which `git blame` can't show) each fill. The same core contract is now in the MCP `instructions` field above, so an agent gets it twice: once explained in the rule, once enforced at every connection.
