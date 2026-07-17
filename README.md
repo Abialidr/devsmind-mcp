@@ -4,6 +4,8 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Abialidr/devsmind/blob/main/LICENSE)
 
 > **The evolutionary collective memory layer for your AI coding agents. Shared across your entire team.**
+>
+> **TypeScript / JavaScript projects only, for now.** The core write path (`edit_node`) relies on parsing your code — that's currently TS/JS only. Other languages are on the roadmap, not yet supported.
 
 AI agents (like Cursor, Cline, Copilot, or Antigravity) lose all context between sessions. Teams repeat the same conversations, new developers ask questions answered months ago, and the same bug gets fixed twice because nobody remembered the first fix.
 
