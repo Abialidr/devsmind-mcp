@@ -332,6 +332,18 @@ async function runFileBrowser(repoRoot: string, excludedPaths: Set<string>): Pro
 // ─── Entry Point ───────────────────────────────────────────────────────────
 
 export async function handleInit() {
+  // Unlike `mcp`/`memory` (which already guard this), init had no non-TTY check: on closed
+  // stdin every `prompts()` call resolves its answer to `undefined` rather than rejecting, so
+  // the wizard silently "completes" a step with no value and moves to the next one instead of
+  // stopping — in CI/automation this reads as a successful init that wrote nothing.
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error(
+      `❌ \`devsmind init\` is interactive and needs a terminal.\n` +
+      `   Run it directly in your shell (not piped/redirected).`
+    );
+    process.exit(1);
+  }
+
   const cwd = process.cwd();
   const devmindDir = path.join(cwd, '.devmind');
   const configPath = path.join(devmindDir, 'config.json');

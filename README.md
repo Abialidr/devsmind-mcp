@@ -193,13 +193,13 @@ Rough benchmark (~1,080-file repo, informal): local Ollama model took ~15h at ~5
 
 ## 🔌 MCP tools, grouped by purpose
 
-DevsMind exposes ~31 tools to the agent. The ones you'll see referenced most:
+DevsMind exposes ~35 tools to the agent. The ones you'll see referenced most:
 
 | Group | Tools |
 |---|---|
 | **Search/discovery** | `search_nodes`, `list_nodes`, `get_node_graph`, `get_orphaned_nodes` |
 | **Read code/history** | `get_node_code`, `get_node_history`, `get_recent_changes`, `search_decisions` |
-| **Write (the important pair)** | `stage_change` (buffer one node), `commit_changes` (flush the buffer, resolve edges) |
+| **Write (the important one)** | `edit_node` — edits any file, traces what changed, records why, all in one call. `stage_change` + `commit_changes` cover what it can't (non-TS/JS languages, brand-new files written another way). |
 | **Maintenance** | `recheck_graph`, `analyze_graph` |
 | **Multi-day workflows** | `workflow_create`, `workflow_add_step`, `workflow_pause/resume`, `workflow_get_context`, `workflow_search` |
 

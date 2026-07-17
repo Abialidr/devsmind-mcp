@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as http from 'http';
 import * as fs from 'fs';
 import express from 'express';
-import { DevMindDatabase } from '../db/database';
+import { DevMindDatabase, parseReasoningBlocks } from '../db/database';
 import { loadProjectContext } from '../utils/config';
 import { VISUALIZER_2D_HTML, VISUALIZER_3D_HTML } from './visualizer';
 import {
@@ -16,6 +16,8 @@ import {
   completeScratchpad
 } from '../db/indexer';
 import { scanRepoFiles, INDEXABLE_EXTENSIONS } from '../utils/scanner';
+import { parseNodeId, isAstParseable, findTouchedSymbols, invalidateParsedFile } from '../utils/ast';
+import { replaceTextInFile, createFileWithContent } from '../utils/edit';
 import { stageEntry, readStaged, clearStaged, commitStagedChanges, summarizeEntriesForWorkflow, StagedEntry } from '../db/staging';
 import { runAnalysis } from '../db/analyze';
 import { importWorkflowDocs } from '../db/workflow-import';
@@ -40,10 +42,11 @@ Non-negotiable workflow:
 2. To read one function/class: call get_node_code instead of opening the file. It parses live from disk, so it's cheaper and always current.
 3. Before touching any function's signature: call get_node_graph. Git shows you what changed; it never shows you what depends on it. Find out before you break something, not after.
 4. Before refactoring: call get_node_history. Git blame tells you who and when; it never tells you why. The actual decision context only exists here.
-5. Stage as you go: call stage_change the moment you finish editing a node — one call per node, not per file, and never batched for later. On a long task, call commit_changes at natural checkpoints too (not only once at the very end) — waiting until the whole task is "done" is how staged work gets left uncommitted when a session runs long.
-6. Scope: stage_change is for source code only (functions/classes/logic) and will be REJECTED for stylesheets, markup, JSON/config, docs, images, or any other non-code asset. Do not stage those files — they have no callers/callees to resolve and only bloat the graph.
-7. When you start work that might relate to a multi-session feature, call workflow_list first. If a paused workflow's description looks related to what you're about to do, ask the user whether to resume it (workflow_resume) instead of starting fresh and silently losing its decision history — git blame never shows you a paused feature's prior context, only this does.
-8. If a workflow is active, commit_changes already logs a step for you from what you staged — you do NOT need a separate workflow_add_step call for the normal case. Only call workflow_add_step directly for something a commit doesn't cover (a decision with no code change, or a pending_tasks note).`;
+5. Write EVERY file with edit_node — .ts, .vue, .css, .json, .xml, .md, anything — and never your editor's own edit/write tools. It takes file_path + old_string + new_string exactly like an ordinary edit tool and never refuses a file type; to create a file that doesn't exist yet, pass old_string: "" and the whole file as new_string. Because it knows where your text landed, it works out which function/class you changed and records your reasoning against it automatically: no node_id to look up, no code_snapshot to send back, and no stage_change call. It answers with every caller of what you changed. Writes landing outside any function (markup, config, an import) record nothing — normal and expected, not a failure.
+6. stage_change is now only for what no parser can read: a language with no AST support (.py, .go, .java, .cs, .rb, .php, .rs, .swift, .kt, .dart). edit_node still writes those files, and its response tells you when it couldn't trace one — so never guess. One call per node, not per file, never batched for later. On a long task, call commit_changes at natural checkpoints too (not only once at the very end) — waiting until the whole task is "done" is how staged work gets left uncommitted when a session runs long.
+7. Scope: the graph is source code only (functions/classes/logic). stage_change will be REJECTED for stylesheets, markup, JSON/config, docs, images, or any other non-code asset. Do not stage those files — they have no callers/callees to resolve and only bloat the graph.
+8. When you start work that might relate to a multi-session feature, call workflow_list first. If a paused workflow's description looks related to what you're about to do, ask the user whether to resume it (workflow_resume) instead of starting fresh and silently losing its decision history — git blame never shows you a paused feature's prior context, only this does.
+9. If a workflow is active, commit_changes already logs a step for you from what you staged — you do NOT need a separate workflow_add_step call for the normal case. Only call workflow_add_step directly for something a commit doesn't cover (a decision with no code change, or a pending_tasks note).`;
 
 // Shared node-type taxonomy description, reused by update_history and stage_change.
 const NODE_TYPE_DESCRIPTION =
@@ -60,11 +63,11 @@ const NODE_TYPE_DESCRIPTION =
   'VUE: vue_component | vue_composable | vue_directive | vue_store_module\n\n' +
   'ANGULAR: ng_component | ng_service | ng_directive | ng_pipe | ng_module | ng_guard | ng_interceptor | ng_resolver\n\n' +
   'SVELTE: svelte_component | svelte_store | svelte_action\n\n' +
-  'ORM â€” PRISMA: prisma_model | prisma_query | prisma_migration\n' +
-  'ORM â€” TYPEORM: typeorm_entity | typeorm_repository | typeorm_migration\n' +
-  'ORM â€” MONGOOSE: mongoose_model | mongoose_schema\n' +
-  'ORM â€” SQLALCHEMY: sqlalchemy_model | sqlalchemy_query\n' +
-  'ORM â€” SEQUELIZE: sequelize_model | sequelize_migration\n\n' +
+  'ORM — PRISMA: prisma_model | prisma_query | prisma_migration\n' +
+  'ORM — TYPEORM: typeorm_entity | typeorm_repository | typeorm_migration\n' +
+  'ORM — MONGOOSE: mongoose_model | mongoose_schema\n' +
+  'ORM — SQLALCHEMY: sqlalchemy_model | sqlalchemy_query\n' +
+  'ORM — SEQUELIZE: sequelize_model | sequelize_migration\n\n' +
   'REST/API: api_endpoint | rest_controller\n' +
   'GRAPHQL: graphql_resolver | graphql_query | graphql_mutation | graphql_subscription | graphql_schema | graphql_directive\n' +
   'GRPC/PROTO: grpc_service | grpc_method | proto_message\n' +
@@ -103,10 +106,27 @@ function resolveDevmindPath(rawPath: unknown): string {
     if (fs.existsSync(normalized)) return normalized;
     throw new Error(`devmind_path does not exist: "${resolved}". Make sure you pass the exact DEVMIND_PATH from your workspace rules.`);
   }
-  // Not provided â€” auto-detect from where devsmind start was run
+  // Not provided — auto-detect from where devsmind start was run
   const autoDetected = findDevmindDir(process.cwd());
   if (autoDetected) return autoDetected;
   throw new Error(`devmind_path was not provided and no .devmind directory was found by walking up from: "${process.cwd()}". Pass devmind_path explicitly.`);
+}
+
+/**
+ * A required string argument, or a thrown error naming exactly what's missing.
+ *
+ * `String(args.x)` alone turns a missing/omitted field into the literal 4-character string
+ * "undefined" instead of failing — the call "succeeds" and that garbage gets permanently
+ * written wherever the field goes (a workflow's `name`, a step's `summary`, ...). Route every
+ * genuinely required string field through this instead; the top-level try/catch in the tool
+ * dispatcher turns the throw into a clean `isError` response.
+ */
+function requireStr(args: Record<string, unknown>, field: string, tool: string): string {
+  const v = args[field];
+  if (v === undefined || v === null || v === '') {
+    throw new Error(`${tool} needs '${field}' — it was not provided.`);
+  }
+  return String(v);
 }
 
 function getDatabase(devmindPath: string): DevMindDatabase {
@@ -131,7 +151,7 @@ function cleanup() {
 
 /**
  * Creates and wires up a DevsMind MCP Server instance.
- * Stateless â€” every call receives devmind_path and opens the db from there.
+ * Stateless — every call receives devmind_path and opens the db from there.
  */
 function createMcpServer(): Server {
   const server = new Server(
@@ -196,7 +216,7 @@ function createMcpServer(): Server {
         {
           name: 'get_node_code',
           description:
-            "Get a single node's CURRENT source code, parsed live from its file on disk — token-efficient, since it returns only that function/class/route rather than the whole file. Call this instead of reading a file whenever you need one specific entity: reading the raw file instead means the graph never learns you looked at it, so drift between what's recorded and what's actually on disk goes undetected. Response fields: `source: \"live\"` means the code was read from disk and is current. `source: \"cached\"` means the symbol could not be located in its file (not a TS/JS file, or it was renamed/moved/deleted) so a possibly-stale cached snapshot was returned — verify it against the file before relying on it. `snapshot_outdated: true` means the stored graph has drifted from disk; re-stage the node with stage_change + commit_changes to bring the brain back in sync. To fetch a whole call flow at once, prefer get_node_graph with include_code instead of calling this repeatedly.",
+            "Get a single node's CURRENT source code, parsed live from its file on disk — token-efficient, since it returns only that function/class/route rather than the whole file. Call this instead of reading a file whenever you need one specific entity: reading the raw file instead means the graph never learns you looked at it, so drift between what's recorded and what's actually on disk goes undetected. Response fields: `source: \"live\"` means the code was read from disk and is current. `source: \"cached\"` means the symbol could not be located in its file (not a TS/JS file, or it was renamed/moved/deleted) so a possibly-stale cached snapshot was returned — verify it against the file before relying on it. `snapshot_outdated: true` means the stored graph has drifted from disk. If you're about to edit this node anyway, an edit_node call re-syncs it as a side effect. To force a resync with no real code change, edit_node can't help (it requires old_string to actually differ from new_string) — use stage_change instead, passing the current on-disk code as code_snapshot, then commit_changes. To fetch a whole call flow at once, prefer get_node_graph with include_code instead of calling this repeatedly.",
           inputSchema: {
             type: 'object',
             properties: {
@@ -273,6 +293,41 @@ function createMcpServer(): Server {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
             },
             required: ['devmind_path']
+          }
+        },
+        {
+          name: 'edit_node',
+          description:
+            "Write ANY file in this project. Use this for EVERY edit AND every new file, in place of your editor's own edit/write tools — .ts, .js, .vue, .css, .json, .xml, .md, .py, anything. It never refuses a file for being the wrong type, and it works exactly like an ordinary edit tool: pass `file_path`, the exact `old_string` to find, and the `new_string` to put there. To CREATE a file that doesn't exist yet, pass `old_string: \"\"` and the whole file as `new_string` (parent directories are made for you).\n\n" +
+            "What it does that a plain edit tool cannot: it knows WHERE your text landed, so it works out which function/class you actually changed and records your `reasoning` against it automatically — no node_id to look up, no code_snapshot to send back, no follow-up stage_change call. That covers code you just added and files you just created, since the code is on disk by the time it looks. In return it tells you every CALLER of what you changed (i.e. what you may have just broken), what it calls out to, and the reasoning previously recorded against it.\n\n" +
+            "Writes that don't land inside any function — markup, config, an import line, a stylesheet — simply record nothing. That is a normal, expected outcome, not a failure: the file is still written and the response says so. So there is never a reason to reach for another edit or write tool.\n\n" +
+            "Nothing reaches the graph until commit_changes. For renames use rename_node.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              file_path: { type: 'string', description: 'The file to write. It does not need to exist yet.' },
+              old_string: { type: 'string', description: 'The exact text to replace, matched byte-for-byte including indentation. Must appear exactly once in the file unless replace_all is true. Pass "" to CREATE a file that does not exist yet.' },
+              new_string: { type: 'string', description: 'The text to put in its place — or, when creating a file, its entire contents. Pass an empty string to delete the matched text.' },
+              replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match (default false). Every occurrence is traced, so an edit hitting three functions records all three.' },
+              reasoning: {
+                type: 'object',
+                description: 'Why you are making this edit. Recorded automatically against whatever function/class the edit turns out to touch — you do not need to know which one. This is the only record of it that will ever exist: the diff shows what changed, never why. Ignored when the edit touches no code (a stylesheet, a config value).',
+                properties: {
+                  what_changed: { type: 'string', description: 'Brief description of the modified code' },
+                  why: { type: 'string', description: 'The reason this change was made' },
+                  goal: { type: 'string', description: 'What was being achieved' },
+                  requirement: { type: 'string', description: 'Ticket / issue / user request ID if applicable' },
+                  previous_state: { type: 'string', description: 'What the code looked like before and why it was a problem' },
+                  decision: { type: 'string', description: 'Architectural or implementation decision and why' },
+                  developer: { type: 'string', description: 'Name of the developer (optional — a configured developer identity from `devsmind init` always overrides this)' },
+                  model: { type: 'string', description: 'AI model name used' }
+                },
+                required: ['what_changed', 'why', 'goal']
+              },
+              session_id: { type: 'string', description: 'Session identifier to associate with this change (optional)' }
+            },
+            required: ['devmind_path', 'file_path', 'old_string', 'new_string', 'reasoning']
           }
         },
         {
@@ -376,7 +431,7 @@ function createMcpServer(): Server {
         {
           name: 'search_nodes',
           description:
-            'Search for code by name/id/reasoning first; if nothing matches, automatically falls back to a full code-content search (regex or substring) over every node\'s current code — so this is the ONE search tool to call, in ONE turn, whether the term is an identifier or only appears in the code body. Each result is tagged `matched_via: "identifier"` or `matched_via: "code"` so you know how it was found; code matches also include line-level `matches`, `match_count`, and `match_ratio`. Prefer this over grep/filesystem search — a raw grep finds text, but misses every bit of recorded reasoning behind why that code looks the way it does.',
+            'Search for code by name/id/reasoning first; if nothing matches, falls back to a full code-content search (regex or substring); if that also finds nothing, falls back further to a word-split relevance search that breaks the query into individual words and ranks every node by how many of those words appear in its file_path, name/id, reasoning, or code — so a natural-language, multi-word query (e.g. "product detail page") still finds a match like `pages/product-detail/index.js` even though the phrase never appears verbatim anywhere. This is the ONE search tool to call, in ONE turn, whether the term is an exact identifier, only appears in the code body, or is just a rough natural-language description. Each result is tagged `matched_via: "identifier"`, `"code"`, or `"fuzzy"` so you know how it was found; code matches include line-level `matches`/`match_count`/`match_ratio`, fuzzy matches include `matched_terms`/`score`. If nothing matches at all, the response includes a `hint` suggesting next steps (e.g. list_nodes with a file_path filter). Prefer this over grep/filesystem search — a raw grep finds text, but misses every bit of recorded reasoning behind why that code looks the way it does.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -519,7 +574,7 @@ function createMcpServer(): Server {
         },
         {
           name: 'workflow_add_step',
-          description: 'Record a step in the currently active (or specified) workflow\'s timeline — a short note of progress, linked to the history_ids already created via stage_change/commit_changes rather than duplicating any code or reasoning. NOTE: commit_changes already auto-records a step from its staged entries whenever a workflow is active — you do NOT need to call this after every commit. Only call it directly for something a commit doesn\'t cover: a decision made without a code change, a note on what\'s still pending (pending_tasks), or a custom summary richer than the auto-generated one.',
+          description: 'Record a step in the currently active (or specified) workflow\'s timeline — a short note of progress, linked to the history_ids already created via edit_node/stage_change + commit_changes rather than duplicating any code or reasoning. NOTE: commit_changes already auto-records a step from its staged entries whenever a workflow is active — you do NOT need to call this after every commit. Only call it directly for something a commit doesn\'t cover: a decision made without a code change, a note on what\'s still pending (pending_tasks), or a custom summary richer than the auto-generated one.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -693,7 +748,7 @@ function createMcpServer(): Server {
       switch (name) {
         case 'get_node_summary': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const nodeId = String(args.node_id);
+          const nodeId = requireStr(args, 'node_id', 'get_node_summary');
           const db = getDatabase(devmindPath);
 
           const node = db.getNode(nodeId);
@@ -743,7 +798,7 @@ function createMcpServer(): Server {
 
         case 'get_node_code': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const nodeId = String(args.node_id);
+          const nodeId = requireStr(args, 'node_id', 'get_node_code');
           const db = getDatabase(devmindPath);
           const result = db.getLiveCode(nodeId);
           return {
@@ -753,7 +808,7 @@ function createMcpServer(): Server {
 
         case 'update_history': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const rawFilePath = String(args.file_path);
+          const rawFilePath = requireStr(args, 'file_path', 'update_history');
           const db = getDatabase(devmindPath);
           const workspaceRoot = path.dirname(devmindPath);
           const filePath = path.isAbsolute(rawFilePath) ? path.resolve(rawFilePath) : path.resolve(workspaceRoot, rawFilePath);
@@ -774,9 +829,9 @@ function createMcpServer(): Server {
           // Single-shot path: stage one entry and commit it immediately, so a lone edit still
           // gets its node, history, AND outgoing edges resolved via the shared commit logic.
           const entry: StagedEntry = {
-            node_id: String(args.node_id),
+            node_id: requireStr(args, 'node_id', 'update_history'),
             file_path: filePath,
-            code_snapshot: String(args.code_snapshot),
+            code_snapshot: requireStr(args, 'code_snapshot', 'update_history'),
             reasoning: args.reasoning as any,
             name: args.name ? String(args.name) : undefined,
             type: args.type ? String(args.type) : undefined,
@@ -931,9 +986,164 @@ function createMcpServer(): Server {
           };
         }
 
+        case 'edit_node': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const editDb = getDatabase(devmindPath);
+          const workspaceRoot = path.dirname(devmindPath);
+
+          if (!args.file_path || args.old_string === undefined || args.new_string === undefined) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  edited: false,
+                  error: 'edit_node needs file_path, old_string and new_string (pass an empty new_string to delete).'
+                })
+              }]
+            };
+          }
+          if (!args.reasoning) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  edited: false,
+                  error: 'edit_node needs reasoning (what_changed, why, goal). It is recorded against whatever code this edit turns out to touch, and exists nowhere else once this turn ends.'
+                })
+              }]
+            };
+          }
+
+          const rawPath = String(args.file_path);
+          const filePath = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(workspaceRoot, rawPath);
+          if (!editDb.isPathAllowed(filePath)) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  edited: false,
+                  error: "file_path resolves outside the project's configured repos — nothing was written.",
+                  resolved_path: filePath
+                })
+              }]
+            };
+          }
+
+          // An empty old_string means "this file does not exist yet — create it". Anything else
+          // is a replacement. Creating through the same call is what keeps a new file from being
+          // the one case that sends the caller back to a write tool that records nothing.
+          const oldString = String(args.old_string);
+          const fileExists = fs.existsSync(filePath);
+          if (!fileExists && oldString !== '') {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  edited: false,
+                  file_path: filePath,
+                  error: `${path.basename(filePath)} does not exist, so there is no old_string to match.`,
+                  hint: 'To CREATE this file, call edit_node again with old_string: "" and the full file contents as new_string.'
+                })
+              }]
+            };
+          }
+
+          const result = fileExists
+            ? replaceTextInFile(filePath, oldString, String(args.new_string), args.replace_all === true)
+            : createFileWithContent(filePath, String(args.new_string));
+          if (!result.ok) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ edited: false, file_path: filePath, error: result.error }) }]
+            };
+          }
+          invalidateParsedFile(filePath);
+
+          // Trace the write back to the code it landed in, and record that automatically.
+          // Anything not traceable (markup, config, a top-level import) is a normal outcome:
+          // the file is still edited, there is simply nothing for the graph to hold.
+          const knownHere = editDb.getNodesByFilePath(filePath).map(n => {
+            const parsed = parseNodeId(n.id);
+            return { id: n.id, symbolName: parsed ? parsed.symbolName : (n.id.split('#').pop() || n.name) };
+          });
+          const touched = findTouchedSymbols(filePath, result.ranges || [], knownHere, result.before);
+
+          let pending = readStaged(devmindPath).length;
+          const staged: any[] = [];
+          for (const t of touched) {
+            const nodeId = t.node_id || `${editDb.toRepoRelativePath(filePath)}#${t.symbolName}`;
+            pending = stageEntry(devmindPath, {
+              node_id: nodeId,
+              file_path: filePath,
+              code_snapshot: t.codeSnapshot,
+              reasoning: args.reasoning as any,
+              name: t.name,
+              type: t.type,
+              signature: t.signature || undefined,
+              session_id: args.session_id ? String(args.session_id) : undefined
+            });
+
+            const conns = t.node_id ? editDb.getConnections(t.node_id) : { uses: [], usedBy: [] };
+            const priorHistory = (t.node_id ? editDb.getFullHistory(t.node_id) : [])
+              .flatMap(h => parseReasoningBlocks(h.reasoning).map(r => ({ updated_at: h.updated_at, r })))
+              .slice(0, 2)
+              .map(({ updated_at, r }) => ({ updated_at, developer: r.developer, what_changed: r.what_changed, why: r.why }));
+
+            staged.push({
+              node_id: nodeId,
+              name: t.name,
+              type: t.type,
+              lines: `${t.startLine}-${t.endLine}`,
+              is_new_to_graph: t.isNew,
+              callers: conns.usedBy.slice(0, 10).map(n => ({ id: n.id, name: n.name, file_path: n.file_path })),
+              callers_total: conns.usedBy.length,
+              calls_out: conns.uses.slice(0, 10).map(n => ({ id: n.id, name: n.name })),
+              prior_history: priorHistory
+            });
+          }
+
+          const ext = path.extname(filePath).toLowerCase();
+          const callerCount = staged.reduce((sum, s) => sum + s.callers_total, 0);
+          const what = result.created ? 'Created the file and recorded' : 'Recorded';
+          let reminder: string;
+          if (staged.length) {
+            reminder = callerCount
+              ? `${what} ${staged.length} node(s). ${callerCount} node(s) call what you changed — if you altered a signature or contract, check them before moving on. Nothing reaches the graph until commit_changes.`
+              : `${what} ${staged.length} node(s). Nothing reaches the graph until commit_changes.`;
+          } else if (!INDEXABLE_EXTENSIONS.has(ext)) {
+            reminder = `${ext || 'This file type'} is intentionally out of scope for the graph — there is nothing to record. You are done with this edit.`;
+          } else if (isAstParseable(filePath)) {
+            reminder = result.created
+              ? 'The file was created, but it declares no function or class, so there was nothing to record. You are done with this edit.'
+              : 'This edit did not land inside any function or class (an import, a top-level constant, or similar), so there was nothing to record. You are done with this edit.';
+          } else {
+            reminder = `${ext} cannot be parsed for symbols, so this could not be traced automatically. If you wrote a function or class, record it with stage_change yourself.`;
+          }
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                edited: true,
+                created: !!result.created,
+                file_path: filePath,
+                replacements: result.replacements,
+                recorded: staged.length,
+                pending_count: pending,
+                touched: staged,
+                reminder
+              }, null, 2)
+            }]
+          };
+        }
+
         case 'stage_change': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const rawFilePath = String(args.file_path);
+          const rawFilePath = requireStr(args, 'file_path', 'stage_change');
           const ext = path.extname(rawFilePath).toLowerCase();
           if (!INDEXABLE_EXTENSIONS.has(ext)) {
             return {
@@ -967,10 +1177,16 @@ function createMcpServer(): Server {
               }]
             };
           }
+          if (!args.reasoning) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ staged: false, error: "stage_change needs 'reasoning' (what_changed, why, goal) — it is the only record of this change that will ever exist." }) }]
+            };
+          }
           const entry: StagedEntry = {
-            node_id: String(args.node_id),
+            node_id: requireStr(args, 'node_id', 'stage_change'),
             file_path: filePath,
-            code_snapshot: String(args.code_snapshot),
+            code_snapshot: requireStr(args, 'code_snapshot', 'stage_change'),
             reasoning: args.reasoning as any,
             name: args.name ? String(args.name) : undefined,
             type: args.type ? String(args.type) : undefined,
@@ -1035,8 +1251,8 @@ function createMcpServer(): Server {
         //    stage_change/commit_changes), but retained so any direct/legacy call still works. ──
         case 'add_node': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const rawNodeId = String(args.node_id);
-          const filePath = String(args.file_path);
+          const rawNodeId = requireStr(args, 'node_id', 'add_node');
+          const filePath = requireStr(args, 'file_path', 'add_node');
 
           const db = getDatabase(devmindPath);
           const repoRelPath = db.toRepoRelativePath(filePath);
@@ -1045,8 +1261,8 @@ function createMcpServer(): Server {
 
           db.upsertNode({
             id: nodeId,
-            name: String(args.name),
-            type: String(args.type),
+            name: requireStr(args, 'name', 'add_node'),
+            type: requireStr(args, 'type', 'add_node'),
             file_path: filePath,
             signature: args.signature ? String(args.signature) : null
           });
@@ -1058,7 +1274,7 @@ function createMcpServer(): Server {
         case 'add_connection': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          db.addConnection(String(args.source_node_id), String(args.target_node_id));
+          db.addConnection(requireStr(args, 'source_node_id', 'add_connection'), requireStr(args, 'target_node_id', 'add_connection'));
           return {
             content: [{ type: 'text', text: JSON.stringify({ added: true, source: args.source_node_id, target: args.target_node_id }) }]
           };
@@ -1066,7 +1282,7 @@ function createMcpServer(): Server {
 
         case 'recheck_graph': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const workspaceRoot = String(args.workspace_root);
+          const workspaceRoot = requireStr(args, 'workspace_root', 'recheck_graph');
           const db = getDatabase(devmindPath);
           const result = db.pruneSpuriousNodes(workspaceRoot);
           db.vacuum();
@@ -1085,7 +1301,7 @@ function createMcpServer(): Server {
 
         case 'get_node_history': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const nodeId = String(args.node_id);
+          const nodeId = requireStr(args, 'node_id', 'get_node_history');
           const db = getDatabase(devmindPath);
           const history = db.getFullHistory(nodeId);
           return {
@@ -1095,7 +1311,7 @@ function createMcpServer(): Server {
 
         case 'get_node_graph': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const nodeId = String(args.node_id);
+          const nodeId = requireStr(args, 'node_id', 'get_node_graph');
           const rawMaxDepth = args.max_depth ? Number(args.max_depth) : 6;
           const maxDepth = Number.isFinite(rawMaxDepth) ? Math.min(10, Math.max(1, Math.trunc(rawMaxDepth))) : 6;
           const direction =
@@ -1115,20 +1331,28 @@ function createMcpServer(): Server {
 
         case 'search_nodes': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const query = String(args.query);
+          const query = requireStr(args, 'query', 'search_nodes');
           const isRegex = args.is_regex === true;
           const caseInsensitive = args.case_insensitive !== false;
           const db = getDatabase(devmindPath);
           const results = db.searchNodes(query, { is_regex: isRegex, case_insensitive: caseInsensitive });
+          const payload =
+            results.length > 0
+              ? results
+              : {
+                  results: [],
+                  hint:
+                    'No match in name/reasoning, code, file_path, or partial word matches. Try list_nodes with a file_path filter, or a shorter/more literal query term.'
+                };
           return {
-            content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
+            content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }]
           };
         }
 
         case 'rename_node': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const oldNodeId = String(args.old_node_id);
-          const newNodeId = String(args.new_node_id);
+          const oldNodeId = requireStr(args, 'old_node_id', 'rename_node');
+          const newNodeId = requireStr(args, 'new_node_id', 'rename_node');
           const newName = args.new_name ? String(args.new_name) : undefined;
           const db = getDatabase(devmindPath);
           db.renameNode(oldNodeId, newNodeId, newName);
@@ -1139,7 +1363,7 @@ function createMcpServer(): Server {
 
         case 'deprecate_node': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const nodeId = String(args.node_id);
+          const nodeId = requireStr(args, 'node_id', 'deprecate_node');
           const db = getDatabase(devmindPath);
           db.deprecateNode(nodeId);
           return {
@@ -1160,7 +1384,7 @@ function createMcpServer(): Server {
 
         case 'get_developer_activity': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const developer = String(args.developer);
+          const developer = requireStr(args, 'developer', 'get_developer_activity');
           const limit = args.limit ? Number(args.limit) : 50;
           const db = getDatabase(devmindPath);
           const activity = db.getDeveloperActivity(developer, limit);
@@ -1171,7 +1395,7 @@ function createMcpServer(): Server {
 
         case 'get_changes_by_requirement': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const requirementId = String(args.requirement_id);
+          const requirementId = requireStr(args, 'requirement_id', 'get_changes_by_requirement');
           const db = getDatabase(devmindPath);
           const changes = db.getChangesByRequirement(requirementId);
           return {
@@ -1181,7 +1405,7 @@ function createMcpServer(): Server {
 
         case 'search_decisions': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const query = String(args.query);
+          const query = requireStr(args, 'query', 'search_decisions');
           const db = getDatabase(devmindPath);
           const decisions = db.searchDecisions(query);
           return {
@@ -1191,7 +1415,7 @@ function createMcpServer(): Server {
 
         case 'search_code': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const query = String(args.query);
+          const query = requireStr(args, 'query', 'search_code');
           const isRegex = args.is_regex === true;
           const caseInsensitive = args.case_insensitive !== false;
           const db = getDatabase(devmindPath);
@@ -1241,7 +1465,10 @@ function createMcpServer(): Server {
         case 'workflow_create': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const workflow = db.createWorkflow(String(args.name), String(args.description));
+          const workflow = db.createWorkflow(
+            requireStr(args, 'name', 'workflow_create'),
+            requireStr(args, 'description', 'workflow_create')
+          );
           return { content: [{ type: 'text', text: JSON.stringify({ status: 'created', workflow }, null, 2) }] };
         }
 
@@ -1256,7 +1483,7 @@ function createMcpServer(): Server {
             };
           }
           const step = db.addWorkflowStep(workflowId, {
-            summary: String(args.summary),
+            summary: requireStr(args, 'summary', 'workflow_add_step'),
             pendingTasks: args.pending_tasks ? String(args.pending_tasks) : undefined,
             historyIds: Array.isArray(args.history_ids) ? args.history_ids.map(String) : undefined,
             sessionId: args.session_id ? String(args.session_id) : undefined
@@ -1276,7 +1503,7 @@ function createMcpServer(): Server {
         case 'workflow_resume': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const workflow = db.resumeWorkflow(String(args.workflow_id));
+          const workflow = db.resumeWorkflow(requireStr(args, 'workflow_id', 'workflow_resume'));
           return { content: [{ type: 'text', text: JSON.stringify({ status: 'active', workflow }, null, 2) }] };
         }
 
@@ -1291,7 +1518,7 @@ function createMcpServer(): Server {
         case 'workflow_get_context': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const context = db.getWorkflowContext(String(args.workflow_id), {
+          const context = db.getWorkflowContext(requireStr(args, 'workflow_id', 'workflow_get_context'), {
             includeArtifactContent: args.include_artifact_content === true
           });
           return { content: [{ type: 'text', text: JSON.stringify(context, null, 2) }] };
@@ -1300,11 +1527,11 @@ function createMcpServer(): Server {
         case 'workflow_add_artifact': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const artifact = db.addWorkflowArtifact(String(args.workflow_id), {
+          const artifact = db.addWorkflowArtifact(requireStr(args, 'workflow_id', 'workflow_add_artifact'), {
             stepId: args.step_id ? String(args.step_id) : undefined,
-            type: String(args.type),
-            sourceName: String(args.source_name),
-            content: String(args.content)
+            type: requireStr(args, 'type', 'workflow_add_artifact'),
+            sourceName: requireStr(args, 'source_name', 'workflow_add_artifact'),
+            content: requireStr(args, 'content', 'workflow_add_artifact')
           });
           return { content: [{ type: 'text', text: JSON.stringify({ status: 'added', artifact }, null, 2) }] };
         }
@@ -1312,14 +1539,37 @@ function createMcpServer(): Server {
         case 'workflow_sync_retroactive': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const workflowId = String(args.workflow_id);
+          const workflowId = requireStr(args, 'workflow_id', 'workflow_sync_retroactive');
           const stepsInput = Array.isArray(args.steps) ? args.steps : [];
-          const added = stepsInput.map((s: any) => db.addWorkflowStep(workflowId, {
-            summary: String(s.summary),
-            pendingTasks: s.pending_tasks ? String(s.pending_tasks) : undefined,
-            historyIds: Array.isArray(s.history_ids) ? s.history_ids.map(String) : undefined
-          }));
-          return { content: [{ type: 'text', text: JSON.stringify({ status: 'synced', steps_added: added.length, steps: added }, null, 2) }] };
+
+          // Unlike workflow_import (idempotent by file name), this has no natural retry key —
+          // an agent re-sending the same backfill after an ambiguous timeout/error would
+          // otherwise double every step. Fingerprint against what's ALREADY on the timeline
+          // (summary + pending_tasks + history_ids) and skip exact repeats, mirroring the
+          // protection workflow_import already has for the same "did this already happen"
+          // problem.
+          const existing = new Set(
+            db.getWorkflowSteps(workflowId).map(s => `${s.summary} ${s.pending_tasks || ''} ${s.history_ids || ''}`)
+          );
+          const added: ReturnType<typeof db.addWorkflowStep>[] = [];
+          let skipped = 0;
+          for (const s of stepsInput) {
+            const summary = requireStr(s, 'summary', 'workflow_sync_retroactive step');
+            const pendingTasks = s.pending_tasks ? String(s.pending_tasks) : undefined;
+            const historyIds = Array.isArray(s.history_ids) ? s.history_ids.map(String) : undefined;
+            const fingerprint = `${summary} ${pendingTasks || ''} ${historyIds && historyIds.length ? JSON.stringify(historyIds) : ''}`;
+            if (existing.has(fingerprint)) { skipped++; continue; }
+            existing.add(fingerprint);
+            added.push(db.addWorkflowStep(workflowId, { summary, pendingTasks, historyIds }));
+          }
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                status: 'synced', steps_added: added.length, steps_skipped_as_duplicate: skipped, steps: added
+              }, null, 2)
+            }]
+          };
         }
 
         case 'workflow_import': {
@@ -1333,7 +1583,7 @@ function createMcpServer(): Server {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
           const status = args.status === 'active' || args.status === 'paused' || args.status === 'completed' ? args.status : undefined;
-          const results = db.searchWorkflows(String(args.query), {
+          const results = db.searchWorkflows(requireStr(args, 'query', 'workflow_search'), {
             include_artifact_content: args.include_artifact_content === true,
             status
           });
@@ -1343,14 +1593,17 @@ function createMcpServer(): Server {
         case 'workflow_read_artifact': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const result = db.readWorkflowArtifact(String(args.workflow_id), String(args.artifact_id));
+          const result = db.readWorkflowArtifact(
+            requireStr(args, 'workflow_id', 'workflow_read_artifact'),
+            requireStr(args, 'artifact_id', 'workflow_read_artifact')
+          );
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         case 'workflow_get_steps': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const steps = db.getWorkflowSteps(String(args.workflow_id), {
+          const steps = db.getWorkflowSteps(requireStr(args, 'workflow_id', 'workflow_get_steps'), {
             last_n: args.last_n ? Number(args.last_n) : undefined,
             limit: args.limit ? Number(args.limit) : undefined,
             offset: args.offset ? Number(args.offset) : undefined
@@ -1387,7 +1640,7 @@ function registerShutdownHandlers(httpServer?: http.Server) {
   process.on('SIGTERM', shutdown);
 }
 
-// â”€â”€ HTTP mode (default) â€” port 4500 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ HTTP mode (default) — port 4500 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * Start DevsMind as an HTTP MCP server on port 4500.
  * IDEs connect via: http://localhost:4500/mcp
@@ -1462,7 +1715,7 @@ export async function runHttpMcpServer(port: number = DEVSMIND_PORT): Promise<vo
     }
   });
 
-  // MCP endpoint â€” stateless: each request gets its own server + transport pair
+  // MCP endpoint — stateless: each request gets its own server + transport pair
   app.all('/mcp', async (req, res) => {
     try {
       const server = createMcpServer();
@@ -1493,19 +1746,19 @@ export async function runHttpMcpServer(port: number = DEVSMIND_PORT): Promise<vo
     httpServer.once('error', reject);
   });
 
-  console.log(`ðŸ§  DevsMind running  â†’  http://localhost:${port}/mcp`);
+  console.log(`🧠 DevsMind running  →  http://localhost:${port}/mcp`);
   console.log(`   press Ctrl+C to stop`);
 
   registerShutdownHandlers(httpServer);
 }
 
-// â”€â”€ Stdio mode â€” for direct IDE plugin injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Stdio mode — for direct IDE plugin injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /**
  * Start DevsMind as a stdio MCP server.
  * Used when an IDE manages the process directly (e.g. Cursor stdio plugin mode).
  */
 export function runStdioMcpServer(): void {
-  // NOTE: do NOT write to stdout here â€” it is the JSON-RPC pipe.
+  // NOTE: do NOT write to stdout here — it is the JSON-RPC pipe.
 
   const server = createMcpServer();
 

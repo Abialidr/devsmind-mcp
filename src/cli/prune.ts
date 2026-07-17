@@ -43,9 +43,11 @@ export async function handlePrune(opts: { path?: string }) {
 
   try {
     await runPruneLoop(db);
-  } catch (err) {
-    console.error(`❌ Pruning failed: ${(err as Error).message}`);
   } finally {
+    // No catch here on purpose: index.ts's own action wrapper already catches, logs this
+    // exact "Pruning failed" message, and calls process.exit(1) — swallowing the error here
+    // (as this used to do) meant that outer handler never ran, so a genuine failure mid-prune
+    // still exited 0. db.close() only needs guaranteed cleanup, not error interception.
     db.close();
   }
 }

@@ -95,7 +95,8 @@ export async function handleMemory(opts: { path?: string }): Promise<void> {
       if (pointerConfirm) {
         const pointerPath = path.join(targetDir, mem.pointerFile.file);
         const pointerBody = `See \`${scope.file}\` in this folder for the DevsMind workflow contract — search before grep, ` +
-          `\`stage_change\` + \`commit_changes\` after every code change.`;
+          `\`edit_node\` to change existing TS/JS code, \`stage_change\` to record every other edit, ` +
+          `\`commit_changes\` before the turn ends.`;
         const pointerMerged = mergeRuleFile(pointerPath, pointerBody, 'append-section');
         if (pointerMerged.error) {
           console.error(`❌ ${pointerMerged.error}`);

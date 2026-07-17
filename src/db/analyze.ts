@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { DevMindDatabase } from './database';
-import { resolveRepoPath } from '../utils/config';
+import { resolveRepoPath, canonicalizePath } from '../utils/config';
 import { getRenamedFilesSince, getChangedFilesSince } from '../utils/git';
 import { INDEXABLE_EXTENSIONS } from '../utils/scanner';
 
@@ -66,17 +66,21 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
       }
 
       const changed = getChangedFilesSince(repoPath, lookbackIso);
+      // Canonicalized on the way in: a raw path.resolve() comparison misses on Windows whenever
+      // the two sides disagree on drive-letter case (a stored node path vs. one freshly resolved
+      // from cwd), which silently reported every file in the repo as untracked — same bug class
+      // already fixed for getNodesByFilePath, not previously applied here.
       const knownFiles = new Set(
         db.listNodes({ include_deprecated: true }).flatMap(n =>
-          (n.file_path || '').split(',').map(p => p.trim()).filter(Boolean)
+          (n.file_path || '').split(',').map(p => canonicalizePath(p.trim())).filter(Boolean)
         )
       );
       for (const relFile of changed) {
         const ext = path.extname(relFile).toLowerCase();
         if (!INDEXABLE_EXTENSIONS.has(ext)) continue;
-        const absFile = path.resolve(repoPath, relFile);
+        const absFile = canonicalizePath(path.resolve(repoPath, relFile));
         if (!fs.existsSync(absFile)) continue; // deleted since — not a blind spot
-        const hasNode = Array.from(knownFiles).some(f => path.resolve(f) === absFile);
+        const hasNode = knownFiles.has(absFile);
         if (!hasNode) untracked_files.push({ repo: repo.name, file: relFile });
       }
     }

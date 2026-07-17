@@ -2,6 +2,77 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { loadProjectContext, resolveRepoPath } from './config';
+import { writeFileAtomic } from './edit';
+
+/**
+ * Extensions the TypeScript parser can read, and therefore the only ones where a symbol's exact
+ * span is knowable — live code extraction, AST edge resolution, and in-place editing are all
+ * limited to these. Every other indexed language falls back to regex reference matching.
+ *
+ * `.mjs`/`.cjs` are plain JavaScript and parse fine (TS understands both script kinds); they are
+ * listed for the same reason `.js` is. Template-based formats (`.vue`, `.svelte`) are NOT here —
+ * their files aren't valid JS, so the parser would choke on the markup.
+ */
+export const AST_PARSEABLE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte']);
+
+/** Single-file-component formats: real JS, but only inside their `<script>` block. */
+const SFC_EXTENSIONS = new Set(['.vue', '.svelte']);
+
+/**
+ * For a single-file component, blank every character outside its `<script>` block(s) while
+ * preserving the file's exact length and line breaks. The parser then sees only JavaScript,
+ * yet every offset it reports still indexes the REAL file — which is what lets the rest of
+ * this module treat `.vue`/`.svelte` like any other source file. Other extensions pass through.
+ */
+function maskNonScript(text: string, filePath: string): string {
+  if (!SFC_EXTENSIONS.has(path.extname(filePath).toLowerCase())) return text;
+  const masked = text.replace(/[^\n]/g, ' ').split('');
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const innerStart = m.index + m[0].indexOf('>') + 1;
+    for (let i = 0; i < m[1].length; i++) masked[innerStart + i] = text[innerStart + i];
+  }
+  return masked.join('');
+}
+
+/** Parse `text` as the JS/TS belonging to `filePath`, masking SFC markup first. */
+function parseText(filePath: string, text: string): ts.SourceFile {
+  const isSfc = SFC_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+  return ts.createSourceFile(
+    filePath,
+    maskNonScript(text, filePath),
+    ts.ScriptTarget.Latest,
+    true,
+    // An SFC's extension tells TS nothing; its <script> may be either language, and TS is a
+    // superset of JS, so parsing as TS reads both.
+    isSfc ? ts.ScriptKind.TS : undefined
+  );
+}
+
+/** True when `filePath` can be parsed for exact symbol spans. */
+export function isAstParseable(filePath: string): boolean {
+  return AST_PARSEABLE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+/**
+ * Canonical form for COMPARING two filesystem paths — absolute, forward slashes, lower case.
+ *
+ * Windows reaches the same file through several spellings (`c:\x` vs `C:/x`), so any exact
+ * match against a stored path silently misses unless both sides are folded first. Comparison
+ * only: never write this back to disk or store it as a node's file_path.
+ */
+export function normalizeFsPath(p: string): string {
+  return path.resolve(p).replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * Drop a file's cached AST. The cache is mtime-keyed, but mtime resolution is coarse enough
+ * that a write followed immediately by a read can still be served the pre-write tree, so a
+ * writer must invalidate explicitly rather than trust the timestamp to have moved.
+ */
+export function invalidateParsedFile(filePath: string): void {
+  sourceFileCache.delete(filePath);
+}
 
 interface ParsedNodeId {
   repo: string;
@@ -548,7 +619,7 @@ function getSourceFile(filePath: string, content?: string): ts.SourceFile {
   const cached = sourceFileCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs && content === undefined) return cached.sf;
   const text = content ?? fs.readFileSync(filePath, 'utf-8');
-  const sf = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true);
+  const sf = parseText(filePath, text);
   sourceFileCache.set(filePath, { mtimeMs, sf });
   return sf;
 }
@@ -785,8 +856,7 @@ export function resolveConnectionsLocally(
   }
 
   const fileContent = fs.readFileSync(sourceFilePath, 'utf-8');
-  const ext = path.extname(sourceFilePath).toLowerCase();
-  const isTsOrJs = ['.ts', '.tsx', '.js', '.jsx'].includes(ext);
+  const isTsOrJs = isAstParseable(sourceFilePath);
   const tsPaths = loadTsPaths(repoRoot);
 
   let referencedNames = new Set<string>();
@@ -1085,26 +1155,272 @@ export function resolveConnectionsLocally(
  * no LLM. Used by `--fill-missing` to create nodes that Phase-1 extraction skipped. Returns
  * null when the file isn't TS/JS or the symbol can't be located.
  */
-export function extractNodeFromFile(
-  filePath: string,
-  symbolName: string
-): { name: string; type: string; signature: string | null; codeSnapshot: string } | null {
-  const ext = path.extname(filePath).toLowerCase();
-  if (!['.ts', '.tsx', '.js', '.jsx'].includes(ext)) return null;
+/** A symbol's exact span in its file — everything needed to splice it in place. */
+export interface NodeLocation {
+  name: string;
+  type: string;
+  signature: string | null;
+  codeSnapshot: string;
+  /** Offset of the symbol's first token. Excludes leading JSDoc/comments, so they survive a replace. */
+  start: number;
+  /** Offset just past the symbol's last token. */
+  end: number;
+  /** 1-based line of `start`. */
+  startLine: number;
+  /** 1-based line of `end`. */
+  endLine: number;
+  /** Whitespace `start` is indented by, or '' when the symbol doesn't begin its line. */
+  indent: string;
+}
+
+/**
+ * Locate a symbol's span in a file via the AST. This is the write-side counterpart to
+ * `extractNodeFromFile`: same lookup, but it also surfaces the offsets, so a caller can
+ * replace the symbol without the caller ever having to read the file or reproduce its
+ * text byte-exactly.
+ */
+export function locateNodeInFile(filePath: string, symbolName: string): NodeLocation | null {
+  if (!isAstParseable(filePath)) return null;
   try {
     const sf = getSourceFile(filePath);
     const parts = symbolName.split('.');
     const className = parts.length === 2 ? parts[0] : undefined;
     const node = findNodeInAst(sf, className, symbolName);
     if (!node) return null;
+
+    const start = node.getStart(sf); // skips leading trivia → a JSDoc block above stays put
+    const end = node.getEnd();
     const code = node.getText(sf);
+    const full = sf.getFullText();
+
+    // Indent is only meaningful when nothing but whitespace precedes the symbol on its line;
+    // for an inline symbol (`const x = function () {}`) there is no indent to re-apply.
+    const lineStart = full.lastIndexOf('\n', start - 1) + 1;
+    const prefix = full.slice(lineStart, start);
     return {
       name: parts[parts.length - 1] || symbolName,
       type: astBaseType(node),
       signature: code.split('\n')[0].slice(0, 200),
-      codeSnapshot: code
+      codeSnapshot: code,
+      start,
+      end,
+      startLine: sf.getLineAndCharacterOfPosition(start).line + 1,
+      endLine: sf.getLineAndCharacterOfPosition(end).line + 1,
+      indent: /^[ \t]*$/.test(prefix) ? prefix : ''
     };
   } catch {
     return null;
+  }
+}
+
+export function extractNodeFromFile(
+  filePath: string,
+  symbolName: string
+): { name: string; type: string; signature: string | null; codeSnapshot: string } | null {
+  const loc = locateNodeInFile(filePath, symbolName);
+  if (!loc) return null;
+  const { name, type, signature, codeSnapshot } = loc;
+  return { name, type, signature, codeSnapshot };
+}
+
+/** A symbol an edit landed inside — what actually changed, derived from where the write went. */
+export interface TouchedSymbol {
+  /** Set only when the edit fell inside a symbol the graph already knows. */
+  node_id?: string;
+  /** Qualified symbol name, e.g. "Cart.applyPromo" or "calculateTax". */
+  symbolName: string;
+  name: string;
+  type: string;
+  signature: string | null;
+  codeSnapshot: string;
+  startLine: number;
+  endLine: number;
+  /** True when no existing node covered this edit — a symbol that did not exist before. */
+  isNew: boolean;
+}
+
+/**
+ * The name a declaration contributes to a node id, or null if it isn't one the graph models.
+ *
+ * Mirrors the shapes `findNodeInAst` resolves in the opposite direction, including the
+ * object-literal factory form (`Page({ onShopLook() {} })` → `Page.onShopLook`) used by
+ * mini-program style frameworks.
+ */
+function declarationNameOf(node: ts.Node): { name: string; qualified: string } | null {
+  const plain = (n: ts.Node & { name?: ts.Node }): string | null =>
+    n.name && (ts.isIdentifier(n.name) || ts.isStringLiteral(n.name)) ? n.name.text : null;
+
+  // Nothing declared inside a function body is a graph entity: a local `const`, a helper
+  // function, an object literal built in a return statement. Only declarations reachable from
+  // the file without passing through a function qualify — which still admits class members and
+  // factory-call members, since a class or a call is not a function body.
+  for (let p = node.parent; p; p = p.parent) {
+    if (ts.isSourceFile(p)) break;
+    if (isFunctionLikeScope(p)) return null;
+  }
+
+  if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) ||
+      ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) ||
+      ts.isEnumDeclaration(node)) {
+    const n = plain(node as any);
+    return n ? { name: n, qualified: n } : null;
+  }
+
+  // Class members carry their class name. A method may also live in an object literal rather
+  // than a class, so membership is decided by the parent, not by the node kind.
+  if (ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node) ||
+      ts.isConstructorDeclaration(node) || ts.isPropertyAssignment(node) ||
+      ts.isShorthandPropertyAssignment(node)) {
+    const member = ts.isConstructorDeclaration(node) ? 'constructor' : plain(node as any);
+    if (!member) return null;
+
+    if (node.parent && ts.isClassLike(node.parent) && node.parent.name) {
+      return { name: member, qualified: `${node.parent.name.text}.${member}` };
+    }
+
+    // A plain key is only a symbol when its object is itself named — `Page({ data: {...} })`
+    // or `const api = { timeout: 30 }`. Keys nested deeper (`data: { n: 1 }` → `n`) are that
+    // object's CONTENTS, not entities of their own: the graph models `Page.data`, never
+    // `Page.n`. Methods are exempt — a function nested at any depth is still a real symbol.
+    if (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) {
+      const owner = node.parent && ts.isObjectLiteralExpression(node.parent) ? node.parent.parent : undefined;
+      const namedObject = owner && (ts.isCallExpression(owner) || ts.isVariableDeclaration(owner));
+      if (!namedObject) return null;
+    }
+
+    // Otherwise it sits inside an object literal. Walk out to whatever names that object:
+    // a factory call (`Page({...})` → `Page.onShopLook`) or a variable (`const api = {...}`).
+    for (let cur: ts.Node | undefined = node.parent; cur; cur = cur.parent) {
+      if (ts.isCallExpression(cur) && ts.isIdentifier(cur.expression)) {
+        return { name: member, qualified: `${cur.expression.text}.${member}` };
+      }
+      if (ts.isVariableDeclaration(cur) && cur.name && ts.isIdentifier(cur.name)) {
+        return { name: member, qualified: `${cur.name.text}.${member}` };
+      }
+      if (ts.isClassLike(cur) && cur.name) {
+        return { name: member, qualified: `${cur.name.text}.${member}` };
+      }
+    }
+    return { name: member, qualified: member };
+  }
+
+  if (ts.isVariableDeclaration(node)) {
+    const n = plain(node as any);
+    return n ? { name: n, qualified: n } : null;
+  }
+
+  return null;
+}
+
+/** Every declaration whose span overlaps one of `ranges`, innermost-first ordering not implied. */
+function declarationsOverlapping(
+  sf: ts.SourceFile,
+  ranges: { start: number; end: number }[]
+): { node: ts.Node; name: string; qualified: string; start: number; end: number }[] {
+  // A zero-width range (a pure deletion) still has to intersect something, so give it width 1.
+  const spans = ranges.map(r => ({ start: r.start, end: Math.max(r.end, r.start + 1) }));
+  const hits: { node: ts.Node; name: string; qualified: string; start: number; end: number }[] = [];
+
+  const visit = (n: ts.Node) => {
+    const start = n.getStart(sf);
+    const end = n.getEnd();
+    if (!spans.some(s => start < s.end && s.start < end)) return; // disjoint — skip its subtree
+    const named = declarationNameOf(n);
+    if (named) hits.push({ node: n, name: named.name, qualified: named.qualified, start, end });
+    ts.forEachChild(n, visit);
+  };
+  ts.forEachChild(sf, visit);
+  return hits;
+}
+
+/** A symbol's current source in `sf`, or null when it isn't there. */
+function codeOfSymbol(sf: ts.SourceFile, symbolName: string): string | null {
+  const parts = symbolName.split('.');
+  const className = parts.length === 2 ? parts[0] : undefined;
+  const node = findNodeInAst(sf, className, symbolName);
+  return node ? node.getText(sf) : null;
+}
+
+/**
+ * Work out which symbols an edit actually changed, from where the edit landed.
+ *
+ * Position beats name matching: a span is unambiguous where a name is not (fifty classes can
+ * each have a `run`), it survives the symbol being renamed by the very edit being traced, and
+ * it finds code that did not exist until this write.
+ *
+ * Three passes, each removing a specific kind of wrong answer:
+ *   1. OVERLAP — every declaration intersecting the written span. A point would not do: text
+ *      appended after an anchor (`}` → `}\n\nfunction added() {}`) begins inside the PREVIOUS
+ *      function, so a point attributes the new function to its neighbour.
+ *   2. INNERMOST — drop any declaration that contains another hit, so inserting a method
+ *      reports the method and not its whole class.
+ *   3. CHANGED — compare each survivor against `beforeContent` and keep only what actually
+ *      differs. Overlap alone over-reports: the anchor's own function is intersected by an
+ *      append yet is untouched by it, and re-recording it would invent history for a change
+ *      that never happened. A symbol absent from `beforeContent` is new.
+ *
+ * Symbols already in the graph are matched by span against their RECORDED ids, never by
+ * re-deriving a name — a container name may have been chosen at index time and be absent from
+ * the source (`Component({...})` recorded as `ProductImageGalleryComponent`).
+ *
+ * `knownSymbols` should be the graph's nodes for this file; empty is fine, everything is then
+ * reported as new. An edit touching no symbol at all (an import, markup, a config value) yields
+ * nothing — a normal outcome, not an error.
+ */
+export function findTouchedSymbols(
+  filePath: string,
+  ranges: { start: number; end: number }[],
+  knownSymbols: { id: string; symbolName: string }[] = [],
+  beforeContent?: string
+): TouchedSymbol[] {
+  if (!isAstParseable(filePath) || !ranges.length) return [];
+
+  try {
+    const sf = getSourceFile(filePath);
+    const before = beforeContent === undefined ? null : parseText(filePath, beforeContent);
+
+    // 1. overlap
+    const hits = declarationsOverlapping(sf, ranges);
+    if (!hits.length) return [];
+
+    // Prefer the graph's own id wherever a hit is the same span as a node it already knows.
+    const byId = new Map<string, { id: string; symbolName: string }>();
+    for (const k of knownSymbols) {
+      const loc = locateNodeInFile(filePath, k.symbolName);
+      if (loc) byId.set(`${loc.start}-${loc.end}`, k);
+    }
+
+    // 2. innermost: discard anything that strictly contains another hit
+    const innermost = hits.filter(h =>
+      !hits.some(o => o !== h && o.start >= h.start && o.end <= h.end && (o.end - o.start) < (h.end - h.start))
+    );
+
+    // 3. changed-only
+    const out = new Map<string, TouchedSymbol>();
+    for (const h of innermost) {
+      const known = byId.get(`${h.start}-${h.end}`);
+      const symbolName = known ? known.symbolName : h.qualified;
+      const newCode = h.node.getText(sf);
+      const oldCode = before ? codeOfSymbol(before, symbolName) : null;
+      if (oldCode !== null && oldCode === newCode) continue; // intersected but untouched
+
+      const key = known ? known.id : symbolName;
+      if (out.has(key)) continue;
+      out.set(key, {
+        node_id: known?.id,
+        symbolName,
+        name: h.name,
+        type: astBaseType(h.node),
+        signature: newCode.split('\n')[0].slice(0, 200),
+        codeSnapshot: newCode,
+        startLine: sf.getLineAndCharacterOfPosition(h.start).line + 1,
+        endLine: sf.getLineAndCharacterOfPosition(h.end).line + 1,
+        isNew: !known
+      });
+    }
+    return Array.from(out.values());
+  } catch {
+    return [];
   }
 }

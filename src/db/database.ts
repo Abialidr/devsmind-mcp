@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as zlib from 'zlib';
 import { INIT_SCHEMA_SQL, DbNode, DbHistory, DbConnection, DbWorkflow, DbWorkflowStep, DbWorkflowArtifact } from './schema';
 import { loadProjectContext, resolveRepoPath, ProjectContext, canonicalizePath } from '../utils/config';
-import { parseNodeId, extractNodeFromFile } from '../utils/ast';
+import { parseNodeId, extractNodeFromFile, normalizeFsPath } from '../utils/ast';
 
 function compressText(text: string): Buffer {
   return zlib.deflateSync(Buffer.from(text, 'utf-8'));
@@ -84,6 +84,49 @@ export function formatReasoning(r: string | ReasoningObject): string {
   return lines.join('\n');
 }
 
+/**
+ * Inverse of `formatReasoning`. A single history row accumulates every later update appended
+ * under a `── Update @ … ──` separator, so one stored blob can hold several changes — this
+ * splits them back apart and returns them NEWEST FIRST.
+ *
+ * Reasoning written before the structured format (or by a caller passing a bare string) has no
+ * labels to read; rather than drop it, the whole chunk is surfaced as `what_changed`.
+ */
+export function parseReasoningBlocks(raw: string): ReasoningObject[] {
+  if (!raw || typeof raw !== 'string') return [];
+  const chunks = raw
+    .split(/\n*── Update @ [^\n]*──\n/g)
+    .map(c => c.trim())
+    .filter(Boolean);
+
+  const parsed = chunks.map(chunk => {
+    const field = (label: string): string | undefined => {
+      const m = chunk.match(new RegExp(`^${label}:[ \\t]*(.*)$`, 'm'));
+      const v = m?.[1]?.trim();
+      return v ? v : undefined;
+    };
+    const what = field('What changed');
+    const why = field('Why');
+    const goal = field('Goal');
+    // No recognised labels → free-text reasoning; keep it rather than return an empty shell.
+    if (!what && !why && !goal) {
+      return { what_changed: chunk, why: '', goal: '' } as ReasoningObject;
+    }
+    return {
+      what_changed: what || '',
+      why: why || '',
+      goal: goal || '',
+      requirement: field('Requirement'),
+      previous_state: field('Previous state'),
+      decision: field('Decision'),
+      developer: field('Developer'),
+      model: field('Model')
+    } as ReasoningObject;
+  });
+
+  return parsed.reverse();
+}
+
 export class DevMindDatabase {
   private db: Database.Database;
   private dbPath: string;
@@ -150,9 +193,18 @@ export class DevMindDatabase {
     stmt.run(key, value, value);
   }
 
+  /**
+   * Nodes declared in one file. Both sides are folded to a canonical form before comparing:
+   * a stored `c:\x\y.ts` and a caller's `C:/x/y.ts` are the same file on Windows, and a raw
+   * `=` match silently returns nothing — which reads as "this file has no nodes" rather than
+   * as an error. There is no index on file_path, so this was already a full scan; normalizing
+   * in SQL costs nothing extra.
+   */
   getNodesByFilePath(filePath: string): DbNode[] {
-    const stmt = this.db.prepare('SELECT * FROM nodes WHERE file_path = ? AND deprecated = 0');
-    return stmt.all(filePath) as DbNode[];
+    const stmt = this.db.prepare(
+      `SELECT * FROM nodes WHERE deprecated = 0 AND REPLACE(LOWER(file_path), '\\', '/') = ?`
+    );
+    return stmt.all(normalizeFsPath(filePath)) as DbNode[];
   }
 
   close() {
@@ -353,8 +405,15 @@ export class DevMindDatabase {
     if (!node) {
       throw new Error(`Node not found: ${oldId}`);
     }
+    // getNode() resolves a bare/unqualified id (e.g. "createCart") to the node's fully-qualified
+    // one via a suffix match — but node_connections/history are keyed by the FULLY-QUALIFIED id
+    // only. Every statement below must use node.id, not the raw oldId parameter: using oldId
+    // directly makes each UPDATE a silent no-op whenever the caller passed a bare id (matching
+    // no rows, throwing no error), leaving the new id's row empty/disconnected while the old
+    // node's history and edges stay put under the id that was supposedly just renamed away.
+    const resolvedOldId = node.id;
 
-    const name = newName || (node.name === oldId ? newId : node.name);
+    const name = newName || (node.name === resolvedOldId ? newId : node.name);
     const filePath = newFilePath || node.file_path;
 
     this.db.pragma('foreign_keys = OFF');
@@ -370,20 +429,20 @@ export class DevMindDatabase {
         const updateSourceStmt = this.db.prepare(`
           UPDATE node_connections SET source_node_id = ? WHERE source_node_id = ?
         `);
-        updateSourceStmt.run(newId, oldId);
+        updateSourceStmt.run(newId, resolvedOldId);
 
         const updateTargetStmt = this.db.prepare(`
           UPDATE node_connections SET target_node_id = ? WHERE target_node_id = ?
         `);
-        updateTargetStmt.run(newId, oldId);
+        updateTargetStmt.run(newId, resolvedOldId);
 
         const updateHistoryStmt = this.db.prepare(`
           UPDATE history SET node_id = ? WHERE node_id = ?
         `);
-        updateHistoryStmt.run(newId, oldId);
+        updateHistoryStmt.run(newId, resolvedOldId);
 
         const deleteOldStmt = this.db.prepare('DELETE FROM nodes WHERE id = ?');
-        deleteOldStmt.run(oldId);
+        deleteOldStmt.run(resolvedOldId);
       });
 
       runTx();
@@ -925,14 +984,22 @@ export class DevMindDatabase {
   searchNodes(
     query: string,
     opts: { is_regex?: boolean; case_insensitive?: boolean } = {}
-  ): Array<(DbNode & { matched_via: 'identifier' }) | (ReturnType<DevMindDatabase['searchCode']>[number] & { matched_via: 'code' })> {
+  ): Array<
+    | (DbNode & { matched_via: 'identifier' })
+    | (ReturnType<DevMindDatabase['searchCode']>[number] & { matched_via: 'code' })
+    | (DbNode & { matched_via: 'fuzzy'; matched_terms: string[]; score: number })
+  > {
     const stmt = this.db.prepare(`
       SELECT DISTINCT n.* FROM nodes n
       LEFT JOIN history h ON n.id = h.node_id
-      WHERE n.name LIKE ? OR n.id LIKE ? OR h.reasoning LIKE ?
+      WHERE n.name LIKE ? ESCAPE '\\' OR n.id LIKE ? ESCAPE '\\' OR h.reasoning LIKE ? ESCAPE '\\'
       LIMIT 50
     `);
-    const wildcard = `%${query}%`;
+    // Escaped so a query containing '%'/'_' (a real identifier fragment like "CartService_addItem"
+    // matches the literal underscore, not "any single character") searches for those characters
+    // rather than acting as SQL LIKE wildcards — sibling methods (getDeveloperActivity,
+    // searchDecisions) already do this; this one didn't.
+    const wildcard = `%${this.likeEscape(query)}%`;
     const identifierMatches = stmt.all(wildcard, wildcard, wildcard) as DbNode[];
 
     if (identifierMatches.length > 0) {
@@ -944,7 +1011,106 @@ export class DevMindDatabase {
       is_regex: opts.is_regex,
       case_insensitive: opts.case_insensitive
     });
-    return codeMatches.map(m => ({ ...m, matched_via: 'code' as const }));
+    if (codeMatches.length > 0) {
+      return codeMatches.map(m => ({ ...m, matched_via: 'code' as const }));
+    }
+
+    const tokens = this.tokenizeQuery(query);
+    if (tokens.length === 0) {
+      return [];
+    }
+    return this.fuzzySearchNodes(tokens);
+  }
+
+  /**
+   * Splits a query string into lowercase word tokens for the fuzzy fallback
+   * stage of {@link searchNodes}. This is request-scoped tokenization only —
+   * nothing is persisted or indexed; the result is discarded after the call.
+   */
+  private tokenizeQuery(query: string): string[] {
+    const seen = new Set<string>();
+    for (const raw of query.toLowerCase().split(/[^a-z0-9]+/i)) {
+      if (raw.length >= 2) seen.add(raw);
+    }
+    return Array.from(seen);
+  }
+
+  /**
+   * Word-split relevance-ranked fallback for {@link searchNodes}. Runs only
+   * when the exact identifier and code stages both return nothing. Scores
+   * every non-deprecated node by how many distinct query tokens appear as a
+   * substring of its file_path/name/id (highest signal), latest reasoning,
+   * or code content (lowest signal, one point per matching line). No new
+   * data is written or synced — this is a plain in-memory scan reusing the
+   * same node/history sources searchCode already reads.
+   */
+  private fuzzySearchNodes(
+    tokens: string[]
+  ): Array<DbNode & { matched_via: 'fuzzy'; matched_terms: string[]; score: number }> {
+    const historyDir = path.join(path.dirname(this.dbPath), 'history');
+    const stmt = this.db.prepare(`
+      SELECT n.*, h.id AS latest_history_id, h.reasoning AS reasoning
+      FROM nodes n
+      LEFT JOIN history h ON h.id = (
+        SELECT id FROM history WHERE node_id = n.id ORDER BY updated_at DESC LIMIT 1
+      )
+      WHERE n.deprecated = 0
+    `);
+    const rows = stmt.all() as (DbNode & { latest_history_id: string | null; reasoning: string | null })[];
+
+    const FIELD_WEIGHT = { path: 3, identifier: 3, reasoning: 2, code: 1 } as const;
+    const scored: Array<DbNode & { matched_via: 'fuzzy'; matched_terms: string[]; score: number }> = [];
+
+    for (const row of rows) {
+      const { latest_history_id, reasoning, ...node } = row;
+      const matchedTerms = new Set<string>();
+      let score = 0;
+
+      const filePathLower = (node.file_path || '').toLowerCase();
+      const nameLower = (node.name || '').toLowerCase();
+      const idLower = (node.id || '').toLowerCase();
+      const reasoningLower = (reasoning || '').toLowerCase();
+
+      let code = '';
+      if (latest_history_id) {
+        const historyFile = path.join(historyDir, `${latest_history_id}.json`);
+        if (fs.existsSync(historyFile)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(historyFile, 'utf-8'));
+            code = (data.code_snapshot || '').toLowerCase();
+          } catch {
+            // Skip corrupted or unreadable history files
+          }
+        }
+      }
+
+      for (const token of tokens) {
+        let tokenMatched = false;
+        if (filePathLower.includes(token)) {
+          score += FIELD_WEIGHT.path;
+          tokenMatched = true;
+        }
+        if (nameLower.includes(token) || idLower.includes(token)) {
+          score += FIELD_WEIGHT.identifier;
+          tokenMatched = true;
+        }
+        if (reasoningLower.includes(token)) {
+          score += FIELD_WEIGHT.reasoning;
+          tokenMatched = true;
+        }
+        if (code && code.includes(token)) {
+          score += FIELD_WEIGHT.code;
+          tokenMatched = true;
+        }
+        if (tokenMatched) matchedTerms.add(token);
+      }
+
+      if (score > 0) {
+        scored.push({ ...node, matched_via: 'fuzzy' as const, matched_terms: Array.from(matchedTerms), score });
+      }
+    }
+
+    return scored.sort((a, b) => b.score - a.score).slice(0, 20);
   }
 
   getRecentChanges(hours: number = 24, analyzeImpact: boolean = true): {
@@ -1147,8 +1313,15 @@ export class DevMindDatabase {
     }
 
     if (filter?.file_path) {
-      sql += ' AND file_path LIKE ?';
-      params.push(`%${filter.file_path}%`);
+      // file_path is stored with OS-native separators (backslashes on Windows), but the tool's
+      // own schema example is forward-slash ("src/components") — a raw LIKE against the
+      // unmodified column means that exact example returns nothing on Windows unless the
+      // caller happens to pass backslashes instead. Normalize both sides to forward slashes
+      // (getNodesByFilePath a few hundred lines up already does the equivalent for exact
+      // matches; this just extends the same fix to the substring-filter path) and escape LIKE
+      // metacharacters so a literal '%' or '_' in a path segment can't be misread as a wildcard.
+      sql += " AND REPLACE(file_path, '\\', '/') LIKE ? ESCAPE '\\'";
+      params.push(`%${this.likeEscape(filter.file_path.replace(/\\/g, '/'))}%`);
     }
 
     if (!filter?.include_deprecated) {
@@ -1505,13 +1678,15 @@ export class DevMindDatabase {
     matched_steps: DbWorkflowStep[];
     matched_artifacts: (DbWorkflowArtifact & { content_snippet?: string })[];
   }> {
-    const lq = `%${query.toLowerCase()}%`;
+    // Escaped so a query containing '%' or '_' matches those characters literally instead of
+    // acting as SQL LIKE wildcards — otherwise `query: "%"` matches every row in the project.
+    const lq = `%${this.likeEscape(query.toLowerCase())}%`;
 
     // Find matching steps
     const matchedStepRows = this.db.prepare(`
       SELECT ws.* FROM workflow_steps ws
       JOIN workflows w ON w.id = ws.workflow_id
-      WHERE (LOWER(ws.summary) LIKE ? OR LOWER(IFNULL(ws.pending_tasks,'')) LIKE ?)
+      WHERE (LOWER(ws.summary) LIKE ? ESCAPE '\\' OR LOWER(IFNULL(ws.pending_tasks,'')) LIKE ? ESCAPE '\\')
       ${opts?.status ? 'AND w.status = ?' : ''}
       ORDER BY ws.workflow_id, ws.step_index ASC
     `).all(...(opts?.status ? [lq, lq, opts.status] : [lq, lq])) as DbWorkflowStep[];
@@ -1520,7 +1695,7 @@ export class DevMindDatabase {
     const matchedArtifactRows = this.db.prepare(`
       SELECT wa.* FROM workflow_artifacts wa
       JOIN workflows w ON w.id = wa.workflow_id
-      WHERE LOWER(wa.source_name) LIKE ?
+      WHERE LOWER(wa.source_name) LIKE ? ESCAPE '\\'
       ${opts?.status ? 'AND w.status = ?' : ''}
       ORDER BY wa.workflow_id, wa.created_at ASC
     `).all(...(opts?.status ? [lq, opts.status] : [lq])) as DbWorkflowArtifact[];
@@ -1827,12 +2002,19 @@ export class DevMindDatabase {
    * just repo source — nothing upstream of this validates that the AI-supplied path is
    * actually inside the project.
    */
+  /**
+   * Gate for every AI-facing write (edit_node, stage_change, the legacy update_history):
+   * true only for paths inside a configured repo. `.devmind` itself — this project's OWN
+   * config, brain.db, and cached graph JSON — is never writable through these tools, even
+   * though it sits next to (and, before this check, was indistinguishable from) real source:
+   * without this, a write tool built to "never refuse a file type" would just as happily
+   * rewrite devsmind's own config.json as it would application source.
+   */
   public isPathAllowed(absPath: string): boolean {
     const abs = canonicalizePath(absPath);
     const absLower = abs.toLowerCase();
-    const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
-    const workspaceRootLower = workspaceRoot.toLowerCase();
-    if (absLower === workspaceRootLower || absLower.startsWith(workspaceRootLower + path.sep)) return true;
+    const devmindDirLower = canonicalizePath(path.dirname(this.dbPath)).toLowerCase();
+    if (absLower === devmindDirLower || absLower.startsWith(devmindDirLower + path.sep)) return false;
     if (this.context) {
       for (const repo of this.context.config.repos) {
         const repoPath = resolveRepoPath(this.context, repo.name);
@@ -1886,11 +2068,19 @@ export class DevMindDatabase {
     try {
       const workspaceRoot = path.dirname(this.dbPath);
 
-      // 0. Auto-heal any legacy relative path records in SQLite
+      // 0. Auto-heal any legacy relative path records in SQLite.
+      //
+      // Runs on every server start, so getting "already absolute" wrong is not a one-time
+      // migration slip — it recurs forever. The original check only recognized the C: drive
+      // and POSIX roots ('c:%'/'C:%'/'/%'); SQL LIKE has no character-range syntax, so it could
+      // not express "any drive letter" or a UNC path (\\server\share\...) in one pattern. Every
+      // node on a D:, E:, ... drive or a UNC path was misclassified as relative, run through
+      // toAbsolutePath() -> clampToRoot(), and silently rewritten to the workspace root — i.e.
+      // real file_paths for an entire class of valid Windows paths got destroyed on restart.
+      // path.isAbsolute() classifies all of these correctly in one call.
       try {
-        const legacyNodes = this.db.prepare(
-          "SELECT id, file_path FROM nodes WHERE file_path NOT LIKE 'c:%' AND file_path NOT LIKE 'C:%' AND file_path NOT LIKE '/%'"
-        ).all() as { id: string; file_path: string }[];
+        const legacyNodes = (this.db.prepare('SELECT id, file_path FROM nodes').all() as { id: string; file_path: string }[])
+          .filter(n => n.file_path && !path.isAbsolute(n.file_path));
         if (legacyNodes.length > 0) {
           const updateStmt = this.db.prepare('UPDATE nodes SET file_path = ? WHERE id = ?');
           const healTx = this.db.transaction(() => {

@@ -2,6 +2,19 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
+## 2.4.0 — `edit_node`: one write path for every file
+- New: `edit_node` MCP tool — a single `file_path` + `old_string` + `new_string` + `reasoning` call edits ANY file (never refuses a file type, unlike `stage_change`) and works out which function/class the edit actually landed in, recording it automatically — no `node_id` lookup, no `code_snapshot` echo, no separate `stage_change` call for TS/JS/JSX/TSX/Vue/Svelte. Also creates brand-new files (`old_string: ""`). `stage_change` is now scoped to what `edit_node` can't trace: languages with no local parser (Python, Go, Java, C#, Ruby, PHP, Rust, Swift, Kotlin, Dart).
+- Fix (data corruption): the startup path-healer in `syncFromDisk` only recognized `C:`/POSIX paths as "already absolute" — every node's `file_path` on a `D:` drive or a UNC path (`\\server\share\...`) was silently rewritten to the `.devmind` folder path, on every server restart.
+- Fix (data corruption): `rename_node` given a bare/unqualified id (the exact form every read tool accepts, e.g. `get_node_code`) silently left the OLD node's history/edges in place and created an empty, disconnected node under the new id — the rename reported success but didn't actually move anything.
+- Fix: required string arguments across all 35 tools are now validated before use — a forgotten field now errors with a clear message instead of silently persisting the literal 9-character string `"undefined"` as real data (found via `workflow_create`/`workflow_add_step`, generalized to every tool).
+- Fix: `edit_node`/`stage_change` could write to DevsMind's own `.devmind/` directory (config, brain.db, cached graph JSON) — the path-allowlist check computed the wrong root. Now explicitly excluded.
+- Fix: `workflow_sync_retroactive` duplicated every step on a retry with an identical payload — now idempotent, matching `workflow_import`'s existing behavior.
+- Fix: `search_nodes`, `workflow_search`, and `list_nodes`'s `file_path` filter had unescaped SQL `LIKE` wildcards (a literal `%`/`_` in a real query matched everything) and/or unnormalized path slashes (a forward-slash filter silently matched nothing on Windows).
+- Fix: `devsmind analyze` reported real, correctly-indexed files as "untracked" on Windows due to a drive-letter case mismatch — same bug class fixed for `getNodesByFilePath` last release, not previously applied here.
+- Fix: `devsmind init` exited 0 with no output under a non-interactive shell instead of failing clearly (now matches `mcp`/`memory`'s existing guard); `devsmind prune` swallowed its own errors so a failure during pruning still exited 0.
+- Fix: corrupted (mojibake) emoji/arrow and em-dash characters in `server.ts`, including inside tool-description text sent to every AI model on every session.
+- **Action needed:** re-run `devsmind rule` (and `devsmind memory` if you seeded it) — the workspace contract now teaches `edit_node` as the primary write path.
+
 ## 2.3.0 — Workflow Context Vault + graph health check
 - New: 9 `workflow_*` MCP tools + `devsmind workflow` + `devsmind workflow-import` — persistent, git-shared timeline for multi-day features.
 - New: `commit_changes` now auto-records a workflow step when a workflow is active — no separate `workflow_add_step` call needed for the normal case, so the agent can't forget it on a long session the way it could forget a second tool call. `workflow_add_step` is still available for anything a commit doesn't cover (a decision with no code change, a `pending_tasks` note).
