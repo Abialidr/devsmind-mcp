@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevsMind — View</title>
+<!--DEVSMIND_TOKEN-->
+<link rel="stylesheet" href="/app/view.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <span class="brand-name">DevsMind</span>
+      <span class="brand-sub" id="project-name-label"></span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" id="tab-chat" role="tab" aria-selected="true">💬 Chat</button>
+      <button class="tab" id="tab-graph" role="tab" aria-selected="false">🕸️ Graph</button>
+    </nav>
+    <div class="topbar-actions">
+      <button class="btn-icon" id="btn-diff-mode" title="Switch every diff on the page between unified and side-by-side">⇄ Side by side</button>
+      <button class="btn-icon" id="btn-reload" title="Reload">🔄</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- ───────────────────────── Chat section ───────────────────────── -->
+    <section id="section-chat" class="section">
+      <aside class="sidebar" id="chat-sidebar">
+        <div class="sidebar-head">
+          <span>Sessions</span>
+          <button class="btn-icon small" id="chat-filter-toggle" title="Filter by date">☰</button>
+        </div>
+        <div class="filter-panel hidden" id="chat-filter-panel">
+          <div class="filter-group">
+            <div class="filter-group-title">Date range</div>
+            <div class="date-range-row">
+              <input type="date" id="chat-date-from">
+              <span>to</span>
+              <input type="date" id="chat-date-to">
+            </div>
+            <div class="filter-quick-row">
+              <button class="chip-btn" data-chat-quick="today">Today</button>
+              <button class="chip-btn" data-chat-quick="7d">7 days</button>
+              <button class="chip-btn" data-chat-quick="30d">30 days</button>
+              <button class="chip-btn" data-chat-quick="clear">All time</button>
+            </div>
+          </div>
+        </div>
+        <div class="session-list" id="session-list">
+          <div class="empty-hint">Loading…</div>
+        </div>
+      </aside>
+      <div class="main-pane" id="chat-main">
+        <div class="empty-state" id="chat-empty">
+          <p>Select a session to see its history — every <code>commit_changes</code> call as a message, with the diff of what changed.</p>
+        </div>
+        <div class="transcript hidden" id="transcript"></div>
+      </div>
+    </section>
+
+    <!-- ───────────────────────── Graph section ───────────────────────── -->
+    <section id="section-graph" class="section hidden">
+      <aside class="sidebar" id="graph-sidebar">
+        <div class="sidebar-head">
+          <span>Nodes</span>
+          <button class="btn-icon small" id="graph-filter-toggle" title="Filter by type / developer / date">☰</button>
+        </div>
+        <input type="text" id="node-search" class="search-input" placeholder="Search nodes…">
+        <div class="filter-panel hidden" id="graph-filter-panel">
+          <div class="filter-group">
+            <div class="filter-group-title-row">
+              <span class="filter-group-title">Type</span>
+              <span class="filter-group-actions">
+                <button class="link-btn" data-select-all="type-filters">All</button>
+                <button class="link-btn" data-select-none="type-filters">None</button>
+              </span>
+            </div>
+            <div id="type-filters" class="filter-checks"></div>
+          </div>
+          <div class="filter-group">
+            <div class="filter-group-title-row">
+              <span class="filter-group-title">Developer</span>
+              <span class="filter-group-actions">
+                <button class="link-btn" data-select-all="dev-filters">All</button>
+                <button class="link-btn" data-select-none="dev-filters">None</button>
+              </span>
+            </div>
+            <div id="dev-filters" class="filter-checks"></div>
+          </div>
+          <div class="filter-group">
+            <div class="filter-group-title">Date range</div>
+            <div class="date-range-row">
+              <input type="date" id="graph-date-from">
+              <span>to</span>
+              <input type="date" id="graph-date-to">
+            </div>
+            <div class="filter-quick-row">
+              <button class="chip-btn" data-graph-quick="1d">Last day</button>
+              <button class="chip-btn" data-graph-quick="7d">7 days</button>
+              <button class="chip-btn" data-graph-quick="30d">30 days</button>
+              <button class="chip-btn" data-graph-quick="clear">All time</button>
+            </div>
+          </div>
+        </div>
+        <div class="accordion" id="node-accordion">
+          <div class="empty-hint">Loading…</div>
+        </div>
+      </aside>
+      <div class="main-pane" id="graph-main">
+        <div class="graph-toolbar">
+          <div class="stat-pill" id="graph-stats">— nodes</div>
+          <div class="toolbar-spacer"></div>
+          <button class="btn" id="btn-toggle-3d">🌌 3D</button>
+          <button class="btn" id="btn-whole-graph">🗺️ See whole graph (2D)</button>
+        </div>
+        <div class="graph-empty" id="graph-empty">
+          <p>Click a node in the sidebar to see it, and only what it connects to — not the whole graph.</p>
+        </div>
+        <div class="ego-legend hidden" id="ego-legend">
+          <span class="legend-item"><span class="dot dot-center"></span> Selected</span>
+          <span class="legend-item"><span class="dot dot-uses"></span> Uses (calls out →)</span>
+          <span class="legend-item"><span class="dot dot-usedby"></span> Used by (← called by)</span>
+        </div>
+        <div class="graph-canvas hidden" id="graph-canvas"></div>
+      </div>
+      <aside class="details-pane hidden" id="details-pane">
+        <button class="btn-icon close-details" id="details-close">✕</button>
+        <div id="details-content"></div>
+      </aside>
+    </section>
+  </main>
+
+  <div class="whole-graph-overlay hidden" id="whole-graph-overlay">
+    <div class="whole-graph-toolbar">
+      <span>Whole graph (2D) — filtered set</span>
+      <button class="btn" id="btn-close-whole-graph">✕ Close</button>
+    </div>
+    <div class="graph-canvas" id="whole-graph-canvas"></div>
+  </div>
+
+  <!-- Full-file view: a half-page side panel, not an inline swap — "changes only" stays the
+       default inline view; this is where the complete reconstructed file lives when asked for. -->
+  <div class="full-file-backdrop hidden" id="full-file-backdrop"></div>
+  <div class="full-file-panel hidden" id="full-file-panel">
+    <div class="full-file-header">
+      <span class="path" id="full-file-path"></span>
+      <button class="btn-icon" id="full-file-close" title="Close">✕</button>
+    </div>
+    <div class="full-file-body" id="full-file-body"></div>
+  </div>
+
+  <script src="/vendor/three.min.js"></script>
+  <script src="/vendor/force-graph.min.js"></script>
+  <script src="/vendor/3d-force-graph.min.js"></script>
+  <script src="/app/view.js"></script>
+  <script src="/app/view_chat.js"></script>
+  <script src="/app/view_graph.js"></script>
+</body>
+</html>

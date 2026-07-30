@@ -41,9 +41,13 @@ export interface MemoryScope {
    *  per-project hash (Claude Code), this is the nearest KNOWN parent — the
    *  user confirms the rest via the folder navigator. */
   dir: OsPath;
-  /** Filename DevsMind owns within that directory — never the tool's own index/log file. */
-  file: string;
-  format: 'markdown' | 'skill-md';
+  /** Filename DevsMind owns within that directory — never the tool's own index/log file.
+   *  Unused (and omitted) for `memory-files`, where the filenames come from the topics. */
+  file?: string;
+  /** `markdown`/`skill-md` = one file holding the whole contract. `memory-files` = one file
+   *  per topic, for a store that loads files ON DEMAND ranked by their own `description`
+   *  frontmatter — there a single blob either loads whole or not at all. */
+  format: 'markdown' | 'skill-md' | 'memory-files';
   /** True when `dir` is only a starting point and the user must navigate to the real folder. */
   needsUserConfirmedDir?: boolean;
 }
@@ -93,9 +97,19 @@ export interface EntryContext {
 
 // ─── Shared entry payloads ───────────────────────────────────────────────────
 
-/** Standard stdio entry: the IDE spawns `devsmind start --stdio`. */
-export function stdioEntry(): Record<string, unknown> {
-  return { command: 'devsmind', args: ['start', '--stdio'] };
+/**
+ * Standard stdio entry: the IDE spawns `devsmind start --stdio --path <devmindDir>`.
+ *
+ * The explicit `--path` is what makes stdio binding deterministic. Unlike the HTTP server (you run
+ * `devsmind start` yourself, from inside the project, so its cwd auto-detect is reliable), a stdio
+ * server is spawned BY the IDE with a cwd we don't control — some spawn from the project root, some
+ * from the IDE's install dir or the user's home. Baking the absolute brain path in here — which the
+ * registration flow already knows (`ctx.devmindDir`) — means the process binds to the right project
+ * regardless of where the IDE launched it, instead of leaning on a cwd assumption that silently
+ * fails on some tools. Path may contain spaces; it's a separate argv element, so no quoting needed.
+ */
+export function stdioEntry(ctx: EntryContext): Record<string, unknown> {
+  return { command: 'devsmind', args: ['start', '--stdio', '--path', ctx.devmindDir] };
 }
 
 /** Standard HTTP entry: connect to the already-running server. */
@@ -134,21 +148,21 @@ const httpUrl = (ctx: EntryContext) => `http://localhost:${ctx.port}/mcp`;
 
 /** Cursor / Kiro: bare `url`, no type. */
 const entryUrl = (t: Transport, ctx: EntryContext) =>
-  t === 'stdio' ? stdioEntry() : { url: httpUrl(ctx) };
+  t === 'stdio' ? stdioEntry(ctx) : { url: httpUrl(ctx) };
 
 /** VS Code / Claude Code: explicit `type` + url. */
 const entryTyped = (t: Transport, ctx: EntryContext) =>
   t === 'stdio'
-    ? { type: 'stdio', ...stdioEntry() }
+    ? { type: 'stdio', ...stdioEntry(ctx) }
     : { type: 'http', url: httpUrl(ctx) };
 
 /** Windsurf / Antigravity: HTTP endpoint keyed as `serverUrl`. */
 const entryServerUrl = (t: Transport, ctx: EntryContext) =>
-  t === 'stdio' ? stdioEntry() : { serverUrl: httpUrl(ctx) };
+  t === 'stdio' ? stdioEntry(ctx) : { serverUrl: httpUrl(ctx) };
 
 /** Qwen Code: Streamable-HTTP endpoint keyed as `httpUrl`. */
 const entryHttpUrl = (t: Transport, ctx: EntryContext) =>
-  t === 'stdio' ? stdioEntry() : { httpUrl: httpUrl(ctx) };
+  t === 'stdio' ? stdioEntry(ctx) : { httpUrl: httpUrl(ctx) };
 
 const cursorMdcWrap = (body: string): string =>
   `---\ndescription: DevsMind — Team AI Brain workspace rule\nalwaysApply: true\n---\n\n${body}\n`;
@@ -301,7 +315,7 @@ export const TARGETS: IdeTarget[] = [
       entry: entryTyped,
       cliInstaller: (t, ctx) =>
         t === 'stdio'
-          ? 'claude mcp add --transport stdio devsmind -- devsmind start --stdio'
+          ? `claude mcp add --transport stdio devsmind -- devsmind start --stdio --path "${ctx.devmindDir}"`
           : `claude mcp add --transport http devsmind ${httpUrl(ctx)}`,
     },
     rules: {
@@ -312,9 +326,9 @@ export const TARGETS: IdeTarget[] = [
       supported: true,
       featureName: 'Auto Memory',
       scopes: [
-        { scope: 'global', dir: '~/.claude/projects', file: 'devsmind.md', format: 'markdown', needsUserConfirmedDir: true },
+        { scope: 'global', dir: '~/.claude/projects', format: 'memory-files', needsUserConfirmedDir: true },
       ],
-      note: 'MEMORY.md\'s first 200 lines/25KB load every session automatically; topic files like devsmind.md load only "on demand", so a one-line pointer is also appended into MEMORY.md so it actually gets found.',
+      note: 'One file per fact, not one big file: MEMORY.md\'s first 200 lines/25KB load every session automatically, while topic files load only "on demand" — ranked by each file\'s own `description` frontmatter. Split that way, an editing task pulls in the edit_node rule without also dragging in indexing and CLI trivia. An index line per topic is appended to MEMORY.md so they get found at all.',
       pointerFile: { file: 'MEMORY.md', style: 'append-section' },
     },
   },
@@ -356,9 +370,9 @@ export const TARGETS: IdeTarget[] = [
       ],
       transports: ['stdio', 'http'],
       entry: entryUrl,
-      cliInstaller: (t) =>
+      cliInstaller: (t, ctx) =>
         t === 'stdio'
-          ? 'codex mcp add devsmind -- devsmind start --stdio'
+          ? `codex mcp add devsmind -- devsmind start --stdio --path "${ctx.devmindDir}"`
           : '# Codex: add the [mcp_servers.devsmind] url entry to ~/.codex/config.toml (no CLI flag for remote)',
       note: 'Codex config is TOML. Remote (url) servers must be added by editing config.toml.',
     },
@@ -385,7 +399,7 @@ export const TARGETS: IdeTarget[] = [
       entry: entryHttpUrl,
       cliInstaller: (t, ctx) =>
         t === 'stdio'
-          ? 'qwen mcp add devsmind devsmind start --stdio'
+          ? `qwen mcp add devsmind devsmind start --stdio --path "${ctx.devmindDir}"`
           : `qwen mcp add --transport http devsmind ${httpUrl(ctx)}`,
       note: 'Qwen keys the Streamable-HTTP endpoint as "httpUrl".',
     },

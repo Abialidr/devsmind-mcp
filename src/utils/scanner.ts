@@ -14,19 +14,27 @@ export const INDEXABLE_EXTENSIONS = new Set([
   '.rs', '.swift', '.kt', '.dart', '.vue', '.svelte'
 ]);
 
-/** Default patterns always ignored regardless of config */
+/** Default patterns always ignored regardless of config. Mirrors grep.ts's ALWAYS_IGNORED. */
 const ALWAYS_IGNORED = [
   'node_modules', '.git', 'dist', 'build', 'out', '.next',
   '__pycache__', '.venv', 'venv', 'coverage', '.turbo',
-  '.cache', '.idea', '.vscode'
+  '.cache', '.idea', '.vscode', '.devmind',
+  '.dart_tool', '.gradle', '.symlinks', 'Pods', 'DerivedData', '.expo', 'Carthage'
 ];
 
 function shouldIgnore(filePath: string, ignoredPaths: string[]): boolean {
   const normalized = filePath.replace(/\\/g, '/');
   const allIgnored = [...ALWAYS_IGNORED, ...ignoredPaths];
   return allIgnored.some(pattern => {
-    const p = pattern.replace(/\\/g, '/').replace(/\/$/, '');
-    return normalized.includes(`/${p}/`) || normalized.includes(`/${p}`) || normalized.endsWith(`/${p}`);
+    // Strip a LEADING slash as well as a trailing one: `.gitignore` writes a repo-root anchor as
+    // `/dist`, and that form survives import (it has no glob metacharacter), so it lands here
+    // verbatim. Without this the test became `.includes('//dist/')` — a doubled slash no real
+    // path contains — and the entry matched nothing at all, silently. Mirrors grep.ts.
+    const p = pattern.replace(/\\/g, '/').replace(/^\//, '').replace(/\/$/, '');
+    // Match on full path-segment boundaries only — a plain `.includes(`/${p}`)` (no trailing
+    // boundary) would treat `p` as a prefix, e.g. ignoring "out" would also swallow an unrelated
+    // "outbound-service" directory since "/outbound".includes("/out") is true.
+    return normalized.includes(`/${p}/`) || normalized.endsWith(`/${p}`);
   });
 }
 

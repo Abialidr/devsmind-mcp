@@ -7,18 +7,24 @@ import { handleView } from './view';
 import { handlePrune } from './prune';
 import { handleSync } from './sync';
 import { handleAnalyze } from './analyze';
+import { handleDiff, handleRevert } from './diff';
+import { handleActivity } from './activity';
+import { handleFeedback } from './feedback';
 import { handleWorkflow, handleWorkflowImport } from './workflow';
 import { handleMcp } from './integrations/mcp';
 import { handleMemory } from './integrations/memory';
 import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
+import { handleDescribe } from './describe';
+import { handleEmbed } from './embed';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
+import { DEVSMIND_VERSION } from '../utils/version';
 
 const program = new Command();
 
 program
   .name('devsmind')
   .description('DevsMind — Team AI Brain CLI')
-  .version('1.0.0', '-v, --version');
+  .version(DEVSMIND_VERSION, '-v, --version');
 
 program
   .command('init')
@@ -41,7 +47,7 @@ program
   )
   .option('--stdio', 'Use stdio transport instead of HTTP (for direct IDE process injection)')
   .option('-p, --port <number>', `HTTP port to listen on (default: ${DEVSMIND_PORT})`, String(DEVSMIND_PORT))
-  .option('--path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default) — used only for --sync/--analyze below')
+  .option('--path <devmind_path>', 'Explicit path to the .devmind directory the server binds to (auto-detected from cwd by default). The server serves this one project, so callers never pass a path.')
   .option('--sync', 'Run devsmind sync before starting the server')
   .option('--analyze', 'Run devsmind analyze before starting the server')
   .option('--fix', 'With --analyze, also apply safe automatic fixes')
@@ -59,7 +65,7 @@ program
     }
     if (opts.stdio) {
       // Stdio mode: IDE manages the process directly
-      runStdioMcpServer();
+      runStdioMcpServer(opts.path);
     } else {
       // HTTP mode: IDE connects over the network
       const port = parseInt(opts.port, 10);
@@ -68,7 +74,7 @@ program
         process.exit(1);
       }
       try {
-        await runHttpMcpServer(port);
+        await runHttpMcpServer(port, opts.path);
       } catch (err) {
         const msg = (err as NodeJS.ErrnoException).message;
         if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
@@ -86,7 +92,8 @@ program
   .description('Get the AI workspace rule and place it in your tool (guided), or print it')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
   .option('--print', 'Just print the rule to stdout (no interactive placement)')
-  .action(async (opts: { path?: string; print?: boolean }) => {
+  .option('--manual', 'Manual workflow style: AI searches/reads freely but only stages or commits when explicitly asked (default is automatic — stages and commits without being asked). Only needed with --print/non-interactive; the interactive flow asks.')
+  .action(async (opts: { path?: string; print?: boolean; manual?: boolean }) => {
     try {
       await handleRule(opts);
     } catch (err) {
@@ -110,9 +117,11 @@ program
 
 program
   .command('memory')
-  .description('Seed a tool\'s own persistent agent-memory/skills store (guided, per-tool)')
+  .description('Seed a tool\'s own persistent agent-memory/skills store (guided, per-tool), or print it')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .action(async (opts: { path?: string }) => {
+  .option('--print', 'Just print the memory files to stdout (no interactive placement)')
+  .option('--tool <id>', 'Which tool\'s memory shape to print (claude-code, antigravity, antigravity-cli). Only used with --print/non-interactive; the interactive flow asks.')
+  .action(async (opts: { path?: string; print?: boolean; tool?: string }) => {
     try {
       await handleMemory(opts);
     } catch (err) {
@@ -148,6 +157,126 @@ program
       await handleAnalyze(opts);
     } catch (err) {
       console.error(`❌ Analyze failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('describe')
+  .description('Backfill natural-language descriptions for existing nodes that predate the description requirement — what search_nodes needs to find code by natural language. Always safe to re-run (work queue is just "nodes with no description yet"); new nodes going forward get described via commit_changes\' gate + add_description instead, not this command.')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
+  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
+  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
+  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .option('--rpm <number>', 'Max LLM requests per minute, proactively paced (default: unthrottled)')
+  .option('--batch-size <number>', 'Nodes described per LLM call (default: 25)')
+  .option('--dry-run', 'List pending nodes without calling the LLM or writing anything')
+  .action(async (opts: {
+    path?: string;
+    provider: 'gemini' | 'vertex' | 'ollama';
+    model?: string;
+    key?: string;
+    url?: string;
+    rpm?: string;
+    batchSize?: string;
+    dryRun?: boolean;
+  }) => {
+    try {
+      await handleDescribe({
+        path: opts.path,
+        provider: opts.provider,
+        model: opts.model,
+        key: opts.key,
+        url: opts.url,
+        rpm: opts.rpm ? parseInt(opts.rpm, 10) : undefined,
+        batchSize: opts.batchSize ? parseInt(opts.batchSize, 10) : undefined,
+        dryRun: !!opts.dryRun
+      });
+    } catch (err) {
+      console.error(`❌ Describe failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('embed')
+  .description('Compute semantic (vector) search embeddings for every described node that lacks a current one. Fully local/offline — no LLM credentials needed, inference runs on-device. Always safe to re-run (work queue is "needs a vector"); new/edited descriptions going forward get auto-embedded via commit_changes/add_description/describe instead, not this command — it\'s only for clearing an existing backlog or a model upgrade (--force).')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('--batch-size <number>', 'Nodes embedded per inference call (default: 32)')
+  .option('--dry-run', 'List pending nodes without running inference or writing anything')
+  .option('--force', 'Re-embed every described node regardless of current vector state (use after a model upgrade)')
+  .action(async (opts: {
+    path?: string;
+    batchSize?: string;
+    dryRun?: boolean;
+    force?: boolean;
+  }) => {
+    try {
+      await handleEmbed({
+        path: opts.path,
+        batchSize: opts.batchSize ? parseInt(opts.batchSize, 10) : undefined,
+        dryRun: !!opts.dryRun,
+        force: !!opts.force
+      });
+    } catch (err) {
+      console.error(`❌ Embed failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('diff <node_id>')
+  .description('Show what changed in an entity, red/green, with the reasoning recorded for it')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (nodeId: string, opts: { path?: string }) => {
+    try {
+      await handleDiff(nodeId, opts);
+    } catch (err) {
+      console.error(`❌ Diff failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('revert <node_id>')
+  .description('Undo an entity\'s most recent recorded edit and erase it from history')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(async (nodeId: string, opts: { path?: string; yes?: boolean }) => {
+    try {
+      await handleRevert(nodeId, opts);
+    } catch (err) {
+      console.error(`❌ Revert failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('activity')
+  .description('Show your local activity timeline — sessions and messages by day (local only, never pushed)')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('--since <days>', 'Only show messages from the last N days')
+  .action(async (opts: { path?: string; since?: string }) => {
+    try {
+      await handleActivity(opts);
+    } catch (err) {
+      console.error(`❌ Activity failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('feedback')
+  .description('Show feedback recorded from commit_changes — graph problems, product feedback, and indexer rule candidates (local only, never pushed)')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('--since <days>', 'Only show entries from the last N days')
+  .option('--all', 'Include graph-feedback entries already marked processed (default: unprocessed only)')
+  .action(async (opts: { path?: string; since?: string; all?: boolean }) => {
+    try {
+      await handleFeedback(opts);
+    } catch (err) {
+      console.error(`❌ Feedback failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });
@@ -202,6 +331,8 @@ program
   .option('--from-scratch', 'Wipe ALL nodes, connections, history, and graph/history folders, then reindex from zero. Asks for confirmation unless --yes is passed.')
   .option('--nodes-only', 'Only run Phase 1 (node/code extraction). No connections are built or touched.')
   .option('--edges-only', 'Only run Phase 2 (connection resolution). Wipes existing connections and rebuilds them fresh across all current nodes. Requires nodes to already exist.')
+  .option('--describe', 'Only meaningful with --nodes-only: also run Phase 3 (description backfill) right after that structure-only extraction, using the SAME credentials — an optional extension when you want a --nodes-only run to be searchable immediately instead of running `devsmind describe` separately later. On a FULL run (neither --nodes-only nor --edges-only), Phase 3 always runs regardless of this flag — descriptions are mandatory there, since Phase 1/2 never write one and an undescribed "finished" index is not actually searchable by search_nodes\' description/vector layers. Not allowed with --edges-only (which never extracts nodes or resolves credentials).')
+  .option('--describe-batch-size <number>', 'Nodes described per LLM call during Phase 3 (default: 25)')
   .option('--repos <names>', 'Comma-separated repo names to restrict this run to (standalone mode only). Composes with --nodes-only / --edges-only, or full. Not allowed with --from-scratch.')
   .option('--rpm <number>', 'Max LLM requests per minute, paced proactively to avoid 429s (default: unthrottled — fires as fast as possible)')
   .option('--yes', 'Skip the confirmation prompt for --from-scratch')
@@ -218,6 +349,8 @@ program
     fromScratch?: boolean;
     nodesOnly?: boolean;
     edgesOnly?: boolean;
+    describe?: boolean;
+    describeBatchSize?: string;
     repos?: string;
     rpm?: string;
     yes?: boolean;
@@ -234,6 +367,10 @@ program
         console.error('❌ Error: --from-scratch and --edges-only cannot be used together — --from-scratch wipes nodes, so there would be nothing to build edges from. Use --from-scratch alone, or --from-scratch --nodes-only, then --edges-only separately.');
         process.exit(1);
       }
+      if (opts.describe && opts.edgesOnly) {
+        console.error('❌ Error: --describe and --edges-only cannot be used together — --edges-only never extracts nodes or resolves LLM credentials, so there is nothing new to describe. Run `devsmind describe` separately if you need to backfill descriptions after an --edges-only run.');
+        process.exit(1);
+      }
       try {
         await runBackgroundIndexing({
           devmindPath,
@@ -247,6 +384,8 @@ program
           fromScratch: !!opts.fromScratch,
           nodesOnly: !!opts.nodesOnly,
           edgesOnly: !!opts.edgesOnly,
+          describe: !!opts.describe,
+          describeBatchSize: opts.describeBatchSize ? parseInt(opts.describeBatchSize, 10) : undefined,
           repos: opts.repos ? opts.repos.split(',').map(s => s.trim()).filter(Boolean) : undefined,
           rpm: opts.rpm ? parseInt(opts.rpm, 10) : undefined,
           yes: !!opts.yes

@@ -36,9 +36,11 @@ async function runWorkflowLoop(db: DevMindDatabase) {
       return;
     }
 
-    const statusEmoji: Record<string, string> = { active: '🟢', paused: '⏸️', completed: '✅' };
+    // No status column any more — which workflow anyone is "on" is per-session and local, so the
+    // terminal (which is not a session) has nothing to show for it. Ordering by last-touched is
+    // what replaced it: live threads sit at the top on their own.
     const choices = workflows.map(w => ({
-      title: `${statusEmoji[w.status] || ''} [${w.status}] ${w.name}`,
+      title: `${w.archived ? '📦' : '📋'} ${w.name}`,
       value: w.id
     }));
     choices.push({ title: '🚪 Exit', value: 'exit' });
@@ -70,30 +72,37 @@ async function showWorkflowMenu(db: DevMindDatabase, id: string) {
     }
 
     console.log(`\n==================================================`);
-    console.log(`📋 ${workflow.name}  [${workflow.status}]`);
+    console.log(`📋 ${workflow.name}${workflow.archived ? '  [archived]' : ''}`);
     console.log(`==================================================`);
     console.log(workflow.description);
     console.log(`\nSteps (${steps.length}):`);
     for (const s of steps) {
-      console.log(`  ${s.step_index}. ${s.summary}${s.pending_tasks ? `  (pending: ${s.pending_tasks})` : ''}`);
+      const nodes = s.node_ids ? (JSON.parse(s.node_ids) as string[]) : [];
+      console.log(`  ${s.step_index}. ${s.summary}${nodes.length ? `  (${nodes.length} node${nodes.length > 1 ? 's' : ''})` : ''}`);
     }
-    console.log(`\nArtifacts (${artifacts.length}):`);
+    console.log(`\nDocs (${artifacts.length}):`);
     for (const a of artifacts) {
       console.log(`  - [${a.type}] ${a.source_name} → ${a.file_path.replace(/\\/g, '/')}`);
     }
 
-    const choices: { title: string; value: string }[] = [];
-    if (workflow.status !== 'active') choices.push({ title: '▶️ Resume (make active)', value: 'resume' });
-    if (workflow.status === 'active') choices.push({ title: '⏸️ Pause', value: 'pause' });
-    if (workflow.status !== 'completed') choices.push({ title: '✅ Mark completed', value: 'complete' });
-    choices.push({ title: '⬅️ Back to list', value: 'back' });
-
-    const response = await prompts({ type: 'select', name: 'action', message: 'Action:', choices });
+    // Resume/pause are gone from here on purpose: binding is per-SESSION now, and the terminal is
+    // not a session. Archive is what remains, and it matters — without it a workflow could never
+    // be retired at all, and the list would grow forever.
+    const response = await prompts({
+      type: 'select',
+      name: 'action',
+      message: 'Action:',
+      choices: [
+        workflow.archived
+          ? { title: '📤 Unarchive (show in the list again)', value: 'unarchive' }
+          : { title: '📦 Archive (hide from the list)', value: 'archive' },
+        { title: '⬅️ Back to list', value: 'back' }
+      ]
+    });
 
     if (!response.action || response.action === 'back') return;
-    if (response.action === 'resume') db.resumeWorkflow(id);
-    if (response.action === 'pause') db.pauseWorkflow();
-    if (response.action === 'complete') db.completeWorkflow(id);
+    if (response.action === 'archive') db.setWorkflowArchived(id, true);
+    if (response.action === 'unarchive') db.setWorkflowArchived(id, false);
   }
 }
 

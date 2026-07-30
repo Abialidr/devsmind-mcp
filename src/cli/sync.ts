@@ -5,6 +5,7 @@ import { resolveDevmindDir } from '../utils/config';
 import { DevMindDatabase } from '../db/database';
 import { runAnalysis } from '../db/analyze';
 import { printReport } from './analyze';
+import { renderSyncProgress, clearSyncProgressLine } from './sync-progress';
 
 /**
  * `devsmind sync` — force the on-disk graph (`graph/**`) and history
@@ -48,9 +49,11 @@ export async function handleSync(opts: { path?: string; analyze?: boolean; fix?:
 
   // Constructing the DB runs syncFromDisk() once; we call it again explicitly so
   // the behaviour is obvious and robust even if the constructor changes later.
-  const db = new DevMindDatabase(dbPath);
+  const db = new DevMindDatabase(dbPath, { onSyncProgress: renderSyncProgress });
+  clearSyncProgressLine();
   try {
-    db.syncFromDisk();
+    db.syncFromDisk(renderSyncProgress);
+    clearSyncProgressLine();
     db.syncToDisk();
     const after = db.getCounts();
 

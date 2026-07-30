@@ -48,8 +48,9 @@ export async function handleView(opts: { path?: string; port: string }) {
   console.log(`🧠 Starting DevsMind Graph Visualizer server on port ${port}...`);
 
   try {
-    // Start Express server (resolves once server is listening)
-    await runHttpMcpServer(port);
+    // Start Express server (resolves once server is listening), bound to the project we just
+    // resolved so its MCP endpoint serves this one brain and callers never pass a devmind_path.
+    await runHttpMcpServer(port, devmindDir);
 
     // Open default browser
     const url = `http://localhost:${port}/?path=${encodeURIComponent(devmindDir)}`;

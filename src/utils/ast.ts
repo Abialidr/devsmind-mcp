@@ -82,7 +82,7 @@ interface ParsedNodeId {
   memberName?: string;
 }
 
-interface ImportInfo {
+export interface ImportInfo {
   importedName: string;
   moduleSpecifier: string;
   isDefault: boolean;
@@ -185,6 +185,8 @@ function getFileImports(sourceFile: ts.SourceFile): ImportInfo[] {
  */
 function isDefinitionName(node: ts.Identifier): boolean {
   const parent = node.parent as ts.Node | undefined;
+  /* istanbul ignore if -- defensive: every node from a tree parsed with setParentNodes=true
+     (see parseText) has a parent except the SourceFile itself, which is never an Identifier. */
   if (!parent) return false;
 
   // The declared name of a declaration (function foo, class Foo, const foo, param foo, foo() {} …)
@@ -412,6 +414,170 @@ function findRouteCall(sourceFile: ts.SourceFile, method: string, arg: string): 
   return found;
 }
 
+/** One RTK Query endpoint found by {@link detectRtkEndpointAliases} — the endpoint's own declared
+ * key, plus the hook names RTK Query's codegen convention derives from it. */
+export interface RtkEndpointAlias {
+  /** The endpoint key as written inside `endpoints: (builder) => ({ ... })` — expected to match
+   * an existing node's declared name (the extractor names the node after this same key). */
+  endpointName: string;
+  /** Generated hook names this endpoint is ALSO referenceable by — `useLazy...` only applies to
+   * `.query(...)` endpoints (RTK Query never generates a lazy variant for a mutation). */
+  aliases: string[];
+}
+
+/**
+ * Detects RTK Query `createApi`/`injectEndpoints` endpoint definitions in a file and synthesizes
+ * the hook names RTK Query's code generator derives from each endpoint key — pure naming
+ * convention (`getAdminOrders` + `.query(...)` → `useGetAdminOrdersQuery` + `useLazyGetAdminOrdersQuery`;
+ * `.mutation(...)` → `useGetAdminOrdersMutation`), no AI involved, and exactly as reliable as
+ * reading RTK Query's own source for that convention.
+ *
+ * This exists because those hook names are NEVER a symbol the AST can see declared anywhere —
+ * they're manufactured at runtime by `createApi`, so a component importing/calling
+ * `useGetAdminOrdersQuery` has no declaration to resolve against, and the caller edge to the
+ * `getAdminOrders` endpoint simply cannot exist without this. Feed the result into each matching
+ * node's `aliases` (see `DbNode.aliases`) and {@link resolveConnectionsLocally}'s alias-aware
+ * matching picks the edge up like any other reference.
+ */
+/** One `key: builder.query(...)`/`key: builder.mutation(...)` property found inside a
+ * `createApi`/`injectEndpoints` `endpoints: (builder) => ({...})` object — the shared match both
+ * {@link detectRtkEndpointAliases} and {@link detectRtkEndpointNodes} build on. */
+interface RtkEndpointMatch {
+  propNode: ts.PropertyAssignment;
+  epName: string;
+  method: 'query' | 'mutation';
+}
+
+/**
+ * Walks a source file for RTK Query endpoint definitions. Endpoint keys live inside
+ * `endpoints: (builder) => ({ ... })` — an ARROW FUNCTION BODY — so they are structurally
+ * invisible to the general declaration walk ({@link declarationsOverlapping}/`findNodeInAst`
+ * both explicitly stop at function-body boundaries, since a local const or a helper defined
+ * inside a function body is never a graph entity). RTK endpoints are the one exception to that
+ * rule this codebase knows about, which is why they need their own dedicated walk rather than
+ * being reachable by the general "find a declaration by name" machinery.
+ */
+function findRtkEndpointMatches(sourceFile: ts.SourceFile): RtkEndpointMatch[] {
+  const results: RtkEndpointMatch[] = [];
+
+  function findEndpointsObject(fnBody: ts.ConciseBody): ts.ObjectLiteralExpression | null {
+    const unwrap = (e: ts.Expression): ts.Expression =>
+      ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
+    if (ts.isBlock(fnBody)) {
+      for (const stmt of fnBody.statements) {
+        if (ts.isReturnStatement(stmt) && stmt.expression) {
+          const expr = unwrap(stmt.expression);
+          if (ts.isObjectLiteralExpression(expr)) return expr;
+        }
+      }
+      return null;
+    }
+    const expr = unwrap(fnBody);
+    return ts.isObjectLiteralExpression(expr) ? expr : null;
+  }
+
+  function visit(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      (node.expression.text === 'createApi' || node.expression.text === 'injectEndpoints') &&
+      node.arguments.length > 0 &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      const configObj = node.arguments[0];
+      for (const prop of configObj.properties) {
+        if (
+          !ts.isPropertyAssignment(prop) ||
+          !ts.isIdentifier(prop.name) ||
+          prop.name.text !== 'endpoints' ||
+          !(ts.isArrowFunction(prop.initializer) || ts.isFunctionExpression(prop.initializer))
+        ) continue;
+
+        const endpointsObj = findEndpointsObject(prop.initializer.body);
+        if (!endpointsObj) continue;
+
+        for (const epProp of endpointsObj.properties) {
+          if (
+            !(ts.isPropertyAssignment(epProp) || ts.isMethodDeclaration(epProp)) ||
+            !(ts.isIdentifier(epProp.name) || ts.isStringLiteral(epProp.name))
+          ) continue;
+          const epName = epProp.name.text;
+
+          // `.query(...)` / `.mutation(...)` may appear either as `key: builder.query(...)`
+          // (property assignment) or `key(builder) { return builder.query(...) }` (method) —
+          // only the property-assignment shape is RTK Query's documented form, so that's all we
+          // match; a method-shorthand endpoint falls through and simply isn't found.
+          if (!ts.isPropertyAssignment(epProp) || !ts.isCallExpression(epProp.initializer)) continue;
+          const callExpr = epProp.initializer;
+          if (!ts.isPropertyAccessExpression(callExpr.expression)) continue;
+          const method = callExpr.expression.name.text;
+          if (method !== 'query' && method !== 'mutation') continue;
+
+          results.push({ propNode: epProp, epName, method });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return results;
+}
+
+export function detectRtkEndpointAliases(filePath: string): RtkEndpointAlias[] {
+  if (!isAstParseable(filePath)) return [];
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = getSourceFile(filePath);
+  } catch {
+    return [];
+  }
+
+  const toPascal = (name: string): string => (name.length ? name[0].toUpperCase() + name.slice(1) : name);
+  return findRtkEndpointMatches(sourceFile).map(({ epName, method }) => {
+    const pascal = toPascal(epName);
+    const aliases = method === 'query'
+      ? [`use${pascal}Query`, `useLazy${pascal}Query`]
+      : [`use${pascal}Mutation`];
+    return { endpointName: epName, aliases };
+  });
+}
+
+/**
+ * The candidate-enumeration counterpart to {@link detectRtkEndpointAliases}: produces full
+ * {@link ExtractionCandidate}s for each RTK endpoint, so {@link enumerateFileCandidates} doesn't
+ * silently skip them (see {@link findRtkEndpointMatches} for why the general declaration walk
+ * can't see them). Always `isExported:true` — an endpoint reached only through its generated hook
+ * is, for every practical purpose, part of the file's export surface; nothing about whether it
+ * "counts" as a node is a judgment call, so this feeds the SAME auto-accept path as a normal
+ * exported declaration.
+ */
+export function detectRtkEndpointNodes(filePath: string): ExtractionCandidate[] {
+  if (!isAstParseable(filePath)) return [];
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = getSourceFile(filePath);
+  } catch {
+    return [];
+  }
+
+  return findRtkEndpointMatches(sourceFile).map(({ propNode, epName }) => {
+    const start = propNode.getStart(sourceFile);
+    const end = propNode.getEnd();
+    const code = propNode.getText(sourceFile);
+    return {
+      qualified: epName,
+      name: epName,
+      type: 'rtk_endpoint',
+      signature: code.split('\n')[0].slice(0, 200),
+      codeSnapshot: code,
+      startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1,
+      endLine: sourceFile.getLineAndCharacterOfPosition(end).line + 1,
+      isExported: true
+    };
+  });
+}
+
 /** Navigate a dotted path through nested object-literal properties. */
 function navigateObjectPath(obj: ts.ObjectLiteralExpression, segments: string[]): ts.Node | null {
   let current: ts.ObjectLiteralExpression | null = obj;
@@ -429,6 +595,10 @@ function navigateObjectPath(obj: ts.ObjectLiteralExpression, segments: string[])
       current = null;
     }
   }
+  /* istanbul ignore next -- unreachable: every iteration of the loop above returns (either
+     `null` via a missing prop, or `prop` on the last segment), so control can only fall past
+     the loop when `segments` is empty. The sole caller (findInFrameworkContainer) already
+     guards `segments.length === 0` before ever calling this function. */
   return null;
 }
 
@@ -440,6 +610,9 @@ function navigateObjectPath(obj: ts.ObjectLiteralExpression, segments: string[])
  * factory call's object-literal argument, so we isolate just that method.
  */
 function findInFrameworkContainer(sourceFile: ts.SourceFile, segments: string[]): ts.Node | null {
+  /* istanbul ignore if -- defensive: the sole caller (findNodeInAst) only reaches here when
+     `symbolName.includes('.')`, so `segments` (symbolName.split('.').slice(1)) always has at
+     least one element. */
   if (segments.length === 0) return null;
   const objArgs: ts.ObjectLiteralExpression[] = [];
   for (const stmt of sourceFile.statements) {
@@ -542,6 +715,10 @@ function findNodeInAst(sourceFile: ts.SourceFile, className: string | undefined,
   // Fallback: className resolved to a non-class declaration (object literal, factory call,
   // etc). Search inside it for a property/method matching the member name, at any depth.
   if (!foundNode && className && containerCandidate) {
+    /* istanbul ignore next -- defensive: every current caller sets `className` from a symbolName
+       that included a '.' in the first place (locateNodeInFile/codeOfSymbol split on 2 parts,
+       resolveConnectionsLocally's className comes from parseNodeId, which only sets it alongside
+       a dotted symbolName), so the ": symbolName" (no-dot) fallback is never exercised. */
     const memberName = symbolName.includes('.') ? symbolName.split('.').pop()! : symbolName;
     foundNode = findPropertyInContainer(containerCandidate, memberName);
   }
@@ -711,6 +888,9 @@ function resolveToExistingFile(basePaths: string[]): string | null {
   if (cached !== undefined) return cached;
   let result: string | null = null;
   outer: for (const base of basePaths) {
+    /* istanbul ignore if -- defensive: every entry basePaths can contain comes from
+       resolveImportToPaths, which only ever pushes path.resolve(...) results (always a
+       non-empty string) or pushes nothing at all — never a falsy element. */
     if (!base) continue;
     for (const ext of ['.ts', '.tsx', '.js', '.jsx']) {
       if (fs.existsSync(base + ext)) { result = base + ext; break outer; }
@@ -745,6 +925,9 @@ function getBarrelReexports(resolvedImportPath: string): BarrelReexport[] {
     return [];
   }
 
+  /* istanbul ignore next -- defensive TOCTOU guard: `indexPath` was confirmed to exist one line
+     above via fs.existsSync; the `?? -1` only matters if the file is deleted in the instant
+     between that check and this statSync, a race not worth simulating in a unit test. */
   const mtimeMs = statMtime(indexPath) ?? -1;
   const cached = barrelCache.get(indexPath);
   if (cached && cached.mtimeMs === mtimeMs) return cached.reexports;
@@ -782,10 +965,29 @@ function getBarrelReexports(resolvedImportPath: string): BarrelReexport[] {
 //     import alias by (case-insensitive) node name,
 //   - null when there is no default export at all.
 const ANON_DEFAULT = ' anon';
+/**
+ * The name for a non-identifier `export default <expr>` (an ExportAssignment): a named class or
+ * function expression's own name, or the ANON_DEFAULT marker for anything else.
+ */
+function anonOrNamedExpressionDefaultName(expr: ts.Expression): string {
+  /* istanbul ignore next -- unreachable: `export default class Foo {}` / `export default
+     function foo() {}`, named or anonymous, always parse as a ClassDeclaration/FunctionDeclaration
+     (getDefaultExportName's other, `stmt.name ? ... : ANON_DEFAULT`, branch), never as this
+     ExportAssignment's `expression`. The only way a ClassExpression/FunctionExpression can reach
+     here at all is wrapped (`export default (class Foo {})`), and then `expr` is the
+     ParenthesizedExpression, not the class/function expression itself — so this never matches in
+     practice, verified directly against the TS parser. */
+  if ((ts.isClassExpression(expr) || ts.isFunctionExpression(expr)) && expr.name) return expr.name.text;
+  return ANON_DEFAULT; // `export default Joi.object({...})`, `{...}`, `() => …`
+}
+
 const defaultExportCache = new Map<string, { mtimeMs: number; name: string | null }>();
 function getDefaultExportName(filePath: string): string | null {
   const ext = path.extname(filePath).toLowerCase();
   if (!['.ts', '.tsx', '.js', '.jsx'].includes(ext)) return null;
+  /* istanbul ignore next -- defensive TOCTOU guard: every caller passes a `targetNode.file_path`
+     it already has from a live candidate-node list, i.e. a file that exists; the `?? -1` only
+     matters if it's deleted in the instant before this statSync. */
   const mtimeMs = statMtime(filePath) ?? -1;
   const cached = defaultExportCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs) return cached.name;
@@ -797,9 +999,7 @@ function getDefaultExportName(filePath: string): string | null {
       // `export default <expr>`
       if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
         const expr = stmt.expression;
-        if (ts.isIdentifier(expr)) name = expr.text;
-        else if ((ts.isClassExpression(expr) || ts.isFunctionExpression(expr)) && expr.name) name = expr.name.text;
-        else name = ANON_DEFAULT; // `export default Joi.object({...})`, `{...}`, `() => …`
+        name = ts.isIdentifier(expr) ? expr.text : anonOrNamedExpressionDefaultName(expr);
         break;
       }
       // `export default class X {}` / `export default function X() {}`
@@ -832,7 +1032,7 @@ function getDefaultExportName(filePath: string): string | null {
 export function resolveConnectionsLocally(
   sourceNodeId: string,
   sourceFilePath: string,
-  candidateNodes: { id: string; name: string; type: string; file_path: string }[],
+  candidateNodes: { id: string; name: string; type: string; file_path: string; aliases?: string[] }[],
   devmindPath: string,
   onMissing?: (rec: MissingRef) => void
 ): string[] {
@@ -909,6 +1109,8 @@ export function resolveConnectionsLocally(
       const paths = resolveImportToPaths(imp.moduleSpecifier, sourceDir, repoRoot, tsPaths);
       const barrels: BarrelReexport[] = [];
       for (const p of paths) {
+        /* istanbul ignore if -- defensive: see the matching guard in resolveToExistingFile —
+           resolveImportToPaths never pushes a falsy path. */
         if (!p) continue;
         const rx = getBarrelReexports(p);
         if (rx.length) barrels.push(...rx);
@@ -974,8 +1176,11 @@ export function resolveConnectionsLocally(
         connections.add(targetNode.id);
         continue;
       }
+      // Check the target's own name AND any alias it's exported under (e.g. an RTK-generated
+      // hook name for its endpoint) — one implementation, several referenceable handles.
       const nameToCheck = memberName || symbolName;
-      if (referencedNames.has(nameToCheck)) {
+      const targetNames = [nameToCheck, ...(targetNode.aliases ?? [])];
+      if (targetNames.some(n => referencedNames.has(n))) {
         connections.add(targetNode.id);
       }
       continue;
@@ -1066,8 +1271,13 @@ export function resolveConnectionsLocally(
         // collision with a same-named FREE function import (e.g. `import { formatDate }`
         // matching a `Utils.formatDate` method) — a pure false positive.
       } else {
-        // Top-level function/variable imported & referenced
-        if (importedAsNames.includes(symbolName) && referencedNames.has(symbolName)) {
+        // Top-level function/variable imported & referenced — check the target's own declared
+        // name AND any alias it's exported under. This is the RTK fix: a caller importing
+        // `useGetAdminOrdersQuery` (generated by createApi, never a name that appears in the
+        // endpoint's own declaration) still resolves to the `getAdminOrders` endpoint node, as
+        // long as that alias was attached to it (see the RTK detector / Phase C).
+        const targetNames = [symbolName, ...(targetNode.aliases ?? [])];
+        if (targetNames.some(n => importedAsNames.includes(n) && referencedNames.has(n))) {
           connections.add(targetNode.id);
           continue;
         }
@@ -1105,11 +1315,16 @@ export function resolveConnectionsLocally(
     // default-imported and its alias is referenced here, and the file is small enough that
     // its default export is unambiguous, link it. The node-count gate keeps this from
     // re-exploding on large files (whose default export is virtually always named anyway).
+    // `?? 99` is defensive only: `nodesPerFile` is built from `candidateNodes`, which always
+    // includes `targetNode` itself, so its own file is always present with count >= 1; the
+    // `?? 99` fallback can never actually be taken.
+    /* istanbul ignore next */
+    const targetFileNodeCount = nodesPerFile.get(normFile(targetNode.file_path)) ?? 99;
     if (
       isImported &&
       importedAsDefaultNames.some(alias => referencedNames.has(alias)) &&
       getDefaultExportName(targetNode.file_path) === ANON_DEFAULT &&
-      (nodesPerFile.get(normFile(targetNode.file_path)) ?? 99) <= 3
+      targetFileNodeCount <= 3
     ) {
       connections.add(targetNode.id);
       continue;
@@ -1233,6 +1448,11 @@ export interface TouchedSymbol {
   type: string;
   signature: string | null;
   codeSnapshot: string;
+  /**
+   * The symbol's text before this edit, or null when there is nothing to compare against —
+   * a brand-new symbol, or a caller that passed no before-content. Feeds the diff/revert path.
+   */
+  codeBefore: string | null;
   startLine: number;
   endLine: number;
   /** True when no existing node covered this edit — a symbol that did not exist before. */
@@ -1284,6 +1504,9 @@ function declarationNameOf(node: ts.Node): { name: string; qualified: string } |
     // object's CONTENTS, not entities of their own: the graph models `Page.data`, never
     // `Page.n`. Methods are exempt — a function nested at any depth is still a real symbol.
     if (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) {
+      /* istanbul ignore next -- defensive: by grammar, a PropertyAssignment/
+         ShorthandPropertyAssignment's parent is always its containing ObjectLiteralExpression, so
+         the `: undefined` (not-an-object-literal-parent) side of this ternary is unreachable. */
       const owner = node.parent && ts.isObjectLiteralExpression(node.parent) ? node.parent.parent : undefined;
       const namedObject = owner && (ts.isCallExpression(owner) || ts.isVariableDeclaration(owner));
       if (!namedObject) return null;
@@ -1332,6 +1555,230 @@ function declarationsOverlapping(
   };
   ts.forEachChild(sf, visit);
   return hits;
+}
+
+/**
+ * Whether a declaration is part of the file's export surface — directly (`export function foo`,
+ * `export const foo = ...`), via a separate `export { foo }` statement, or transitively (a method
+ * of an exported class, a member of an object literal assigned to an exported variable). This is
+ * the auto-accept signal for {@link enumerateFileCandidates}: an exported, named declaration is
+ * unambiguously a real entity — nothing about its EXISTENCE is a judgment call, only an
+ * unexported/anonymous one needs curation.
+ */
+function isNodeExported(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+  // Class/object-literal members inherit their container's export status — a method isn't
+  // separately "exported", it's reachable (or not) through whatever names its class/object.
+  if (
+    ts.isMethodDeclaration(node) || ts.isPropertyDeclaration(node) || ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) || ts.isConstructorDeclaration(node) ||
+    ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)
+  ) {
+    if (node.parent && ts.isClassLike(node.parent)) return isNodeExported(node.parent, sourceFile);
+    for (let cur: ts.Node | undefined = node.parent; cur; cur = cur.parent) {
+      if (ts.isVariableStatement(cur)) return isNodeExported(cur, sourceFile);
+      if (ts.isSourceFile(cur)) break;
+    }
+    return false;
+  }
+
+  const hasExportModifier = (n: ts.Node): boolean =>
+    !!(n as { modifiers?: readonly ts.ModifierLike[] }).modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
+
+  // `export const foo = ...`: the `export` modifier sits on the enclosing VariableStatement, not
+  // on the VariableDeclaration itself.
+  const modifierHost = ts.isVariableDeclaration(node) && node.parent && ts.isVariableDeclarationList(node.parent)
+    ? node.parent.parent
+    : node;
+  if (hasExportModifier(modifierHost)) return true;
+
+  // `export { foo, bar }` as its own statement elsewhere in the file, not a modifier at all.
+  const declaredName =
+    (ts.isVariableDeclaration(node) && node.name && ts.isIdentifier(node.name)) ? node.name.text :
+    ((node as { name?: ts.Node }).name && ts.isIdentifier((node as { name?: ts.Node }).name as ts.Node))
+      ? ((node as { name?: ts.Identifier }).name as ts.Identifier).text
+      : null;
+  if (!declaredName) return false;
+
+  for (const stmt of sourceFile.statements) {
+    if (
+      ts.isExportDeclaration(stmt) && !stmt.moduleSpecifier &&
+      stmt.exportClause && ts.isNamedExports(stmt.exportClause)
+    ) {
+      if (stmt.exportClause.elements.some(el => el.name.text === declaredName || el.propertyName?.text === declaredName)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** One deterministically-enumerated candidate entity from {@link enumerateFileCandidates}. */
+export interface ExtractionCandidate {
+  /** Graph node-id name — `Class.method` for a member, a bare name at top level. */
+  qualified: string;
+  name: string;
+  type: string;
+  signature: string | null;
+  codeSnapshot: string;
+  startLine: number;
+  endLine: number;
+  /** See {@link isNodeExported} — the auto-accept signal. */
+  isExported: boolean;
+}
+
+/**
+ * Enumerates every graph-eligible declaration in a file, deterministically — no LLM, so nothing
+ * gets silently missed the way the old whole-file-to-an-LLM extraction could. A named, EXPORTED
+ * declaration (`isExported:true`) is unambiguous: whether it "counts" as a node requires no
+ * judgment, so the caller can auto-accept it with zero LLM turns. Everything else — unexported
+ * helpers, anonymous default exports, tiny inline callbacks, object-literal factory members whose
+ * significance is genuinely a judgment call — is still enumerated (nothing is dropped silently)
+ * but flagged `isExported:false`, so an agentic curation pass only has to spend turns on THOSE.
+ */
+export function enumerateFileCandidates(filePath: string): ExtractionCandidate[] {
+  if (!isAstParseable(filePath)) return [];
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = getSourceFile(filePath);
+  } catch {
+    return [];
+  }
+
+  const fullText = sourceFile.getFullText();
+  const hits = declarationsOverlapping(sourceFile, [{ start: 0, end: fullText.length }]);
+
+  // A single declaration can surface more than once under different matching rules (e.g. a
+  // property assignment's own span, and — if it were itself a match — an initializer nested
+  // inside it). Keep the FIRST hit per qualified name: `declarationsOverlapping` walks
+  // parent-before-child, so the first hit is always the outermost, correct one.
+  const byQualified = new Map<string, (typeof hits)[number]>();
+  for (const h of hits) {
+    if (!byQualified.has(h.qualified)) byQualified.set(h.qualified, h);
+  }
+
+  const results: ExtractionCandidate[] = [];
+  for (const h of byQualified.values()) {
+    const code = h.node.getText(sourceFile);
+    results.push({
+      qualified: h.qualified,
+      name: h.name,
+      type: astBaseType(h.node),
+      signature: code.split('\n')[0].slice(0, 200),
+      codeSnapshot: code,
+      startLine: sourceFile.getLineAndCharacterOfPosition(h.start).line + 1,
+      endLine: sourceFile.getLineAndCharacterOfPosition(h.end).line + 1,
+      isExported: isNodeExported(h.node, sourceFile)
+    });
+  }
+
+  // RTK Query endpoints live inside a function body (`endpoints: (builder) => ({...})`), so the
+  // general declaration walk above structurally cannot see them — see `findRtkEndpointMatches`.
+  // Folded in here (not called separately by every consumer) so `enumerateFileCandidates` really
+  // is the complete candidate list for a file, RTK or not.
+  for (const rtkNode of detectRtkEndpointNodes(filePath)) {
+    if (!byQualified.has(rtkNode.qualified)) results.push(rtkNode);
+  }
+
+  return results;
+}
+
+/** One entry in {@link outlineFile}'s "what else is declared in this file" list. Deliberately
+ * lean — no `codeSnapshot` — see the function doc for why. */
+export interface FileOutlineEntry {
+  qualified: string;
+  name: string;
+  type: string;
+  signature: string | null;
+  start_line: number;
+  end_line: number;
+  exported: boolean;
+}
+
+/**
+ * Every OTHER top-level declaration in a file — functions, classes, consts, types, interfaces —
+ * the "what else is here" a raw file read used to be the only way to answer. Reuses
+ * {@link enumerateFileCandidates}'s own declaration walk (`declarationsOverlapping` /
+ * `astBaseType` / `isNodeExported`), but deliberately does NOT call `node.getText()` per hit the
+ * way that function does: `enumerateFileCandidates` materializes each declaration's FULL source
+ * just to build a one-line signature and then discards it, which is an extra copy of potentially
+ * the whole file in string allocations — on every single `get_node_code` call, this is squarely
+ * the wrong trade. A short slice of the already-loaded full text plus a line split gets the same
+ * signature far cheaper. The parse itself is free either way: `getSourceFile` is mtime-cached
+ * ({@link getSourceFile}), and by the time `get_node_code` calls this the file has usually already
+ * been parsed once this same request via `getLiveCode`/`extractLiveCode`.
+ */
+export function outlineFile(filePath: string): FileOutlineEntry[] {
+  if (!isAstParseable(filePath)) return [];
+  let sourceFile: ts.SourceFile;
+  try {
+    sourceFile = getSourceFile(filePath);
+  } catch {
+    return [];
+  }
+
+  const fullText = sourceFile.getFullText();
+  const hits = declarationsOverlapping(sourceFile, [{ start: 0, end: fullText.length }]);
+
+  // Same "keep the first (outermost) hit per qualified name" rule as enumerateFileCandidates —
+  // declarationsOverlapping walks parent-before-child, so the first hit is always correct.
+  const byQualified = new Map<string, (typeof hits)[number]>();
+  for (const h of hits) {
+    if (!byQualified.has(h.qualified)) byQualified.set(h.qualified, h);
+  }
+
+  const results: FileOutlineEntry[] = [];
+  for (const h of byQualified.values()) {
+    /* istanbul ignore next -- the `|| null` arm is unreachable: `declarationsOverlapping` takes
+       each hit's start from `node.getStart(sf)`, which skips leading trivia, so the slice always
+       begins at a real token character and its first line is never the empty string. Kept as a
+       type-level guarantee that `signature` is `string | null` rather than `string | undefined`. */
+    const signature = fullText.slice(h.start, h.start + 200).split('\n')[0] || null;
+    results.push({
+      qualified: h.qualified,
+      name: h.name,
+      type: astBaseType(h.node),
+      signature,
+      start_line: sourceFile.getLineAndCharacterOfPosition(h.start).line + 1,
+      end_line: sourceFile.getLineAndCharacterOfPosition(h.end).line + 1,
+      exported: isNodeExported(h.node, sourceFile)
+    });
+  }
+
+  // RTK Query endpoints live inside a function body and the general walk above structurally
+  // cannot see them (see detectRtkEndpointNodes) — folded in here so the outline is genuinely
+  // complete, RTK or not, same as enumerateFileCandidates. Its own codeSnapshot is dropped; these
+  // are individual endpoint bodies (small), not a whole-file cost, but the outline never carries
+  // code regardless of source.
+  for (const rtk of detectRtkEndpointNodes(filePath)) {
+    if (byQualified.has(rtk.qualified)) continue;
+    results.push({
+      qualified: rtk.qualified,
+      name: rtk.name,
+      type: rtk.type,
+      signature: rtk.signature,
+      start_line: rtk.startLine,
+      end_line: rtk.endLine,
+      exported: rtk.isExported
+    });
+  }
+
+  return results;
+}
+
+/**
+ * A file's own import list — file-path entry point for {@link getFileImports} (which needs an
+ * already-parsed `ts.SourceFile`). Used by the Phase D curation agent's `get_file_imports` tool:
+ * whether an ambiguous candidate is worth keeping is often decided by whether it's ever imported
+ * anywhere, and the file's OWN imports are the cheap first signal (e.g. a candidate that mirrors
+ * a re-exported name, or that only makes sense alongside a specific imported dependency).
+ */
+export function listFileImports(filePath: string): ImportInfo[] {
+  if (!isAstParseable(filePath)) return [];
+  try {
+    return getFileImports(getSourceFile(filePath));
+  } catch {
+    return [];
+  }
 }
 
 /** A symbol's current source in `sf`, or null when it isn't there. */
@@ -1414,6 +1861,7 @@ export function findTouchedSymbols(
         type: astBaseType(h.node),
         signature: newCode.split('\n')[0].slice(0, 200),
         codeSnapshot: newCode,
+        codeBefore: oldCode,
         startLine: sf.getLineAndCharacterOfPosition(h.start).line + 1,
         endLine: sf.getLineAndCharacterOfPosition(h.end).line + 1,
         isNew: !known

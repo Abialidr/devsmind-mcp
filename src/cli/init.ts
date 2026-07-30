@@ -12,6 +12,7 @@ import {
   TechStack
 } from '../utils/config';
 import { pickDirectory, CancelledError } from './integrations/prompt';
+import { normalizeIgnoreEntry } from '../db/activity';
 
 // ─── Detection Helpers ─────────────────────────────────────────────────────
 
@@ -37,14 +38,26 @@ function readGitConfig(key: string): string {
   }
 }
 
-/** Parse non-comment, non-empty lines from a .gitignore file */
+/**
+ * The ignore matcher used at scan time (scanner.ts's `shouldIgnore`) only understands literal
+ * path segments — it has no glob engine. A raw .gitignore line like `*.log` or `!keep.log` would
+ * be accepted here, stored in config, and then silently never match anything at scan time (dead
+ * weight at best, misleading at worst for a negation the user expects to un-ignore something).
+ * So only pass through lines with no glob metacharacters and no negation.
+ */
+function isLiteralIgnorePattern(line: string): boolean {
+  return !/[*?[\]!]/.test(line);
+}
+
+/** Parse non-comment, non-empty, non-glob lines from a .gitignore file */
 function readGitIgnorePatterns(dir: string): string[] {
   const gitignorePath = path.join(dir, '.gitignore');
   if (!fs.existsSync(gitignorePath)) return [];
   return fs.readFileSync(gitignorePath, 'utf-8')
     .split('\n')
     .map((l: string) => l.trim())
-    .filter((l: string) => l && !l.startsWith('#'));
+    .filter((l: string) => l && !l.startsWith('#'))
+    .filter(isLiteralIgnorePattern);
 }
 
 /** Detect tech stack from package.json and project indicator files */
@@ -99,6 +112,64 @@ function detectTechStack(repoPaths: string[]): TechStack {
 function aggregateIgnoredPaths(repoPaths: string[]): string[] {
   const all = repoPaths.flatMap(p => readGitIgnorePatterns(p));
   return [...new Set(all)];
+}
+
+/**
+ * Everything under `.devmind/` that is local-machine/local-developer state and must never be
+ * committed: the credentials file, the SQLite brain (plus its transient sidecar files — rollback
+ * journal is what actually appears since we run in SQLite's default journal mode, not WAL, but
+ * -wal/-shm are kept too in case that ever changes), the two in-progress scratchpads, and
+ * `local/` (per-developer activity/feedback logs — see activity.ts's `localDir`). Everything
+ * else under `.devmind/` (config.json, graph/, history/, vectors/) is meant to be committed.
+ */
+export const DEVMIND_GITIGNORE_ENTRIES = [
+  '.env',
+  'brain.db',
+  'brain.db-journal',
+  'brain.db-wal',
+  'brain.db-shm',
+  'index_scratchpad.json',
+  'history_scratchpad.json',
+  'local/'
+];
+
+/**
+ * Creates `.devmind/.gitignore` if missing, or tops up an existing one with any entries from
+ * `DEVMIND_GITIGNORE_ENTRIES` it's missing — e.g. one written by an older DevsMind version, or a
+ * teammate's checkout that predates an entry being added. Runs on both fresh `init` and re-`init`
+ * of an existing brain so neither path can leave a stale/incomplete gitignore in place.
+ *
+ * Two things it is careful about, both of which it used to get wrong:
+ *
+ * - **Matching is by meaning, not by string.** `normalizeIgnoreEntry` collapses `local`, `/local`
+ *   and `local/` to one value, because that is what git reads them as. Comparing raw strings meant
+ *   a hand-written `local` was never recognized as covering `local/`, so every re-init appended a
+ *   duplicate — and since the entry list only ever grows, so did the pile of near-misses.
+ * - **The user's file is appended to, never rewritten.** The old version read the file, dropped
+ *   every blank line, and wrote the survivors back — silently reflowing a gitignore someone had
+ *   grouped and commented, on a run that was supposed to be a no-op.
+ */
+export function ensureDevmindGitignore(devmindDir: string): { path: string; changed: boolean; added: string[] } {
+  const gitignorePath = path.join(devmindDir, '.gitignore');
+  const existedBefore = fs.existsSync(gitignorePath);
+  const raw = existedBefore ? fs.readFileSync(gitignorePath, 'utf-8') : '';
+
+  const present = new Set(
+    raw.split('\n')
+      .filter(l => l.trim() && !l.trim().startsWith('#'))
+      .map(normalizeIgnoreEntry)
+  );
+  const added = DEVMIND_GITIGNORE_ENTRIES.filter(e => !present.has(normalizeIgnoreEntry(e)));
+
+  if (added.length === 0 && existedBefore) {
+    return { path: gitignorePath, changed: false, added };
+  }
+
+  const head = raw.trim() ? (raw.endsWith('\n') ? raw : raw + '\n') : '';
+  const banner = '# DevsMind — local-machine state, never committed (written by `devsmind init`)';
+  const block = head ? ['', banner, ...added] : [banner, ...added];
+  fs.writeFileSync(gitignorePath, head + block.join('\n') + '\n', 'utf-8');
+  return { path: gitignorePath, changed: true, added };
 }
 
 function ensureDbInitialized(dbPath: string) {
@@ -169,6 +240,17 @@ async function showIgnorePresets(excludedPaths: Set<string>, repoRoot: string) {
     });
     if (gitResponse.useGitignore) {
       for (const p of detectedPatterns) excludedPaths.add(p);
+    }
+  }
+  const gitignorePath = path.join(repoRoot, '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const rawLines = fs.readFileSync(gitignorePath, 'utf-8')
+      .split('\n')
+      .map((l: string) => l.trim())
+      .filter((l: string) => l && !l.startsWith('#'));
+    const skipped = rawLines.length - detectedPatterns.length;
+    if (skipped > 0) {
+      console.log(`   ⚠ Skipped ${skipped} wildcard/negation .gitignore line(s) — DevsMind's ignore matcher only supports plain folder/file names, not globs like "*.log". Add specific files/folders in the browser below if needed.`);
     }
   }
 
@@ -498,10 +580,13 @@ async function handleExistingInit(
   fs.writeFileSync(envPath, envLines.join('\n') + '\n', 'utf-8');
   console.log(`💾 Updated ${envPath}`);
 
-  // Ensure .gitignore exists
-  const gitignorePath = path.join(devmindDir, '.gitignore');
-  if (!fs.existsSync(gitignorePath)) {
-    fs.writeFileSync(gitignorePath, '.env\n', 'utf-8');
+  // Ensure .gitignore exists and is up to date (repairs a missing/stale one from an older
+  // DevsMind version or a teammate's checkout, without discarding any custom lines added on top)
+  const gitignoreResult = ensureDevmindGitignore(devmindDir);
+  if (gitignoreResult.changed) {
+    console.log(`💾 Updated ${gitignoreResult.path} (+ ${gitignoreResult.added.join(', ')})`);
+  } else {
+    console.log(`✅ ${gitignoreResult.path} already covers every local-only file.`);
   }
 
   ensureDbInitialized(dbPath);
@@ -813,18 +898,9 @@ async function handleNewInit(cwd: string) {
   fs.writeFileSync(envPath, envLines.join('\n') + '\n', 'utf-8');
   console.log(`💾 Created ${envPath} (local, gitignored)`);
 
-  // Always create/update .gitignore to protect .env and ignore database/scratchpad
-  const gitignorePath = path.join(devmindDir, '.gitignore');
-  const ignoreContent = [
-    '.env',
-    'brain.db',
-    'brain.db-wal',
-    'brain.db-shm',
-    'index_scratchpad.json',
-    'history_scratchpad.json'
-  ].join('\n') + '\n';
-  fs.writeFileSync(gitignorePath, ignoreContent, 'utf-8');
-  console.log(`💾 Created/Updated ${gitignorePath}`);
+  // Always create/update .gitignore to protect .env and ignore database/scratchpad/local logs
+  const { path: gitignorePath, added } = ensureDevmindGitignore(devmindDir);
+  console.log(`💾 Created/Updated ${gitignorePath} — ignoring ${added.join(', ')}`);
 
   // Create graph and history directories with .gitkeep files so Git tracks them
   const graphDir = path.join(devmindDir, 'graph');

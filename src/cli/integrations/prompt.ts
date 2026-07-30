@@ -124,6 +124,29 @@ export async function pickMode(): Promise<Mode> {
   ]);
 }
 
+/**
+ * Not to be confused with `Mode` above (that one picks HOW the rule gets placed — auto-write vs.
+ * copy-paste). This picks WHAT the rule tells the agent to do with DevsMind's write tools once
+ * it's placed — the human staying the owner of what reaches the graph, or the agent doing it
+ * without being asked. Two different axes, so two different names.
+ */
+export type WorkflowStyle = 'automatic' | 'manual';
+
+export async function pickWorkflowStyle(): Promise<WorkflowStyle> {
+  return selectPrompt<WorkflowStyle>('How should the AI use DevsMind\'s write tools in this project?', [
+    {
+      title: '🤖 Automatic — stages, commits, and tracks every edit without being asked',
+      value: 'automatic',
+      description: 'The default. edit_node traces every write; commit_changes runs at natural checkpoints so nothing is left unrecorded.'
+    },
+    {
+      title: '🧑‍💻 Manual — search & read freely, but only stage/commit when you explicitly ask',
+      value: 'manual',
+      description: 'You stay the one deciding what reaches the graph and when. Search/context tools (search_nodes, get_node_graph, get_node_history) are always-on either way.'
+    },
+  ], 0);
+}
+
 // ─── Directory navigator ("cd around, use this folder") ──────────────────────
 
 /**
@@ -309,10 +332,17 @@ function mergeTomlServer(
 
   let content: string;
   const headerLine = `[${header}]`;
-  if (existing.includes(headerLine)) {
+  const lines = existing.split(/\r?\n/);
+  // Find the header as a LINE, not as a substring of the file. Those are not the same question,
+  // and asking the cheap one first was a corruption bug: a file merely *mentioning* the header
+  // (`# see [mcp_servers.devsmind] docs`) passed the substring test but matched no line, leaving
+  // start at -1 — so `slice(0, -1)` dropped the file's last line and the tail got re-emitted,
+  // duplicating every table after the comment. A duplicate table is a TOML parse error, so the
+  // user's Codex config came back broken rather than merged.
+  const start = lines.findIndex(l => l.trim() === headerLine);
+
+  if (start !== -1) {
     // Replace the existing table (from its header to the next table header or EOF).
-    const lines = existing.split(/\r?\n/);
-    const start = lines.findIndex(l => l.trim() === headerLine);
     let end = lines.length;
     for (let i = start + 1; i < lines.length; i++) {
       if (/^\s*\[/.test(lines[i])) { end = i; break; }

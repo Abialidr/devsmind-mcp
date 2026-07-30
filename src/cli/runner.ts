@@ -10,7 +10,10 @@ import { scanRepoFiles } from '../utils/scanner';
 import { loadProjectContext } from '../utils/config';
 import { safeJsonParse } from '../utils/json';
 import { resolveConnectionsLocally, extractNodeFromFile, MissingRef } from '../utils/ast';
-import { MissingAgg, finalizeMissingNodes } from '../db/edges';
+import { MissingAgg, finalizeMissingNodes, applyDeterministicAliases } from '../db/edges';
+import { extractFileWithCuration } from './extract-agent';
+import type { LlmCredentials } from './llm-client';
+import { describePendingNodes } from './describe';
 
 interface ExtractedNode {
   node_id: string;
@@ -24,7 +27,9 @@ interface ExtractionResult {
   nodes?: ExtractedNode[];
 }
 
-function makeHttpRequest(
+/** Exported for reuse by `src/cli/llm-client.ts` (the `devsmind describe` backfill) — plain
+ * request/response, nothing indexing-specific about it. */
+export function makeHttpRequest(
   urlStr: string,
   method: string,
   headers: Record<string, string>,
@@ -71,16 +76,18 @@ function makeHttpRequest(
   });
 }
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ── LLM request pacing ───────────────────────────────────────────────────
 // Off by default — requests fire as fast as possible and 429s are handled by
-// the retry/backoff in extractNodesFromCode. Pass --rpm to proactively space
-// out requests and stay under a known quota instead of reacting after the fact.
+// the retry/backoff in sendConversationTurnWithRetry (llm-client.ts). Pass --rpm to
+// proactively space out requests and stay under a known quota instead of reacting after the fact.
+// Module-global on purpose: `devsmind describe` shares this same pacing budget with indexing
+// if both were ever run in the same process, which is the correct behavior (one shared quota).
 let lastLlmCallAt = 0;
-async function throttleRpm(rpm?: number): Promise<void> {
+export async function throttleRpm(rpm?: number): Promise<void> {
   if (!rpm || rpm <= 0) return;
   const minIntervalMs = 60000 / rpm;
   const wait = lastLlmCallAt + minIntervalMs - Date.now();
@@ -264,23 +271,6 @@ class ProgressDisplay {
 }
 
 
-// Build standard taxonomy prompt text
-const TAXONOMY_PROMPT = `
-Choose node types from this taxonomy:
-- UNIVERSAL: function | method | class | abstract_class | interface | type_alias | enum | constant | variable | module | namespace | decorator
-- NESTJS: nest_module | nest_controller | nest_service | nest_provider | nest_guard | nest_interceptor | nest_pipe | nest_filter | nest_decorator | nest_middleware | nest_gateway | nest_resolver | nest_schema | nest_dto
-- EXPRESS/FASTIFY: route_handler | middleware | router
-- SPRING (Java): spring_controller | spring_service | spring_repository | spring_component | spring_bean | spring_config | spring_entity
-- DJANGO/FASTAPI: django_view | django_model | django_serializer | django_form | django_signal | fastapi_router | fastapi_dependency
-- GO: go_handler | go_middleware | go_struct | go_interface | go_func
-- RUST: rust_struct | rust_impl | rust_trait | rust_enum | rust_fn | rust_macro
-- REACT/NEXTJS: react_component | react_hook | react_context | react_hoc | react_page | next_page | next_layout | next_api_route | next_server_action
-- ORM: prisma_model | typeorm_entity | mongoose_model | sqlalchemy_model
-- REST/API/GRAPHQL: api_endpoint | rest_controller | graphql_resolver | graphql_query | graphql_mutation | graphql_schema
-- CLI: cli_command | cli_option
-- UTILITY: util_function | helper | validator | formatter
-`;
-
 // ── Vertex AI Authentication & Helper Functions ───────────────────────────
 
 function base64UrlEncode(obj: any): string {
@@ -291,7 +281,7 @@ function base64UrlEncode(obj: any): string {
     .replace(/=/g, '');
 }
 
-function getAccessTokenFromServiceAccount(sa: { client_email: string; private_key: string; token_uri?: string }): Promise<string> {
+export function getAccessTokenFromServiceAccount(sa: { client_email: string; private_key: string; token_uri?: string }): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
       const header = { alg: 'RS256', typ: 'JWT' };
@@ -367,7 +357,7 @@ function getAccessTokenFromServiceAccount(sa: { client_email: string; private_ke
 let cachedVertexToken: string | null = null;
 let vertexTokenExpiry = 0; // Epoch ms
 
-async function getVertexTokenCached(saData: any): Promise<string> {
+export async function getVertexTokenCached(saData: any): Promise<string> {
   const now = Date.now();
   if (cachedVertexToken && vertexTokenExpiry > now + 300000) {
     return cachedVertexToken;
@@ -378,298 +368,7 @@ async function getVertexTokenCached(saData: any): Promise<string> {
   return token;
 }
 
-async function extractWithVertex(
-  model: string,
-  token: string,
-  projectId: string,
-  location: string,
-  filePath: string,
-  code: string
-): Promise<ExtractionResult> {
-  const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent`;
-  
-  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code file provided and extract all code structures (functions, methods, classes, controllers, services, interfaces, schema models, types) defined in the file.
-Return ONLY a valid JSON object matching the schema:
-{
-  "nodes": [
-    { 
-      "node_id": "fully_qualified_identifier (e.g. Class.method or function)", 
-      "name": "display_name", 
-      "type": "type_from_taxonomy", 
-      "signature": "param/return signature (optional)",
-      "code_snapshot": "the exact full source code block of this entity"
-    }
-  ]
-}
-${TAXONOMY_PROMPT}
-CRITICAL RULES:
-1. ONLY extract code structures defined in the file. Do NOT extract imports or third-party libraries as nodes.
-2. For each node, extract its exact code snippet as "code_snapshot".
-3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
-4. Be highly precise and return an empty JSON object if no code constructs are found.`;
 
-  const payload = {
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          {
-            text: `File path: ${filePath}\n\nCode:\n${code}`
-          }
-        ]
-      }
-    ],
-    systemInstruction: {
-      parts: [
-        {
-          text: systemPrompt
-        }
-      ]
-    },
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
-  };
-
-  const responseText = await makeHttpRequest(
-    url,
-    'POST',
-    {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    JSON.stringify(payload)
-  );
-
-  const parsed = safeJsonParse(responseText, {} as any);
-  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    return {};
-  }
-  return safeJsonParse<ExtractionResult>(text, {});
-}
-
-async function extractWithGemini(
-  model: string,
-  key: string,
-  filePath: string,
-  code: string
-): Promise<ExtractionResult> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  
-  const systemPrompt = `You are a codebase indexing assistant. Your job is to analyze the source code file provided and extract all code structures (functions, methods, classes, controllers, services, interfaces, schema models, types) defined in the file.
-Return ONLY a valid JSON object matching the schema:
-{
-  "nodes": [
-    { 
-      "node_id": "fully_qualified_identifier (e.g. Class.method or function)", 
-      "name": "display_name", 
-      "type": "type_from_taxonomy", 
-      "signature": "param/return signature (optional)",
-      "code_snapshot": "the exact full source code block of this entity"
-    }
-  ]
-}
-${TAXONOMY_PROMPT}
-CRITICAL RULES:
-1. ONLY extract code structures defined in the file. Do NOT extract imports or third-party libraries as nodes.
-2. For each node, extract its exact code snippet as "code_snapshot".
-3. DO NOT wrap JSON in markdown blocks (e.g. no \`\`\`json). Return raw JSON.
-4. Be highly precise and return an empty JSON object if no code constructs are found.`;
-
-  const payload = {
-    contents: [
-      {
-        parts: [
-          {
-            text: `File path: ${filePath}\n\nCode:\n${code}`
-          }
-        ]
-      }
-    ],
-    systemInstruction: {
-      parts: [
-        {
-          text: systemPrompt
-        }
-      ]
-    },
-    generationConfig: {
-      responseMimeType: 'application/json'
-    }
-  };
-
-  const responseText = await makeHttpRequest(
-    url,
-    'POST',
-    { 'Content-Type': 'application/json' },
-    JSON.stringify(payload)
-  );
-
-  const parsed = safeJsonParse(responseText, {} as any);
-  const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    return {};
-  }
-  return safeJsonParse<ExtractionResult>(text, {});
-}
-
-async function extractWithOllama(
-  url: string,
-  model: string,
-  filePath: string,
-  code: string
-): Promise<ExtractionResult> {
-  const endpoint = `${url.replace(/\/$/, '')}/api/chat`;
-  
-  const systemPrompt = `You are a codebase indexing assistant. Analyze this source code file and extract code structures (functions, classes, methods, endpoints).
-Return ONLY a valid JSON object matching the schema:
-{
-  "nodes": [
-    { 
-      "node_id": "unique_string (e.g. Class.method or function)", 
-      "name": "display_name", 
-      "type": "type_from_taxonomy", 
-      "signature": "param/return signature (optional)",
-      "code_snapshot": "the exact full source code block of this entity"
-    }
-  ]
-}
-${TAXONOMY_PROMPT}
-CRITICAL RULES:
-1. ONLY extract constructs defined in this file. Do NOT extract third-party libraries or imports.
-2. For each node, extract its exact code snippet as "code_snapshot".
-3. Return a clean, valid JSON object.`;
-
-  const userPrompt = `File path: ${filePath}\n\nCode:\n${code}`;
-
-  const payload = {
-    model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    stream: false,
-    format: 'json'
-  };
-
-  const responseText = await makeHttpRequest(
-    endpoint,
-    'POST',
-    { 'Content-Type': 'application/json' },
-    JSON.stringify(payload)
-  );
-
-  const parsed = safeJsonParse(responseText, {} as any);
-  const text = parsed.message?.content;
-  if (!text) {
-    return {};
-  }
-  return safeJsonParse<ExtractionResult>(text, {});
-}
-
-async function extractNodesFromCode(
-  provider: 'gemini' | 'vertex' | 'ollama',
-  modelName: string,
-  key: string | undefined,
-  url: string | undefined,
-  filePath: string,
-  code: string,
-  getVertexToken: () => Promise<string>,
-  vertexProjectId: string,
-  vertexLocation: string,
-  progress: ProgressDisplay,
-  chunkSize?: number,
-  chunkOverlap?: number,
-  rpm?: number
-): Promise<ExtractionResult> {
-  // Chunking is opt-in: with no --chunk-size, the whole file always goes in one call.
-  const maxLines = chunkSize;
-  const overlap = chunkOverlap ?? 50;
-  const lines = code.split('\n');
-
-  const executeExtraction = async (codeChunk: string): Promise<ExtractionResult> => {
-    let retries = 5;
-    let backoffMs = 10000;
-    while (retries > 0) {
-      try {
-        await throttleRpm(rpm);
-        if (provider === 'gemini') {
-          return await extractWithGemini(modelName, key!, filePath, codeChunk);
-        } else if (provider === 'vertex') {
-          const token = await getVertexToken();
-          return await extractWithVertex(modelName, token, vertexProjectId, vertexLocation, filePath, codeChunk);
-        } else {
-          return await extractWithOllama(url!, modelName, filePath, codeChunk);
-        }
-      } catch (err) {
-        retries--;
-        if (retries === 0) {
-          throw err;
-        }
-        const errMsg = (err as Error).message;
-        if (errMsg.includes('429')) {
-          progress.updateStatus(`Rate limited (429). Retrying in ${backoffMs / 1000}s...`);
-          await sleep(backoffMs);
-          backoffMs *= 2;
-        } else {
-          progress.updateStatus(`API error. Retrying in 2s...`);
-          await sleep(2000);
-        }
-      }
-    }
-    return {};
-  };
-
-  if (!maxLines || lines.length <= maxLines) {
-    return await executeExtraction(code);
-  }
-
-  const relPath = path.relative(process.cwd(), filePath);
-  progress.log(`\x1B[90m[${relPath}] Large file (${lines.length} lines) - parsing in chunks to prevent LLM output truncation...\x1B[0m`);
-  const chunks: string[] = [];
-  let start = 0;
-  // Guard against overlap >= chunkSize, which would make the step <= 0 and loop forever.
-  const step = Math.max(1, maxLines - overlap);
-  while (start < lines.length) {
-    const end = Math.min(start + maxLines, lines.length);
-    chunks.push(lines.slice(start, end).join('\n'));
-    if (end === lines.length) break;
-    start += step;
-  }
-
-  const seenNodeIds = new Map<string, ExtractedNode>();
-
-  for (let i = 0; i < chunks.length; i++) {
-    progress.updateStatus(`Sending chunk ${i + 1}/${chunks.length} to AI…`);
-    const chunkCode = chunks[i];
-    try {
-      const chunkResult = await executeExtraction(chunkCode);
-      if (chunkResult.nodes && Array.isArray(chunkResult.nodes)) {
-        for (const node of chunkResult.nodes) {
-          if (!node.node_id) continue;
-          const existing = seenNodeIds.get(node.node_id);
-          if (!existing || (node.code_snapshot && (!existing.code_snapshot || node.code_snapshot.length > existing.code_snapshot.length))) {
-            seenNodeIds.set(node.node_id, node);
-          }
-        }
-      }
-    } catch (err) {
-      progress.log(`\x1B[31mError extracting chunk ${i + 1}/${chunks.length}: ${(err as Error).message}\x1B[0m`);
-      throw err;
-    }
-
-    if (i < chunks.length - 1) {
-      if (provider === 'gemini' || provider === 'vertex') {
-        await sleep(1500);
-      } else {
-        await sleep(100);
-      }
-    }
-  }
-
-  return { nodes: Array.from(seenNodeIds.values()) };
-}
 
 export async function runBackgroundIndexing(opts: {
   devmindPath: string;
@@ -687,6 +386,16 @@ export async function runBackgroundIndexing(opts: {
   repos?: string[];
   yes?: boolean;
   rpm?: number;
+  /**
+   * Phase 3, after node extraction + connection resolution: backfill descriptions for every
+   * node this run just created, reusing the SAME credentials already resolved for extraction
+   * (no separate `--key`/`--provider` setup). Runs the identical logic `devsmind describe` uses
+   * standalone (see describe.ts's `describePendingNodes`) — this just saves a second invocation
+   * right after a fresh index, since every node `runBackgroundIndexing` creates starts out
+   * undescribed (Phase 1's extraction is structure-only, no description field).
+   */
+  describe?: boolean;
+  describeBatchSize?: number;
 }) {
   const resolvedDevmind = path.resolve(opts.devmindPath);
   const chunkSize = opts.chunkSize;
@@ -695,6 +404,14 @@ export async function runBackgroundIndexing(opts: {
   const nodesOnly = !!opts.nodesOnly;
   const edgesOnly = !!opts.edgesOnly;
   const rpm = opts.rpm;
+
+  // Phase 3 (description backfill) is MANDATORY on a full run (neither --nodes-only nor
+  // --edges-only) — Phase 1/2 never write a description, so skipping it would leave a "finished"
+  // index that's not actually searchable by search_nodes' description-weighted BM25/vector layers.
+  // On --nodes-only it's an optional extra pass on top of the structure-only extraction, gated by
+  // --describe, since --nodes-only exists specifically for a fast partial run. --edges-only never
+  // resolves credentials or creates nodes, so it's never eligible (also rejected upfront in index.ts).
+  const shouldDescribe = edgesOnly ? false : (nodesOnly ? !!opts.describe : true);
 
   // Repo scoping: restrict the whole operation to the named repos. Standalone-only.
   const scopedRepos: string[] | null = opts.repos && opts.repos.length ? opts.repos : null;
@@ -745,7 +462,15 @@ export async function runBackgroundIndexing(opts: {
   console.log(`   Brain directory : ${resolvedDevmind}`);
   console.log(`   Provider        : ${opts.provider}`);
   console.log(`   Connections     : local AST resolution (always)`);
-  console.log(`   Chunking        : ${chunkSize ? `${chunkSize} lines (overlap: ${chunkOverlap ?? 50})` : 'off — whole file per call'}`);
+  console.log(`   Extraction      : deterministic AST enumeration + agentic curation of ambiguous candidates only`);
+  console.log(`   Describe        : ${
+    edgesOnly ? 'n/a (--edges-only never creates nodes)'
+    : nodesOnly ? (shouldDescribe ? 'enabled via --describe — Phase 3 will backfill descriptions after extraction' : 'disabled (pass --describe to also backfill descriptions after this --nodes-only run)')
+    : 'mandatory for a full run — Phase 3 will backfill descriptions after indexing'
+  }`);
+  if (chunkSize) {
+    console.log(`   ⚠ --chunk-size is ignored — extraction is per-candidate now (AST-enumerated), not whole-file-to-an-LLM, so chunking a huge file no longer applies.`);
+  }
   console.log(`   Rate limit      : ${rpm ? `${rpm} req/min` : 'unthrottled'}`);
 
   let modelName = opts.model || '';
@@ -807,12 +532,18 @@ export async function runBackgroundIndexing(opts: {
     console.log(`   Model           : ${modelName}`);
   }
 
-  const getVertexToken = async (): Promise<string> => {
-    if (vertexToken) return vertexToken;
-    if (vertexSaData) {
-      return await getVertexTokenCached(vertexSaData);
-    }
-    throw new Error('No Vertex credentials available');
+  // Built once here from whatever the provider-specific block above resolved — the ONE place
+  // per-file extraction needs credentials from, instead of threading five separate params
+  // through every call the way `extractNodesFromCode` used to.
+  const llmCreds: LlmCredentials = {
+    provider: opts.provider,
+    model: modelName,
+    apiKey: opts.key,
+    vertexSaData: vertexSaData || undefined,
+    vertexToken: vertexToken || undefined,
+    vertexProjectId,
+    vertexLocation,
+    url: opts.url
   };
 
   // 1. Open DB
@@ -848,18 +579,24 @@ export async function runBackgroundIndexing(opts: {
   if (edgesOnly) {
     // All nodes stay in the candidate pool (targets can live in any repo/file), but when
     // scoped we only rebuild edges ORIGINATING from the named repos' nodes.
-    const allNodes = db.listNodes();
-    if (allNodes.length === 0) {
+    const rawNodes = db.listNodes();
+    if (rawNodes.length === 0) {
       console.error('❌ Error: --edges-only requires nodes to already exist. Run without --edges-only first (or with --nodes-only) to extract nodes.');
       db.close();
       process.exit(1);
     }
-    const existingNodes = scopedRepos ? allNodes.filter(n => inScope(n.id)) : allNodes;
+    const existingNodes = scopedRepos ? rawNodes.filter(n => inScope(n.id)) : rawNodes;
     if (existingNodes.length === 0) {
       console.error(`❌ Error: no nodes found for repo(s): ${scopedRepos?.join(', ')}. Extract nodes first.`);
       db.close();
       process.exit(1);
     }
+
+    // Deterministic alias detection (RTK Query hook names, etc.) over this batch's files, BEFORE
+    // the candidate pool is fetched, so the resolver below sees any freshly-attached aliases in
+    // this SAME run rather than needing a second pass.
+    applyDeterministicAliases(db, existingNodes.map(n => n.id));
+    const allNodes = db.listNodes();
 
     let edgePad = readScratchpad(resolvedDevmind, padFile);
     let resumeIndex = 0;
@@ -1003,25 +740,14 @@ export async function runBackgroundIndexing(opts: {
       }
 
       const fileLines = code.split('\n').length;
-      progress.updateStatus(`Reading ${fileLines} lines — sending to AI…`);
+      progress.updateStatus(`Enumerating candidates deterministically…`);
 
       let result: ExtractionResult = {};
       try {
-        result = await extractNodesFromCode(
-          opts.provider,
-          modelName,
-          opts.key,
-          opts.url,
-          fileObj.absolutePath,
-          code,
-          getVertexToken,
-          vertexProjectId,
-          vertexLocation,
-          progress,
-          chunkSize,
-          chunkOverlap,
-          rpm
-        );
+        result = await extractFileWithCuration(llmCreds, fileObj.absolutePath, {
+          rpm,
+          onLog: (line) => progress.log(line)
+        });
       } catch (err) {
         progress.finishPhase(`Paused — API error. Run again to resume.`);
         console.error(`❌ ${(err as Error).message}`);
@@ -1118,10 +844,15 @@ export async function runBackgroundIndexing(opts: {
   // PHASE 2: AI CONNECTION RESOLUTION / LINKING
   // =========================================================================
   if (pad.phase === 2 && !nodesOnly) {
-    const allNodes = db.listNodes();
-    const allNodeIds = allNodes.map(n => n.id);
+    const rawNodes = db.listNodes();
     // Candidates are always all nodes; when scoped we only (re)build edges from the
     // named repos' nodes and clear just those first so we don't wipe other repos' edges.
+    const activeNodesForAlias = scopedRepos ? rawNodes.filter(n => inScope(n.id)) : rawNodes;
+    // Deterministic alias detection (RTK Query hook names, etc.) BEFORE the candidate pool is
+    // fetched, so the resolver below sees any freshly-attached aliases in this SAME run.
+    applyDeterministicAliases(db, activeNodesForAlias.map(n => n.id));
+    const allNodes = db.listNodes();
+    const allNodeIds = allNodes.map(n => n.id);
     const activeNodes = scopedRepos ? allNodes.filter(n => inScope(n.id)) : allNodes;
     const resumeIndex = pad.nodes_done || 0;
     if (scopedRepos && resumeIndex === 0) {
@@ -1172,6 +903,17 @@ export async function runBackgroundIndexing(opts: {
     finalizeMissingNodes(resolvedDevmind, db, missingRefs);
   }
 
+  // =========================================================================
+  // PHASE 3: DESCRIPTION BACKFILL — mandatory on a full run, optional (--describe) on --nodes-only
+  // =========================================================================
+  let describeResult: Awaited<ReturnType<typeof describePendingNodes>> | null = null;
+  if (shouldDescribe) {
+    console.log(`\n${'═'.repeat(60)}`);
+    console.log(` Phase 3: Description Backfill`);
+    console.log(`${'═'.repeat(60)}\n`);
+    describeResult = await describePendingNodes(db, llmCreds, { batchSize: opts.describeBatchSize, rpm });
+  }
+
   // Mark indexing session as fully complete
   pad.status = 'complete';
   pad.updated_at = new Date().toISOString();
@@ -1183,7 +925,10 @@ export async function runBackgroundIndexing(opts: {
   console.log('\x1B[1m\x1B[32m  ✔ Indexing complete!\x1B[0m');
   console.log(`  ├─ Files indexed  : \x1B[33m${pad.files_done}\x1B[0m`);
   console.log(`  ├─ Nodes created  : \x1B[33m${pad.nodes_created}\x1B[0m`);
-  console.log(`  └─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m`);
+  console.log(describeResult ? `  ├─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m` : `  └─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m`);
+  if (describeResult) {
+    console.log(`  └─ Described      : \x1B[33m${describeResult.described}\x1B[0m/${describeResult.pending}${describeResult.failed ? ` (${describeResult.failed} failed — re-run with --describe to retry)` : ''}`);
+  }
   console.log('');
 }
 
@@ -1218,7 +963,10 @@ export async function runBackgroundReindexing(opts: {
   console.log(`   Brain directory : ${resolvedDevmind}`);
   console.log(`   Provider        : ${opts.provider}`);
   console.log(`   Connections     : local AST resolution (always)`);
-  console.log(`   Chunking        : ${chunkSize ? `${chunkSize} lines (overlap: ${chunkOverlap ?? 50})` : 'off — whole file per call'}`);
+  console.log(`   Extraction      : deterministic AST enumeration + agentic curation of ambiguous candidates only`);
+  if (chunkSize) {
+    console.log(`   ⚠ --chunk-size is ignored — extraction is per-candidate now (AST-enumerated), not whole-file-to-an-LLM, so chunking a huge file no longer applies.`);
+  }
   console.log(`   Rate limit      : ${rpm ? `${rpm} req/min` : 'unthrottled'}`);
 
   let modelName = opts.model || '';
@@ -1274,12 +1022,15 @@ export async function runBackgroundReindexing(opts: {
     opts.url = opts.url || 'http://localhost:11434';
   }
 
-  const getVertexToken = async (): Promise<string> => {
-    if (vertexToken) return vertexToken;
-    if (vertexSaData) {
-      return await getVertexTokenCached(vertexSaData);
-    }
-    throw new Error('No Vertex credentials available');
+  const llmCreds: LlmCredentials = {
+    provider: opts.provider,
+    model: modelName,
+    apiKey: opts.key,
+    vertexSaData: vertexSaData || undefined,
+    vertexToken: vertexToken || undefined,
+    vertexProjectId,
+    vertexLocation,
+    url: opts.url
   };
 
   console.log(`   Model           : ${modelName}`);
@@ -1395,25 +1146,14 @@ export async function runBackgroundReindexing(opts: {
     }
 
     const fileLines = code.split('\n').length;
-    progress.updateStatus(`Reading ${fileLines} lines — sending to AI…`);
+    progress.updateStatus(`Enumerating candidates deterministically…`);
 
     let result: ExtractionResult = {};
     try {
-      result = await extractNodesFromCode(
-        opts.provider,
-        modelName,
-        opts.key,
-        opts.url,
-        fileObj.absolutePath,
-        code,
-        getVertexToken,
-        vertexProjectId,
-        vertexLocation,
-        progress,
-        chunkSize,
-        chunkOverlap,
-        rpm
-      );
+      result = await extractFileWithCuration(llmCreds, fileObj.absolutePath, {
+        rpm,
+        onLog: (line) => progress.log(line)
+      });
     } catch (err) {
       if (fillGaps) {
         stillFailedFiles.push(relPath);
@@ -1487,6 +1227,8 @@ export async function runBackgroundReindexing(opts: {
     // re-resolving the new nodes' own outbound edges isn't enough. This is local AST
     // resolution (no LLM calls), so rebuilding it across the whole graph is cheap and
     // safe to repeat.
+    const rawNodesForAlias = db.listNodes();
+    applyDeterministicAliases(db, rawNodesForAlias.map(n => n.id));
     const activeNodes = db.listNodes();
     const allNodeIds = new Set(activeNodes.map(n => n.id));
 
@@ -1531,6 +1273,7 @@ export async function runBackgroundReindexing(opts: {
 
   // Phase 2: Resolving connections for modified nodes
   if (newOrUpdatedNodeIds.length > 0) {
+    applyDeterministicAliases(db, newOrUpdatedNodeIds);
     const activeNodes = db.listNodes();
     const allNodeIds = activeNodes.map(n => n.id);
 

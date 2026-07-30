@@ -87,17 +87,25 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
   }
 
   if (fix) {
-    for (const n of [...orphaned_nodes, ...spurious_nodes, ...missing_files]) {
-      db.deprecateNode(n.id);
-    }
-    for (const e of dangling_edges) {
-      db.deleteDanglingEdge(e.source_node_id, e.target_node_id);
-    }
+    // Migrate renames FIRST, before the missing-file deprecation pass below: a node whose file
+    // was just `git mv`-ed has a file_path that no longer exists on disk, so
+    // findSpuriousAndMissingFileNodes (computed above, pre-fix) already misclassified it as
+    // missing_files. Deprecating it before migrateRename runs would make it invisible to
+    // migrateRename's own db.listNodes() (which excludes deprecated nodes by design — see the
+    // comment on migrateRename), silently dropping the migration. Running the migration first
+    // means the node is gone from its old id by the time the stale orphaned/spurious/missing
+    // lists are replayed below; deprecateNode() on an id that no longer exists is a safe no-op.
     if (context) {
       for (const r of renamed_files) {
         const migrated = migrateRename(db, context, r.repo, r.from, r.to);
         r.migrated = migrated;
       }
+    }
+    for (const n of [...orphaned_nodes, ...spurious_nodes, ...missing_files]) {
+      db.deprecateNode(n.id);
+    }
+    for (const e of dangling_edges) {
+      db.deleteDanglingEdge(e.source_node_id, e.target_node_id);
     }
     db.setSystemMeta(LAST_ANALYSIS_KEY, new Date().toISOString());
   }
@@ -135,6 +143,10 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
 
 /** Migrates every node whose file_path resolves to `from` onto `to`, cascading the id/connections/history via `renameNode`. Returns true if anything was migrated. */
 function migrateRename(db: DevMindDatabase, context: ReturnType<DevMindDatabase['getContext']>, repoName: string, from: string, to: string): boolean {
+  /* istanbul ignore next -- migrateRename is module-private and only ever called from inside
+     runAnalysis's `if (context) { ... }` block, which already guarantees `context` is non-null
+     at every call site; this guard exists purely so the signature stays honest about the type
+     it accepts (ReturnType<getContext> can be null), not because it's reachable today. */
   if (!context) return false;
   const repoPath = resolveRepoPath(context, repoName);
   if (!repoPath) return false;

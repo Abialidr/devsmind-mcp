@@ -53,6 +53,37 @@ export interface TextEditResult {
   before?: string;
 }
 
+/** Collapse CRLF and lone CR down to LF, so line-ending style never affects a text comparison. */
+function normalizeEol(s: string): string {
+  return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A regex that matches `needle` against the file's ACTUAL bytes, treating "\n" and "\r\n" as
+ * interchangeable at every line break. `needle` is assumed already EOL-normalized (see
+ * `normalizeEol`), so every newline in it is a plain "\n" — each one is widened to accept an
+ * optional leading "\r" in the source. Everything else is escaped literally.
+ */
+function buildEolTolerantPattern(needle: string): RegExp {
+  const source = escapeRegExp(needle).replace(/\n/g, '\\r?\\n');
+  return new RegExp(source, 'g');
+}
+
+/**
+ * Re-express `text` (assumed to use plain "\n") using whichever EOL style `matchedOriginal`
+ * — the literal bytes being replaced — actually used. Real files are sometimes inconsistent
+ * line-to-line (e.g. edited on both Windows and Unix over time); this only asks "did the span
+ * being touched lean CRLF," not "is the whole file CRLF," since that's the only span the
+ * replacement's own line endings need to agree with.
+ */
+function adaptEol(text: string, matchedOriginal: string): string {
+  return /\r\n/.test(matchedOriginal) ? normalizeEol(text).replace(/\n/g, '\r\n') : normalizeEol(text);
+}
+
 /**
  * Exact-match text replacement — the fallback for files no parser can address by symbol
  * (stylesheets, markup, config, and every non-TS/JS language).
@@ -60,6 +91,12 @@ export interface TextEditResult {
  * Deliberately mirrors the semantics of a standard editor edit tool, including the
  * single-occurrence requirement: a caller that meant one site and matched three would
  * otherwise silently corrupt two of them. `replaceAll` opts out of that check explicitly.
+ *
+ * Matching is tolerant of CRLF-vs-LF differences between `oldString` and the file on disk —
+ * a caller (human or AI) working from a rendered view of the file has no reliable way to know
+ * which EOL style a given line actually uses, and a file can mix both after being edited on
+ * different platforms. Only the line-ending characters are forgiving; every other character,
+ * including indentation, must still match exactly.
  */
 export function replaceTextInFile(
   filePath: string,
@@ -98,20 +135,23 @@ export function replaceTextInFile(
     };
   }
 
-  // Count occurrences without regex, so the needle is never interpreted as a pattern.
-  let count = 0;
-  for (let i = original.indexOf(oldString); i !== -1; i = original.indexOf(oldString, i + oldString.length)) {
-    count++;
-    if (!replaceAll && count > 1) break;
+  const pattern = buildEolTolerantPattern(normalizeEol(oldString));
+
+  // Collect every match up front (bounded by how many the file could plausibly contain), so
+  // counting and building the replacement read from the same list — no risk of them disagreeing.
+  const matches: RegExpExecArray[] = [];
+  for (let m = pattern.exec(original); m !== null; m = pattern.exec(original)) {
+    matches.push(m);
+    if (!replaceAll && matches.length > 1) break;
   }
 
-  if (count === 0) {
+  if (matches.length === 0) {
     return {
       ok: false,
-      error: 'old_string was not found in the file. It must match the file byte-for-byte, including indentation. Re-read the file and copy the exact text.'
+      error: 'old_string was not found in the file. Line-ending differences (CRLF vs LF) are tolerated, but every other character, including indentation, must match exactly. Re-read the file and copy the exact text.'
     };
   }
-  if (count > 1 && !replaceAll) {
+  if (matches.length > 1 && !replaceAll) {
     return {
       ok: false,
       error: `old_string matches more than one place in the file — nothing was written. Include surrounding lines to make it unique, or pass replace_all: true if every occurrence should change.`
@@ -124,13 +164,12 @@ export function replaceTextInFile(
   const ranges: { start: number; end: number }[] = [];
   let updated = '';
   let cursor = 0;
-  for (let i = original.indexOf(oldString); i !== -1; i = original.indexOf(oldString, cursor)) {
-    updated += original.slice(cursor, i);
+  for (const match of matches) {
+    updated += original.slice(cursor, match.index);
     const start = updated.length;
-    updated += newString;
+    updated += adaptEol(newString, match[0]);
     ranges.push({ start, end: updated.length });
-    cursor = i + oldString.length;
-    if (!replaceAll) break;
+    cursor = match.index + match[0].length;
   }
   updated += original.slice(cursor);
 

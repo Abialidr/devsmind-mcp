@@ -16,10 +16,11 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
    │    (installed once globally on machine)      │
    │                                              │
    │  Stateless. Holds no data.                   │
-   │  Receives devmind_path on every call.        │
-   │  Opens .devmind/brain.db at that path.       │
+   │  `devsmind start` binds it to ONE project    │
+   │  (--path, or auto-detected from cwd), so     │
+   │  the agent never passes a path at all.       │
    └──────────────────────┬───────────────────────┘
-                          │ devmind_path on every call
+                          │ one bound server per project
         ┌─────────────────┴─────────────────┐
         ▼                                   ▼
   c:\work\my-project\.devmind\        c:\work\other-project\.devmind\
@@ -34,10 +35,10 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
 ## 🚀 Key Features
 
 *   **Function-Level Evolution Graph**: Every class, method, schema, endpoint, or function is mapped with a rich history chain.
-*   **AI-Written Context Snapshots**: As you work, your AI agent documents the *why, goal, previous state, decision rationale, model, and ticket ID* in real-time.
+*   **AI-Written Context Snapshots**: Once per commit, your AI agent documents the *why, goal, previous state, decision rationale, model, and ticket ID* — one reasoning covering everything staged since the last commit, recorded against every node it touches.
 *   **Token-Surgical MCP Interface**: AI can inspect function relationships, histories, and code snapshots *without* reading entire directories or files, reducing token costs by **up to 70%**.
 *   **Stateless MCP Server**: A single server handles multiple distinct workspaces. The active directory configuration is injected dynamically from the IDE's Workspace Rule.
-*   **D3.js 2D/3D Interactive Visualizer**: Explore, search, and navigate your code architecture and connection graphs in the browser with stunning force-directed layouts.
+*   **`devsmind view` — Chat + Graph, offline**: a chat-style timeline of your own work with whole-file diffs and revert, and a node-first graph explorer (repo/type sidebar, filters, a small ego-graph per node instead of the whole thing at once, 2D/3D) — no CDN dependencies, works with no internet.
 *   **Git-Native Collaboration**: The database and configuration are committed to Git, enabling seamless context sharing among team members.
 
 ---
@@ -48,15 +49,28 @@ Running `devsmind init` creates a `.devmind/` directory in your workspace. This 
 
 ```
 .devmind/
-  ├── config.json     ← Project metadata & repository mapping (Committed to Git)
-  ├── .env            ← Local developer machine paths (Gitignored)
-  ├── brain.db        ← Metadata-only SQLite cache database (Gitignored)
-  ├── history/        ← Distributed change logs & code snapshots as JSON (Committed to Git)
+  ├── .gitignore              ← Written by init; ignores everything marked LOCAL below
+  ├── config.json             ← Project metadata & repository mapping        (COMMITTED)
+  ├── graph/                  ← Distributed graph structure JSON             (COMMITTED)
+  │     └── [repo_name]/[path].json
+  ├── history/                ← Change logs, code snapshots, reasoning       (COMMITTED)
   │     └── [id].json
-  └── graph/          ← Distributed graph structure JSON files (Committed to Git)
-        └── [repo_name]/
-              └── [path].json
+  ├── vectors/                ← Semantic embeddings from `devsmind embed`    (COMMITTED)
+  ├── workflows/              ← Feature timelines: steps + reasoning         (COMMITTED)
+  │     └── [id]/workflow.json + v2.json
+  ├── .env                    ← This machine's developer name + repo paths       (LOCAL)
+  ├── brain.db                ← SQLite cache, rebuilt from the JSON above       (LOCAL)
+  ├── index_scratchpad.json   ← In-progress index, resumable across restarts    (LOCAL)
+  ├── history_scratchpad.json ← Staged-but-uncommitted edits                    (LOCAL)
+  └── local/                  ← Activity log + feedback: YOUR requests, YOUR    (LOCAL)
+        ├── sessions.json         reverts. Never pushed, never a teammate's.
+        ├── messages/[id].json
+        └── feedback*.jsonl
 ```
+
+**The committed/local split is the whole storage design.** Everything committed is the *team's* shared brain — the graph, the reasoning, the feature timelines. Everything local is either derivable (`brain.db` is a cache; delete it and it rebuilds) or genuinely personal (`local/` holds your verbatim requests and your revert backups, which are only meaningful on the machine that wrote them).
+
+`devsmind init` writes `.devmind/.gitignore` covering every LOCAL entry, and repairs it on every re-run so a brain from an older version — or a teammate's checkout that predates an entry — can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive, and it matches entries the way git reads them (`local`, `/local` and `local/` are one entry, not three). As a backstop, the activity log checks the same file on its first write, since a brain where nobody ever re-runs `init` would otherwise never pick the line up.
 
 ### Flexibility: Where should the brain live?
 
@@ -179,8 +193,8 @@ That's the whole loop. For what each step actually does under the hood — `init
 
 These three commands solve three genuinely different problems, and it helps to understand *why* there are three instead of one:
 
-1. **`devsmind mcp` — can your agent even reach the tools?** Connecting the MCP server is what makes `search_nodes`, `get_node_graph`, `stage_change`, and every other DevsMind tool *exist* from your agent's point of view. Skip this and DevsMind is just files sitting on disk — nothing in your IDE or CLI knows they're there to query at all. This is pure capability, wired up per tool since every one of them expects the server in a different config file, key, and shape.
-2. **`devsmind rule` — does your agent know it should use them?** Being *connectable* isn't the same as being *used*. Without the workspace rule, an agent with DevsMind fully wired up will often still default to grep and raw file reads out of habit, because nothing told it DevsMind exists or why it matters more than what it already knows how to do. The rule is what actually changes behavior — it's where DevsMind explains the team-brain framing, the consequence of skipping `stage_change`/`commit_changes`, and exactly which tool to reach for and when.
+1. **`devsmind mcp` — can your agent even reach the tools?** Connecting the MCP server is what makes `search_nodes`, `get_node_code`, `stage_change`, and every other DevsMind tool *exist* from your agent's point of view. Skip this and DevsMind is just files sitting on disk — nothing in your IDE or CLI knows they're there to query at all. This is pure capability, wired up per tool since every one of them expects the server in a different config file, key, and shape.
+2. **`devsmind rule` — does your agent know it should use them?** Being *connectable* isn't the same as being *used*. Without the workspace rule, an agent with DevsMind fully wired up will often still default to grep and raw file reads out of habit, because nothing told it DevsMind exists or why it matters more than what it already knows how to do. The rule is what actually changes behavior — it's where DevsMind explains the team-brain framing, the consequence of skipping `stage_change`/`commit_changes`, and exactly which tool to reach for and when. As of **2.5.0** it also asks which **workflow style** you want: **Automatic** (the original default — stages, commits, and tracks every edit without being asked) or **Manual** (search/read tools like `search_nodes`/`get_node_code` stay always-on, since that part is never optional, but the agent never stages or commits on its own — only when you explicitly ask it to). You're the owner of this project's graph; which style fits depends on whether you want DevsMind quietly building the team's shared context as you go, or only when you say so. `session_id` and `message` stay required either way — that's the MCP protocol layer, not a style choice, so Manual mode doesn't make those optional, it just changes whether the agent *decides on its own* to reach for `commit_changes`. Every run also prints a short **session kickoff prompt** — a separate block meant to be pasted at the start of a fresh chat (not baked into the rule file itself) so a new conversation commits to the rule immediately instead of drifting into it over the first few turns.
 3. **`devsmind memory` — does that behavior survive without you re-pasting anything?** The rule file is still a static file *you* maintain and paste in once. Several tools now have their own persistent, agent-written memory or "skills" store — a place the agent records a lesson itself and reads it back automatically forever after, independent of whether the pasted rule ever goes stale or gets skipped during a teammate's setup. Where it's safe to do so, this seeds that store directly with the same content, so the workflow contract lives in a place the *tool itself* owns and refreshes, not just a copy-pasted file.
 
 `mcp` and `rule` are both **guided and per-tool**: they ask what you're working in (Cursor, VS Code, Windsurf, Kiro, Antigravity, Claude Code, Codex CLI, Qwen Code CLI, …), then either **print the exact snippet to copy-paste (manual)** or **create/merge the config file for you (automatic)** — with a preview and confirmation, never clobbering your existing servers.
@@ -234,6 +248,8 @@ devsmind memory
 | VS Code (Copilot) | Copilot Memory | ❌ manual guidance only — no documented write API, format has changed repeatedly through 2026 |
 
 For everything in the ❌ rows, `devsmind memory` prints the tool's own name for the feature and exactly why it isn't safe to write to, plus what to do instead — never a silent no-op.
+
+**`devsmind memory --print [--tool <id>]`** prints the files it would write instead of placing them, the same escape hatch `devsmind rule --print` has — for reading the seeded contract, diffing it against a store you already have, or piping it somewhere from a script. It's also what a non-TTY run does automatically, so `devsmind memory > memory.md` works rather than erroring. `--tool` takes `claude-code` (one file per fact, plus the `MEMORY.md` index block that makes them findable), `antigravity`, or `antigravity-cli` (one combined document). Without `--tool` it prints the Claude Code shape and says that's what it defaulted to.
 
 ---
 
@@ -382,28 +398,57 @@ This is exactly what a new team member runs after `git clone`-ing a project that
 
 ## 🔄 Workflows In Depth
 
-DevsMind Workflows provide a persistent context vault for multi-day, complex coding tasks. When an AI agent context resets (due to context window limits, IDE restarts, or spawning subagents), it loses memory of previous discussions, decisions, and bugs fixed. Workflows keep this context durable and shareable across Git.
+> Design rationale, in full: [WORKFLOW_DESIGN.md](WORKFLOW_DESIGN.md).
 
-### 1. File Persistence & Git Sync
-Workflows utilize a two-tier database structure:
-* **SQLite Cache:** `brain.db` acts as the active query and caching engine.
-* **On-Disk JSON Files:** The primary recovery source of truth is stored under `.devmind/workflows/<workflow_id>/workflow.json`. 
-  - When workflows are modified (e.g. adding steps or attaching reference artifacts), the JSON is automatically updated.
-  - This JSON is designed to be committed to Git, letting your teammates restore the exact timeline of steps and reference specs after running `git pull` followed by `devsmind sync` (or starting the MCP server).
-  - During startup, `syncFromDisk()` scans for all `workflow.json` files and rebuilds the SQLite tables, while dynamically recovering which workflow was last active based on the latest `updated_at` timestamp.
+A workflow is a **named, backward-looking log of how one piece of functionality grew** — across many nodes, many sessions, many days. You read it before touching something, to understand how it got this way. It is not a plan and not a task list; nothing ever "completes".
 
-### 2. Reference Artifacts Directory
-When you attach a reference document (e.g. a specification, pull request description, or database diagram) using `workflow_add_artifact`:
-- The metadata is logged in SQLite (`workflow_artifacts` table) and the workflow's JSON index.
-- The actual content of the artifact is saved as a plain file inside `.devmind/workflows/<workflow_id>/artifacts/<artifact_id>`.
-- These files are committed to Git so anyone working on the workflow has access to the raw material.
+That framing matters because it settles what belongs in one. Development already leaves a recoverable trail — git has the diff, node history has the per-node reasoning. **Research leaves nothing**: nobody can reconstruct "we evaluated three options and rejected two" from the code that survived. So a workflow's job is the part nothing else keeps.
 
-### 3. Lightweight Context Reading
-As workflows grow indefinitely, sending the entire timeline of steps and raw file contents in every MCP tool response would consume and pollute the AI's context window. To solve this, the workflow system uses a split-reading model:
-* **`workflow_get_context`**: Instantly returns a summary of all steps and the file paths of all artifacts. Artifact content is hidden by default unless requested using `--include-artifact-content`.
-* **`workflow_get_steps`**: Reads only a paginated slice or the tail of a long workflow (e.g., `last_n: 10` gets the most recent 10 steps to quickly catch up).
-* **`workflow_read_artifact`**: Allows reading the content of a specific artifact file on demand once the agent identifies it from the context overview.
-* **`workflow_search`**: Runs a project-wide search across all workflows' step summaries, pending tasks, and artifact names, scanning inside artifact contents if requested.
+### 1. What's stored, and where
+
+Shared with your team, committed to git under `.devmind/workflows/<workflow_id>/`:
+
+| | |
+|---|---|
+| **workflow** | `id`, `name`, `description`, `archived`, `created_at`/`updated_at` |
+| **step** | `id`, `workflow_id`, `step_index`, `summary`, `reasoning`, `node_ids[]`, `doc_paths[]`, `session_id`, `created_at` |
+
+Local to your machine, gitignored under `.devmind/local/`:
+
+| | |
+|---|---|
+| **session** | `workflow_id` — what this conversation is bound to right now |
+| **message** | `workflow_sync` — which of your edits already became steps |
+
+`brain.db` is a cache; the JSON on disk is the source of truth, so a teammate gets the whole timeline from `git pull` + `devsmind sync` (or just starting the server). **The workflow never stores your chat** — messages stay local. The shared side holds the summary, the reasoning, and which nodes were touched.
+
+Each workflow is written as **two** files: `workflow.json` in the shape a pre-3.0 client understands, and `v2.json` holding what that shape has no field for (`archived`, per-step `reasoning`/`node_ids`/`doc_paths`). `devsmind sync` re-serializes `workflow.json` from local columns, so a teammate on an older build who pulled and synced would otherwise rewrite the file without the new fields and commit that loss — they have no idea the sidecar exists, so they can't touch it, and the next read merges everything back.
+
+### 2. Binding is per session, and local
+
+There is no project-wide "active workflow". Each session binds to at most one (`workflow_bind`), and that binding lives in `.devmind/local/` — so it never moves, pauses, or steals anyone else's, and two sessions can work different workflows at once.
+
+This replaced a single global pointer that was also serialized into the committed JSON. Two sessions shared it: `workflow_resume` in one silently paused the other's mid-work, and that session's next `commit_changes` wrote its step onto the **wrong** workflow, with no error — and because the pointer travelled through git, a teammate could do it to you.
+
+"What was I last working on" isn't stored at all now; it's derived — the newest session that carries a `workflow_id`. `start_session` surfaces it only when there is one, so an ordinary session sees no friction.
+
+### 3. Steps point at nodes, not history rows
+
+A step used to store `history_ids`, which could not actually identify a commit: two commits touching the same node within an hour **merge into one history row**, so a step's ids could point at rows an earlier commit created, and one row could be cited by several steps. Reasoning is now copied onto the step, and the step records the `node_ids` it touched.
+
+Copying rather than joining is deliberate. History reasoning *mutates* afterwards — the hourly merge appends to it, a revert can drop a block — and a record of "what we thought at the time" can't read from a moving target.
+
+### 4. Documents are paths, not copies
+
+The old design copied whole files into `.devmind/workflows/<id>/artifacts/`. A copy goes stale the moment the original changes, and your repo already versions and shares the original. A step stores `doc_paths` — repo-relative paths — instead. A path outside every configured repo is rejected, since it wouldn't exist for a teammate.
+
+### 5. Reading a long one
+
+`workflow_get_context` is the single read, and it is paged (`limit`/`offset`, or `last_n` for the tail, which is what catching up usually means). `steps_total` is always the true count. An oversized page is trimmed in tiers — `reasoning` goes first, then `node_ids` — with a `compacted` field naming what was dropped. Document content is never inlined; you get the path.
+
+### 6. Fixing attribution afterwards
+
+Nothing detects drift onto a different topic — asking an AI to notice "this isn't related anymore" gets it wrong in both directions, nagging when it shouldn't and staying silent when it should. Steps just keep attaching to whatever you're bound to, and `workflow_sync` fixes it later: it reads your local activity log, previews what it would attach, and writes only on `confirm:true`. Dedupe is by consumed edit id rather than a per-message flag, so re-running is a true no-op while a message that keeps growing can still contribute a later delta.
 
 ---
 
@@ -411,7 +456,16 @@ As workflows grow indefinitely, sending the entire timeline of steps and raw fil
 ## 🖥️ Other CLI Commands
 
 *   **`devsmind start [--stdio] [-p, --port <number>]`** — starts the MCP server. Default: HTTP on port `4513`, reachable at `http://localhost:4513/mcp`. Pass `--stdio` for IDEs that manage the server process directly instead of connecting over HTTP.
-*   **`devsmind view [-p, --path <devmind_path>] [-P, --port <number>]`** — opens the interactive D3.js graph visualizer in your browser (see [below](#-interactive-graph-visualizer)).
+*   **`devsmind view [-p, --path <devmind_path>] [-P, --port <number>]`** — opens the `devsmind view` app in your browser (see the **devsmind view** section below): Chat (your work as a timeline, per-request) and Graph, one app, no CDN dependencies.
+*   **`devsmind activity [-p, --path <devmind_path>] [--since <days>]`** — the same activity timeline `devsmind view` → Chat shows, in the terminal, read-only. Grouped by day, newest first; each line is one message (a user request, or a commit's own summary when no request text was given) with its edit count and id. Revert/un-revert isn't a CLI verb — it stays on the page, next to the diff and the confirmation, rather than a bare id you'd have to look up first.
+*   **`devsmind diff <node_id> [-p, --path <devmind_path>]`** — prints every recorded change to one entity as a red/green line diff, newest last, each with the `What changed:` line the agent wrote for it. Entities whose last change was recorded without a before-state say so instead of printing an empty diff — see the note under [`revert`](#-other-cli-commands) below for which those are.
+*   **`devsmind revert <node_id> [-p, --path <devmind_path>] [-y, --yes]`** — restores an entity to how it looked before its **most recent** recorded edit, then erases that edit and its reasoning from history. Shows the diff and asks for confirmation first (`--yes` skips the prompt; a non-interactive shell without it exits `1` rather than acting unasked).
+
+    Only the newest edit is revertable, and only when the entity on disk still matches what was recorded for it. Both limits are the same point: every edit after an older one was written against the code it produced, and any hand-edit since means the file has moved on — restoring a "before" in either case silently discards work that has nothing to do with the change being undone. When that happens the revert is refused and points you at git, which does this properly.
+
+    Changes recorded before v2.5.0, and changes recorded by `stage_change` (non-TS/JS files), have no before-state stored at all and cannot be reverted this way. There's no backfill — the information was never captured. Git still has them.
+
+    **This is a different tool from Activity's message-revert, on purpose.** This one is permanent (erase, no trace) and scoped to one entity's last edit — a quick "that was wrong" with no ceremony. Activity's revert undoes a whole request, keeps a backup, and can itself be undone — the deliberate tradeoff for that is that it's a bigger, slower operation with more moving parts (a cascade, an un-revert order). Use this one for a fast single-function undo; use Activity when you want to walk back a session's worth of work and keep the option to walk it forward again.
 *   **`devsmind prune [-p, --path <devmind_path>]`** — interactive terminal tool to review node stats, inspect current code, page through chronological change history, and permanently delete individual nodes or clear all nodes/history.
 *   **`devsmind analyze [-p, --path <devmind_path>] [--fix] [--god-entity-threshold <n>]`** — local, **zero-AI** graph health check. Pure SQLite queries, filesystem checks, and `git log` — no LLM calls, no tokens spent. One command reports on:
     *   **God entities** — nodes with 15+ (configurable) total connections, an architectural-bottleneck signal.
@@ -426,8 +480,8 @@ As workflows grow indefinitely, sending the entire timeline of steps and raw fil
     *   **Untracked files** — git-tracked code files with **zero** graph nodes at all. This is a coarse, low-noise blind-spot signal (a file DevsMind has never recorded anything about), not a claim that any specific edit was skipped — it can't know that without guessing.
 
     Pass `--fix` to auto-apply only the *safe, reversible* fixes: soft-deprecate orphaned/spurious/missing-file nodes (history is preserved, never hard-deleted) and delete dangling edges, and cascade-migrate detected renames. Everything else (god entities, cycles, duplicate ids, missing developer attribution, empty snapshots, untracked files) is **report-only** — these need a human or AI to decide what to do, not a mechanical fixer.
-*   **`devsmind workflow [-p, --path <devmind_path>]`** — interactive terminal view of your workflows: list by status, view a workflow's full timeline (steps + artifact file paths), pause/resume/mark completed. Day-to-day creation and step-recording happens through the `workflow_*` MCP tools the agent calls — this is a visibility/manual-override surface, not the primary way workflows get built.
-*   **`devsmind workflow-import <path> [-p, --path <devmind_path>]`** — imports a folder of `.md` flow/architecture docs (one workflow per file), or a single file, as **paused** workflows. Expects the common `# Title` / `## Summary` structure (falls back to the filename / first paragraph if a file doesn't follow it) — the whole file becomes a workflow artifact, plus one seed step noting it was imported. Re-running the import on the same file updates that workflow in place instead of duplicating it, so it's safe to re-import after the source docs change.
+*   **`devsmind workflow [-p, --path <devmind_path>]`** — interactive terminal view of your workflows: list them (newest-touched first, archived ones hidden until you ask), read a workflow's full timeline (steps in order, each with its reasoning, the nodes it touched, and any document paths), and archive/unarchive. Day-to-day creation and step-recording happens through the `workflow_*` MCP tools the agent calls — this is a visibility/manual-override surface, not the primary way workflows get built. There is no pause/resume here any more: binding is per session and lives on the agent side.
+*   **`devsmind workflow-import <path> [-p, --path <devmind_path>]`** — imports a folder of `.md` flow/architecture docs (one workflow per file), or a single file. Expects the common `# Title` / `## Summary` structure (falls back to the filename / first paragraph if a file doesn't follow it) — the workflow gets one seed step recording where it came from, pointing at the source document by **path** rather than copying it, so it can't go stale. Re-running the import on the same file updates that workflow in place instead of duplicating it, so it's safe to re-import after the source docs change.
 
 ---
 
@@ -479,61 +533,104 @@ CREATE TABLE history (
 > ⏱️ **Session Boundary Rule**: If the AI updates a function, it checks the last history log. If `updated_at` is less than **1 hour ago**, it updates the same record in-place (same session) instead of inserting a new row — `code_snapshot` is replaced with the latest state (git already owns code version history), but `reasoning` is **appended**, not overwritten, so an earlier commit's "why" within the same session is preserved rather than silently lost. If older than 1 hour, it inserts a new history record (new session).
 >
 > 💾 **JSON Storage Note**: In version 2.0.0, the actual code snapshots and AI change reasonings are stored in `.devmind/history/[id].json` to resolve Git merge conflicts, while the SQLite database holds empty strings for `code_snapshot` and `reasoning`.
+>
+> 🔴🟢 **Edit trail (v2.5.0)**: that same JSON also carries an `edits` array — one entry per edit, each holding the entity's code `before` and `after` it, plus `at` and the `reasoning` of the commit that produced it (one `reasoning` object per `commit_changes` call, shared by every edit that commit made — not one per edit). It lives only in the JSON, never in SQLite, exactly like `code_snapshot`. This is what `devsmind diff` renders and what `devsmind revert` restores from.
+>
+> It's a trail rather than a single "previous code" field *because* of the session rule above: the 1-hour window is measured from `updated_at`, so an entity edited every 50 minutes keeps sliding the same row forward and one row can span hours. A single before-field would make a revert undo the whole span instead of the last change. A gap between one edit's `after` and the next one's `before` also means someone edited the file by hand in between.
+>
+> Entries written before v2.5.0 have no `edits` key; it reads as `[]`, which is the honest answer — no diff, no revert. `stage_change` supplies no before-state either, so its entries read the same way.
 
 ### 4. `system_meta` (System Configuration & Caching Metadata)
-Stores project caching timestamps and active workflow tracking.
+Stores project caching timestamps.
 ```sql
 CREATE TABLE system_meta (
-  key         TEXT PRIMARY KEY, -- Metadata key (e.g., 'active_workflow_id', 'last_reindex_at')
+  key         TEXT PRIMARY KEY, -- Metadata key (e.g., 'last_reindex_at')
   value       TEXT NOT NULL,    -- Config value
   updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
+> `'active_workflow_id'` used to live here. It was removed in 3.0.0: one project-wide pointer meant two sessions fought over it, and it travelled through git so a teammate could move yours. Binding is per session and local now — see [Workflows In Depth](#-workflows-in-depth).
 
-### 5. `workflows` (Context Vault Workflows)
-Tracks high-level active, paused, or completed tasks.
+### 5. `workflows`
+One row per named thread of work.
 ```sql
 CREATE TABLE workflows (
   id           TEXT PRIMARY KEY,  -- UUID or custom workflow id
-  name         TEXT NOT NULL,     -- User-facing task name
-  description  TEXT NOT NULL,     -- High-level goals
-  status       TEXT DEFAULT 'active', -- Status: 'active', 'paused', 'completed'
+  name         TEXT NOT NULL,     -- User-facing name, e.g. "Wallet Integration"
+  description  TEXT NOT NULL,     -- What this thread is about
+  archived     INTEGER NOT NULL DEFAULT 0, -- 1 = hide from the list (reversible)
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,  -- threads sort by this
+  status       TEXT DEFAULT 'active'  -- VESTIGIAL: nothing reads or writes it
 );
 ```
+> `archived` replaced `status` in 3.0.0. Nothing ever "completed" and nobody marked it, so the field lied; archiving claims only what it delivers. `status` survives as an unused column rather than being dropped — a `DROP COLUMN` buys nothing and breaks an older CLI opening the same `brain.db`. It is absent from the TypeScript types, so no code can reach it by accident.
 
-### 6. `workflow_steps` (Chronological Workflow Logs)
-Stores each individual task progression step in sequence.
+### 6. `workflow_steps` (the timeline)
+One row per commit, or per research finding. Self-contained by design: reading a workflow's story needs no joins.
 ```sql
 CREATE TABLE workflow_steps (
   id             TEXT PRIMARY KEY,  -- Step UUID
   workflow_id    TEXT NOT NULL,     -- Link to parent workflow
   step_index     INTEGER NOT NULL,  -- Chronological sequence index
-  summary        TEXT NOT NULL,     -- What was completed / discovered
-  pending_tasks  TEXT,              -- Leftover goals for future sessions
-  history_ids    TEXT,              -- Comma-separated history IDs linked to this step
-  session_id     TEXT,              -- Parent IDE edit session
+  summary        TEXT NOT NULL,     -- One line: what was done / discovered
+  reasoning      TEXT,              -- The why, COPIED (not joined) — see note
+  node_ids       TEXT,              -- JSON array of the nodes this step touched
+  doc_paths      TEXT,              -- JSON array of repo-relative doc paths (research)
+  session_id     TEXT,              -- Which session recorded it
   created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+  pending_tasks  TEXT,              -- VESTIGIAL: nothing reads or writes it
+  history_ids    TEXT,              -- VESTIGIAL: nothing reads or writes it
   FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE CASCADE
 );
 ```
+> **Why `reasoning` is copied rather than joined to `history`.** History reasoning *mutates* after the fact — the 1-hour merge appends to it, a revert can drop a block — and a record of "what we thought at the time" cannot read from a moving target.
+>
+> **Why `history_ids` had to go.** It could not identify a commit at all: two commits touching the same node within an hour merge into a **single** history row, so a step's ids could point at rows an earlier commit created, and one row could be cited by several steps. Old steps are backfilled to `node_ids` on the first open of an upgraded brain — approximately, for that same reason.
 
-### 7. `workflow_artifacts` (Reference Materials Index)
-Tracks specifications, PR details, and diagnostic info linked to a workflow.
+### 7. `workflow_artifacts` — **vestigial as of 3.0.0**
 ```sql
 CREATE TABLE workflow_artifacts (
-  id           TEXT PRIMARY KEY,  -- Artifact UUID
-  workflow_id  TEXT NOT NULL,     -- Link to parent workflow
-  step_id      TEXT,              -- Links to the step where it was attached (nullable)
-  type         TEXT NOT NULL,     -- e.g., 'pr_description', 'spec', 'file_patch'
-  source_name  TEXT NOT NULL,     -- User-facing descriptor name
-  file_path    TEXT NOT NULL,     -- File path where the raw content is saved on disk
+  id           TEXT PRIMARY KEY,
+  workflow_id  TEXT NOT NULL,
+  step_id      TEXT,
+  type         TEXT NOT NULL,
+  source_name  TEXT NOT NULL,
+  file_path    TEXT NOT NULL,
   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE CASCADE
 );
 ```
+> The table and any existing rows remain readable, but nothing writes to it. Artifacts were **copies** of files placed under `.devmind/workflows/<id>/artifacts/`, and a copy goes stale the moment the original changes — while your repo already versions and shares the original. A step's `doc_paths` stores the **path** instead: already versioned, already synced, can't drift.
 
+
+### 8. Activity log (v2.5.0) — `.devmind/local/`, not `brain.db`
+
+Not a SQLite table, deliberately — everything above lives in `brain.db`, which the README calls "a disposable local cache rebuilt from JSON on startup," and an activity log that could be silently rebuilt away would defeat the point of it. Plain JSON instead, gitignored, its own small directory:
+
+```
+.devmind/local/
+  sessions.json                  -- [{ id, developer, started_at, last_active, message_ids[], label? }]
+  messages/<message_id>.json     -- one file per message, see below
+```
+
+A session row only comes into being via the `start_session` tool — no auto-mint, no time-window guessing. `label` is the optional human-readable name passed to `start_session`, shown on the Activity page.
+
+```jsonc
+// messages/<id>.json
+{
+  "id", "session_id", "developer",
+  "created_at", "updated_at",
+  "request": "add expiry validation to coupons",  // the user's ask — REQUIRED on commit_changes
+  "summary": "Cart.applyPromo, validateCoupon",   // machine-generated fallback, always present
+  "status": "applied" | "reverted",
+  "edits": [
+    { "node_id", "file_path", "at", "before", "after" }  // the backup — nothing is deleted on revert
+  ]
+}
+```
+
+A message's `edits[]` stores `before`/`after` directly rather than pointing at a `history_ids` entry — self-contained on purpose, so a revert never depends on (or can corrupt) what the team shares in `history/*.json`. `devsmind init` writes `local/` into `.devmind/.gitignore`; a brain that predates this release self-heals the same line the first time anything is recorded, so it can't land in a commit by accident.
 
 ### Growing the graph outside of `index`/`reindex`
 
@@ -546,7 +643,7 @@ This "grow-as-you-go" path needs zero upfront setup and is a reasonable default 
 
 > 🧹 **Pruning & Maintenance**: DevsMind dynamically handles deprecations and renames if function signatures match. For manual cleanup and auditing:
 > * `recheck_graph`: Scans code files, marks language primitives, built-ins, or nodes associated with deleted files as deprecated (removing their connections in the graph, but keeping their entries in the database).
-> * `get_orphaned_nodes`: Finds disconnected code nodes that have no incoming or outgoing connections to identify dead code or stale records.
+> * `analyze_graph`: Reports orphaned nodes — no incoming or outgoing connections, so dead code or a stale record — alongside every other health check it runs. There is no separate orphan-lookup tool.
 >
 > ⚠️ **Preservation Over Deletion**: The AI agent will never delete historical context by itself; it preserves all evolution records. The `delete_node` MCP tool is removed.
 > * Spurious or missing nodes are **deprecated** (keeping their code history and reasoning intact, but removing active connections in the graph).
@@ -560,21 +657,23 @@ DevsMind tools are designed with **layered granularity**. The AI only pulls the 
 
 DevsMind exposes **35 tools** to the AI agent, grouped below by what they're for.
 
+### 🚦 Category 0: Session (v2.5.0)
+*   `start_session`: **Call once, before your first WRITE of the conversation** (`edit_node`/`stage_change`/`commit_changes` and the other mutating tools). Mints a `session_id` and records it locally (optionally with a `label`, shown on the Activity page). Every WRITE call REQUIRES that exact `session_id` — it ties a request's edits together on the local Activity log and makes them revertable as a unit — and every tool response echoes it back in a plain sentence so it stays in front of the agent even across a long conversation or a context compaction. Read-only tools (`search_nodes`, `get_node_code`, `list_nodes`, and the other getters) do NOT need it — search and read freely from the very first call. There is no auto-mint fallback and no server-tracked "active session" — DevsMind is stateless by design (two agents working the same project never collide over a shared "current" id), so the session token lives entirely in the conversation and must be carried explicitly. Resuming a conversation that already called `start_session` earlier should reuse that same id rather than minting a new one.
+
 ### 🔍 Category 1: Discovery & Search
-*   `get_node_summary`: Returns node type, location, connections count, history counts, and last update. (~50 tokens)
-*   `list_nodes`: List all nodes matching optional type and file path filters. Useful to discover all entities in a component, package, or directory.
-*   `search_nodes`: The one search tool to call — searches node names/identifiers/reasoning first (cheap, SQL-only) and, if nothing matches, **automatically falls back to a full regex/string code-content search** (matches grouped by node ID, file path, and matching lines) in the same call. Each result is tagged `matched_via: "identifier"` or `matched_via: "code"`. Preferred over a raw grep of the filesystem, and over calling any search tool twice.
-*   `get_node_graph`: Recursively retrieves connected nodes and relationships up to a specified depth (default: 6). With `direction:"out"` + `include_code:true`, pulls an entire call flow — the starting node plus everything it transitively calls, each with live source — in a single call. `direction:"in"` finds every caller (impact analysis before a change).
-*   `get_orphaned_nodes`: Identifies disconnected code nodes in the graph that have no incoming or outgoing connections.
+*   `list_nodes`: Enumerates nodes matching optional `type`/`file_path` filters — the "what exists here" call for a component, package, or directory, as opposed to `search_nodes`' "find the thing that does X". **Paged**: it answers `{nodes, total, offset}` where `total` is the true match count and `nodes` is one page (`limit`, default 100, max 500), with a `truncated` flag and a `hint` naming the exact next call. It previously had no bound of any kind, which on a real backend meant a single unfiltered call returned ~600KB across ~10,900 lines — past the client's inline limit, spilled to a file, and truncated again on read from there. A page that is still oversized falls back to id/name/type/file_path per node with a `compacted` note; `total` stays exact either way.
+*   `search_nodes`: The one search tool to call — covers the indexed graph AND the raw filesystem in one call, so an external grep is never needed. Two independent inputs, pass either or both: `query` (a natural-language phrase, drives the semantic/BM25 layers) and `pattern` (a REAL regex, used exactly as you'd give `grep` — nothing is re-escaped or split, e.g. `heartRed|onLikeTap|item\.liked` matches exactly that). A `pattern`-only call is a first-class precision mode that skips the semantic/BM25/identifier-shortcut layers entirely (a regex has no meaning to embed), returning exact grep + code-body matches only. Optional `path` scopes the search to one folder/file instead of every configured repo (rejected if outside every repo). Returns two buckets: `nodes` (tagged `matched_via: "identifier" | "fuzzy" | "semantic" | "code"`, with a true `nodes_total` before the top-20 cap) and `files` (a real grep of every repo/scope, each sample line reporting the containing function/class when resolvable, with true `files_total`/`files_offset` so a capped page is never mistaken for "nothing more" — page further with `offset`/`limit`). Preferred over a raw grep of the filesystem, and over calling any search tool twice.
 *   `get_visualizer_url`: Returns local browser URLs for opening the interactive 2D and 3D graph visualizers.
 
+> Search results are size-guarded. An oversized `search_nodes` response is trimmed automatically in two tiers — first the bulk-without-signal (per-file `match_counts`, `matched_terms`, `aliases`, repeated boilerplate, thinned sample lines), and only then the evidence lines themselves — with a `compacted` field always naming which happened. **Every count stays exact**, so a trimmed result can never be mistaken for a complete one. `compact:false` demands the full payload; `compact:true` asks for a lean triage list up front. Lockfiles (`package-lock.json`, `yarn.lock`, `go.sum`, …) and build artifacts (`*.min.js`, `*.map`) are excluded by default; `.env`, JSON and other config stay fully searchable, since that is exactly what the `files` bucket is for.
+
 ### 📜 Category 2: Code & History
-*   `get_node_code`: Returns a node's **current** source code, parsed live from its file on disk — token-efficient, since it returns only that function/class/route rather than the whole file. Flags drift explicitly: `snapshot_outdated: true` means the graph has fallen behind disk (re-stage it), and `source: "cached"` means the symbol couldn't be located in its file at all (renamed/moved/deleted) and a possibly-stale cached snapshot was returned instead.
-*   `get_node_history`: Retrieves all history records, code snapshots, and change reasoning logs for a node.
-*   `get_recent_changes`: Lists nodes modified across the project in the last N hours (default: 24h), with optional downstream impact analysis.
-*   `get_developer_activity`: Pulls logs and changes authored by a specific team member.
-*   `get_changes_by_requirement`: Finds all changes linked to a particular ticket or task ID (e.g. `JIRA-402`).
-*   `search_decisions`: Performs a text search specifically across the architectural/implementation rationale logs.
+*   `get_node_code`: **The one node-read call.** Returns a node's current source — token-efficient, since it returns only that function/class/route rather than the whole file — parsed live from disk, falling back to the last known snapshot when the symbol can no longer be located (renamed/moved/deleted, reported as `source:"cached"`). Included on **every** call at no extra cost: `name`/`type`/`signature`/`description`, the file's `imports`, up to 20 named callers **and** callees per direction (`uses_nodes`/`used_by_nodes`, with the counts always true even when capped), up to 40 other declarations from the same file (`file_outline`), and the last 3 changes' reasoning (`recent_history`). A raw file read shouldn't be needed afterwards for any of that.
+    *   `graph_depth` + `graph_direction` walk the **transitive** graph past those direct neighbors, in the same call: `"in"` at depth 2-3 is the full caller blast radius before you change a signature; `"out"` at depth 3 with `graph_code:true` is a whole call flow — every function a request touches, with live source, in one round trip instead of a chain of per-function fetches. The walk is deterministic and capped at 120 nodes; `graph_code_budget` defaults to 24000 characters when riding along inside a `get_node_code` response. When the budget runs out, the dropped nodes are named **by id** in `graph.code_omitted_node_ids` — fetch exactly those, or re-issue larger. Nodes whose source genuinely couldn't be found are counted separately as `graph.nodes_no_code_available`, because raising the budget will never bring those back.
+    *   `history:"full"` (default `"recent"`) returns every revision with diffable before/after edits, pageable via `history_limit`/`history_offset` — the call to make before refactoring anything with a non-trivial `history_count`.
+*   `get_activity_log`: The "what changed recently" call, reading the local activity log (one entry per `commit_changes`). Filters compose: `developer`, `session_id`, `since_hours` or `since`/`until`, `requirement_contains`. Each entry carries the actual `files` that commit touched, plus an `all_files` union across every match — the graph tools know nodes, so this is the only source of a commit's full file list. Local and gitignored: this machine only, never the shared graph.
+
+> Removed in 3.0.0: `get_node_graph` and `get_node_history` are folded into `get_node_code` as the `graph_*`/`history` params above — one call instead of three, and depth-1 neighbors come back whether you ask or not. `get_recent_changes`, `get_developer_activity` and `get_changes_by_requirement` collapsed into `get_activity_log`'s composable filters. `search_decisions` is gone because `search_nodes` already searches reasoning text from **every** history revision, not just the latest. `get_orphaned_nodes` is gone because `analyze_graph` reports orphans along with everything else it checks.
 
 ### ⚙️ Category 3: Code Indexing
 *   `index_start`: Scans all configured repos, counts files, creates a scratchpad, and starts the codebase indexing session.
@@ -583,9 +682,9 @@ DevsMind exposes **35 tools** to the AI agent, grouped below by what they're for
 *   `index_complete`: Marks the codebase indexing session as fully completed.
 
 ### ✍️ Category 4: Writes & Mutations
-*   `edit_node`: **The primary write path — use this, not the IDE's own edit/write tool, for every edit and every new file.** One call — `file_path` + `old_string` + `new_string` + `reasoning`, exactly like an ordinary edit tool — never refuses a file type, and never rejects for being the wrong extension. Under the hood it works out WHERE the text landed and which function/class that spot belongs to (by position, not by name — so it survives the symbol being renamed by the very edit that touched it, and correctly identifies code that didn't exist until this write), then records `reasoning` against that node automatically. No `node_id` to look up, no `code_snapshot` to send back, no follow-up `stage_change` call, for any TS/JS/JSX/TSX/Vue/Svelte file. It also hands back every CALLER of what you just changed (i.e. what you may have just broken) and the reasoning previously recorded against it. To create a file that doesn't exist yet, pass `old_string: ""` and the whole file as `new_string` — every symbol in it gets traced and recorded the same way. Writes landing outside any function (markup, config, an import line, a stylesheet) simply record nothing — a normal, expected outcome, not a failure, since the graph only models code. Nothing reaches the graph until `commit_changes`.
-*   `stage_change`: The fallback for what `edit_node` can't trace — a language with no local parser (Python, Go, Java, C#, Ruby, PHP, Rust, Swift, Kotlin, Dart) — or code you already wrote with your own tool for some other reason. Buffers one touched entity (node id + code snapshot + reasoning) to disk **without** writing to the graph yet.
-*   `commit_changes`: Flushes the whole staged buffer in one pass — creates/updates every node, writes every history snapshot, then resolves all connections between them (and into the existing graph) via local AST, auto-creating any referenced-but-missing target nodes. Because all nodes exist before edges are resolved, calls between the changed files link correctly regardless of staging order. If a workflow is currently active, this also auto-records one step on its timeline from the batch just committed (`history_ids` linking to every node in it) — see `workflow_add_step` below. **Must be called at least once per staged batch**, or nothing is written to the graph. `edit_node` also only stages — it needs `commit_changes` too.
+*   `edit_node`: **The primary write path — use this, not the IDE's own edit/write tool, for every edit and every new file.** One call — `file_path` + `old_string` + `new_string`, exactly like an ordinary edit tool — never refuses a file type, and never rejects for being the wrong extension. Under the hood it works out WHERE the text landed and which function/class that spot belongs to (by position, not by name — so it survives the symbol being renamed by the very edit that touched it, and correctly identifies code that didn't exist until this write). No `node_id` to look up, no `code_snapshot` to send back, no follow-up `stage_change` call, for any TS/JS/JSX/TSX/Vue/Svelte file. It also hands back every CALLER of what you just changed (i.e. what you may have just broken) and the reasoning previously recorded against it. To create a file that doesn't exist yet, pass `old_string: ""` and the whole file as `new_string` — every symbol in it gets traced the same way. Writes landing outside any function (markup, config, an import line, a stylesheet) get no graph node — a normal, expected outcome, not a failure, since the graph only models code — but the whole-file before/after is still staged for the local activity log, so `commit_changes` makes even a CSS/JSON/XML/etc change individually revertable in `devsmind view` → Chat, the same as a traced code edit. Nothing reaches the graph — or the activity log — until `commit_changes`, which is also where you give the one `reasoning` covering everything staged since the last commit.
+*   `stage_change`: The fallback for what `edit_node` can't trace — a language with no local parser (Python, Go, Java, C#, Ruby, PHP, Rust, Swift, Kotlin, Dart) — or code you already wrote with your own tool for some other reason. Buffers one touched entity (node id + code snapshot) to disk **without** writing to the graph yet.
+*   `commit_changes`: Flushes the whole staged buffer in one pass — creates/updates every node, writes every history snapshot with the ONE `reasoning` given on this call, then resolves all connections between them (and into the existing graph) via local AST, auto-creating any referenced-but-missing target nodes. Because all nodes exist before edges are resolved, calls between the changed files link correctly regardless of staging order. If this session is bound to a workflow, this also auto-records one step on its timeline from that reasoning, carrying the `node_ids` it touched and the `session_id` that recorded it — see `workflow_add_step` below. **Must be called at least once per staged batch**, or nothing is written to the graph. `edit_node` also only stages — it needs `commit_changes` too. `message` AND `reasoning` are **REQUIRED** — validated before any write happens, so a call rejected for a missing field leaves the staged batch untouched and the AI can just retry with it. `message` is the user's original request, verbatim, feeding the local Activity log (`devsmind view` → Chat, see below) together with the conversation's `session_id` (from `start_session`, carried automatically) — grouping consecutive commits for the same request into one entry, never reaching the shared graph. `reasoning` (`what_changed`/`why`/`goal`, plus optional `requirement`/`previous_state`/`decision`/`developer`/`model`) is the one object recorded against EVERY node this commit touches — a commit is one logical change, so it gets one why, not one per `edit_node`/`stage_change` call.
 *   `rename_node`: Re-keys a node identifier and updates all associated records (connections and history) seamlessly.
 *   `deprecate_node`: Marks a code node as deprecated, removing its connection mappings while retaining its coding snapshots and reasoning logs in the database.
 
@@ -595,29 +694,45 @@ DevsMind exposes **35 tools** to the AI agent, grouped below by what they're for
 *   `recheck_graph`: Scans the graph to verify file existence and deprecates language primitives, builtins, and nodes associated with missing/deleted files, retaining nodes with active histories.
 *   `analyze_graph`: Runs a local, **zero-token** health check — god entities, circular dependency cycles, orphaned nodes, dangling edges, duplicate/case-collision ids, history missing developer attribution, empty code snapshots, spurious/built-in nodes, missing files, git-detected renames, and git-tracked files with zero graph nodes. Set `fix:true` to auto-apply only the safe fixes (soft-deprecate dead nodes, remove dangling edges, migrate renames); everything else is report-only since it needs a human/AI judgement call. See [`devsmind analyze`](#-other-cli-commands) below for the CLI equivalent and full detection list.
 
-### 🗂️ Category 6: Workflow Context Vault
-Persistent, cross-session memory for a multi-day feature — solves "context death" when you resume something days later and the agent has forgotten every decision made along the way. Steps link to existing `history` rows rather than duplicating code/reasoning; reference artifacts are plain files under `.devmind/workflows/<id>/`, committed to git like everything else.
-*   `workflow_create`: Starts a new workflow and makes it active (auto-pausing whatever was active before).
-*   `workflow_add_step`: Records a step in the active (or a given) workflow's timeline — a short summary plus optional `history_ids` it covers. **Usually not called directly** — `commit_changes` auto-records a step from whatever it just staged whenever a workflow is active. Call this yourself only for something a commit doesn't cover (a decision made with no code change, or a `pending_tasks` note).
-*   `workflow_pause` / `workflow_resume`: Pause the active workflow, or resume a paused one (also auto-pausing the previously active one — only one workflow is active at a time).
-*   `workflow_list`: Lists workflows, optionally filtered by status. The agent is instructed to call this before starting work that might relate to a paused feature, and to offer resuming it instead of silently starting fresh.
-*   `workflow_get_context`: Returns a workflow's full timeline (steps in order) plus every artifact's file path, in one call — the call to make right after resuming.
-*   `workflow_add_artifact`: Saves reference material (a spec excerpt, ticket description, API doc) to a workflow, written to disk and linked in the DB.
-*   `workflow_sync_retroactive`: Backfills a workflow's timeline after a session that skipped `workflow_add_step`. Takes an already-extracted `steps` array, **not** raw transcript text — DevsMind never makes its own LLM calls, so the calling agent (which already has the transcript in context) does the extraction itself, for free.
-*   `workflow_import`: Imports existing flow/architecture docs (`# Title` / `## Summary` markdown files) as paused, resumable workflows — either a whole folder or a single file. Re-importing the same file updates its workflow in place instead of duplicating it. See [`devsmind workflow-import`](#-other-cli-commands) below for the CLI equivalent.
+### 🗂️ Category 6: Workflows
+A named, backward-looking log of how one piece of functionality grew across many nodes and many sessions — read it to learn how the code got this way. Eight tools; see [Workflows In Depth](#-workflows-in-depth) above for the model behind them.
+*   `workflow_create`: Names a new thread. Does not touch anyone else's session — creating one doesn't pause anything, because there is nothing global to pause.
+*   `workflow_bind`: Attaches THIS session to a workflow; omit the id to detach. The binding is local to your session and to your machine. (`workflow_pause`/`workflow_resume` still answer as unadvertised aliases for detach/attach, so an agent working from a pre-3.0 rule doesn't hard-fail.)
+*   `workflow_list`: Lists workflows — `query` matches name **and** description, `limit`/`offset` page, `include_archived` opts the retired ones back in. The agent is instructed to call this before starting work that might relate to an existing thread, and to offer continuing it rather than silently starting fresh.
+*   `workflow_get_context`: The one read — steps in order, each with its reasoning and the nodes it touched, plus any document paths. Paged (`limit`/`offset`/`last_n`), with `steps_total` always exact. The call to make right after binding.
+*   `workflow_add_step`: Records one step. **Usually not called directly** — `commit_changes` auto-records a step from whatever it just staged whenever the session is bound. Call it yourself for what a commit can't express: a decision or research finding that changed no code, with the documents behind it via `doc_paths` (repo-relative paths, never copies; a path outside every configured repo is rejected).
+*   `workflow_sync`: Attaches work you already did — for when you were unbound, or on the wrong thread. Reads your local activity log, previews what it would attach, and only writes on `confirm:true`. Re-running is a no-op.
+*   `workflow_archive`: Retires a thread from the list without deleting anything, reversibly. Deliberately not "complete": a feature is never finished, it just stops being worked on.
+*   `workflow_import`: Imports existing flow/architecture docs (`# Title` / `## Summary` markdown files) as workflows — a whole folder or a single file. The doc is referenced by path, not copied. Re-importing the same file updates its workflow in place instead of duplicating it. See [`devsmind workflow-import`](#-other-cli-commands) below for the CLI equivalent.
+
+> Removed in 3.0.0: `workflow_pause`/`workflow_resume` (→ `workflow_bind`), `workflow_get_steps` (→ `workflow_get_context`, which is paged), `workflow_search` (→ `workflow_list`'s `query` — the old one scanned step summaries and artifact names but never the workflow's own name, so looking one up by name returned nothing), `workflow_add_artifact`/`workflow_read_artifact` (→ `doc_paths`), and `workflow_sync_retroactive` (→ `workflow_sync`, which actually reads something).
 
 ---
 
-## 🎨 Interactive Graph Visualizer
+## 🎨 `devsmind view` — Chat + Graph, one app, fully offline
 
-Explore your code graph visually! Start the web app by running:
 ```bash
 devsmind view
 ```
-*   **2D Visualizer**: D3.js force-directed canvas. Click nodes to see relationships, double-click to center, and inspect details.
-*   **3D Visualizer**: ThreeJS/WebGL-powered cosmic node landscape. Fly through your architecture, rotating and zooming to trace complex microservice links.
 
-To query the visualizer URL programmatically from your agent, call `get_visualizer_url`.
+One app, two tabs, no CDN dependencies (the graph libraries are vendored into the package, so this works with no internet connection). The old three-separate-pages layout (`/` 2D graph, `/3d`, `/activity`) is gone — everything lives at `/` now.
+
+**Chat (default tab)** — a read-only history of your own work, chat-bubble style: your request on one side, the AI's summary on the other, grouped into the sessions `start_session` created. A floating date-range filter defaults to today. Expand a message to see what it changed:
+*   **Whole-file, PR-style diffs.** Every edit a message made to one file collapses into a single git-style hunk view, red/green, even if several functions in that file changed — with a **"view full file"** toggle that shows the complete reconstructed file, changes highlighted in place, instead of just the changed lines.
+*   **Revert / un-revert**, with a backup. Reverting a message restores the code and marks the message reverted rather than erasing it; un-revert brings it back. **Stack semantics**: revert message *N* and every later message still applied reverts too (newest first, since later work was built on top of it); un-revert restores oldest-reverted-first, back up the stack in the order things came off. A revert that hits a file changed since (a hand-edit, a pull) stops at a clean boundary instead of forcing it, and says exactly which message blocked it.
+*   **Covers every file** — a CSS/JSON/XML/Markdown edit, or a code edit landing outside any function, gets no *graph* node (the graph stays code-only) but still shows up here as a revertable whole-file change, same as a traced code edit.
+*   This is deliberately a *second*, different revert system from `devsmind revert` (below) — that one is permanent, no backup, scoped to one entity's last edit; this one is reversible, backed up, and scoped to a whole request. They coexist on purpose.
+
+**Graph tab** — rebuilt around the actual complaint that a whole-graph render doesn't scale past a trivial project size:
+*   A sidebar **accordion** (repo → type, with a search box) is how you find a node, instead of staring at the full force-graph looking for it.
+*   Clicking a node opens a small **ego-graph** — just that node's `uses` (outgoing) and `used by` (incoming) neighbors, one hop, with distinct colours, directional arrows, and a legend so the direction is never ambiguous. Click a neighbor to re-center on it. Every node is labeled (name under the dot), not just a bare colored circle. 2D/3D toggle on this view.
+*   **Filters** for type, developer, and an actual date **range** (two date pickers, not just presets) — each checkbox group has "select all / none," and your filter selections persist across reloads (scoped per-project, via `localStorage`).
+*   A **"See whole graph (2D)"** button stays as the escape hatch when you genuinely want the full picture over your current filtered set — 2D only, since that's the view that's actually usable at scale; 3D is reserved for the small ego-graph where depth helps rather than just looking impressive.
+*   The detail pane (file, signature, history, per-edit diffs, revert) works the same as before — same engine as [`devsmind revert`](#-other-cli-commands), same refusals.
+
+The server binds loopback only (`127.0.0.1`), and every write route (`/api/revert`, `/api/message-revert`, `/api/message-unrevert`) additionally requires a per-process token that only a page this server rendered is given — a page loaded from anywhere else can't reach them, even from this machine. `view.html` and its JS/CSS are re-read from disk on every request (never cached), so a server left running across an update always serves the current build, not a stale pairing of old HTML with new JS.
+
+To query the view URL programmatically from your agent, call `get_visualizer_url`.
 
 ---
 
@@ -637,6 +752,65 @@ By placing `.devmind/config.json` and `.devmind/brain.db` in Git, you share the 
 ---
 
 ## Changelog
+
+### 3.0.0 — Workflows rebuilt around sessions, search that survives one turn, no more `devmind_path`
+
+A major rather than a minor, for a plain reason: tools were **removed**. `workflow_pause`/`resume`/`search`/`get_steps`/`add_artifact`/`read_artifact`/`sync_retroactive` are gone, `get_node_graph` and `get_node_history` folded into `get_node_code` as parameters, `search_nodes` lost `keywords` and `is_regex`, and `list_nodes` answers an object where it used to answer a bare array. Re-run `devsmind rule` (and `devsmind memory`, if you seeded it) after upgrading — an agent working from the old rule will confidently call tools that no longer exist.
+
+**Workflows were designed before sessions existed, and it showed.** "Which workflow is active" was a *single project-wide pointer*, serialized into the committed `workflow.json` and restored on sync. That isn't awkwardness, it's a correctness bug: two sessions shared one pointer, so session B calling `workflow_resume` silently paused session A's workflow mid-work, and A's next `commit_changes` wrote its step onto **B's** timeline. No error, nothing to notice. And because the pointer travelled through git, a teammate could do it to you from another machine.
+
+The fix is to stop storing the thing at all. Binding is now per session and lives in gitignored `.devmind/local/` — a bookmark belongs to the reader, not the book, and one book with one bookmark means two readers fight over it. "What was I last working on" is derived (the newest session carrying a `workflow_id`) rather than recorded, and "is this workflow active" simply stops existing as state: it's whether some session is bound right now.
+
+Two other things were quietly wrong. A step stored `history_ids`, which **cannot identify a commit** — `updateHistory` merges any two commits on the same node within an hour into a single row and returns the pre-existing id, so a step's ids could point at rows an earlier commit created, and one row could be cited by several steps. Steps now carry their own `reasoning` plus the `node_ids` they touched. Copying the reasoning rather than joining to it is deliberate: history reasoning *mutates* afterwards (the hourly merge appends, a revert can drop a block), and a record of what we thought at the time can't read from a moving target. Separately, `commit_changes` never passed `session_id` when creating a step — the column existed and sat null on the path that creates nearly every step.
+
+`status: active/paused/completed` is replaced by `archived`. Nothing ever completed and nobody marked it, so the field lied; threads sort by last-touched so live work floats up on its own, and archiving claims only what it delivers — hide this from the list, reversibly. `pending_tasks` is gone with no replacement: a "what's left" note goes stale the moment it's written, and a *wrong* one is worse than none, because an agent will act on it confidently.
+
+Research became a first-class step, which is the part that actually justifies the feature. Development already leaves a recoverable trail — git has the diff, node history has the per-node reasoning. Research leaves nothing: nobody can reconstruct "we evaluated three options and rejected two" from the code that survived. So `workflow_add_step` takes a finding with no code change at all, plus the documents behind it as `doc_paths` — **paths, not copies**. The old `workflow_add_artifact` duplicated whole files into `.devmind/workflows/<id>/artifacts/`, which goes stale the moment the original changes; your repo already versions and shares the original. A path outside every configured repo is rejected, since a file only you can see is useless to a teammate.
+
+`workflow_sync_retroactive` was the one tool that didn't do what its name said — it read no activity log, no history, no transcript; the agent hand-assembled a `steps` array from its own context and the tool wrote it down. `workflow_sync` now reads your local activity log, previews what it would attach, and writes only on `confirm:true`. Dedupe is by consumed edit id rather than a per-message flag, because a message keeps growing after it's tagged — a boolean would permanently strand everything added later, while edit ids make a re-run a true no-op and still let a grown message contribute a delta. This is also why no drift detection was built: asking an agent to notice "this task isn't related anymore" gets it wrong in both directions, and retroactive fixing being cheap is what makes getting it wrong in the moment acceptable.
+
+One migration detail worth stating plainly. New columns are added on the next brain open via the same guarded `ALTER TABLE` pattern already used elsewhere, and old steps are backfilled by resolving their `history_ids` to the nodes those rows belong to — but because of that same one-hour merge, **a backfilled node list can be broader than what the step really touched**. Steps written from now on are exact. And a teammate on an older build can no longer destroy the new data: each workflow is written as two files, `workflow.json` in the shape a pre-3.0 client understands plus `v2.json` holding what that shape has no field for. `devsmind sync` re-serializes `workflow.json` from local columns, so an un-upgraded machine that pulled and synced *would* have rewritten the file without the new fields and committed that loss — it has no idea the sidecar exists, so it can't touch it, and the next read merges everything back.
+
+**Oversized responses used to dead-end.** A large `search_nodes` result could exceed the client's inline limit, spill to a file, and then have *that* file truncate on read — leaving nothing usable at all, which is worse than a small answer. Results are now trimmed in two tiers: first the bulk carrying no signal (per-file `match_counts`, `matched_terms`, `aliases`, repeated boilerplate, thinned sample lines), and only if that isn't enough, the evidence lines themselves. A `compacted` field always states which happened and **every count stays exact**, so a trimmed result can never read as a complete one. Compaction also *skips* the AST symbol-annotation pass rather than computing it and throwing it away, and responses are no longer pretty-printed — indentation was 20-30% of the payload, and MCP clients parse rather than read it.
+
+`list_nodes` had no bound of any kind, which is precisely backwards for an enumeration tool: the reason you call it is that you don't know how many there are. On a real backend one unfiltered call returned ~600KB across ~10,900 lines. It's paged now, with `total` as the true match count and a `hint` naming the exact next call. `get_node_code`'s embedded `graph_code` budget dropped to 24000 characters (it rides along with code, imports, neighbors and history rather than being the whole payload), and when it runs out the dropped nodes are named **by id** rather than left to a positional cursor — the walk is re-derived per call and the cut-off depends on file contents, so an index would silently skip or repeat nodes.
+
+**Your configured file exclusions never worked.** `ignored_paths` was only ever checked against *directories*, so every file listed in it was silently searched anyway — and that was the common case, not an edge one: `devsmind init`'s own preset list is entirely file names, and `.gitignore` import passes literal file names straight through. Users had excluded these, watched them keep appearing in every result, and had no way to tell the setting was being dropped on the floor. Lockfiles and build artifacts are now excluded by default too, so a repo predating `init` still gets clean results — a lockfile names every dependency in the tree, so a product term matched it purely because some package was named that. Also fixed: a leading-slash `.gitignore` entry (`/dist`, `/build`) matched nothing at all, in both the search walk and the indexer.
+
+**`search_nodes` got a real regex.** `keywords` was a pipe/comma-split list that got regex-**escaped** before matching, which silently mangled a caller's own correct regex — `item\.liked` searched for a literal backslash and never matched real code. It's replaced by `pattern`: the string is used exactly as given, the same one you'd hand `grep`. `query` became optional, making a pattern-only call a first-class precision mode that skips the semantic layers entirely (a regex has no meaning to embed). `path` scopes the walk to one folder or file; `case_insensitive`, previously accepted and silently ignored, is actually wired through. Both buckets gained true `*_total` fields so a capped page is never mistaken for "nothing more to find", and every `files` sample line reports its containing function or class when resolvable — insight a plain filesystem grep can't give. Node results also now **lead** with `confidence`/`relevance`/`found_by` instead of trailing `description`: the fields always existed, but landing behind a full sentence of prose meant they got skipped in favor of eyeballing node names, and a name that merely looks right is the easiest way to pick the wrong node.
+
+**Several numeric params were unvalidated in ways that failed silently** — the worst kind. `graph_code_budget:"abc"` became `NaN`, and since every `spent + len > NaN` comparison is false, that meant an **unlimited** budget: the exact opposite of passing a budget. `search_nodes`' `limit:"abc"` became `NaN` too, and `slice(0, NaN)` returned an empty `files` array next to a non-zero `files_total`, indistinguishable from "grep found nothing"; a negative `offset` paged from the *end* of the ranking. Also adds a missing index on `node_connections(target_node_id)` — every "who uses X" lookup was a full table scan, once per node visited in a graph walk.
+
+**The server binds to one project.** `devsmind start` (HTTP or `--stdio`) resolves its project once at startup — `--path`, or auto-detected from cwd — and every advertised tool schema then drops `devmind_path` entirely, so the agent never discovers, remembers, or re-sends it. Generated stdio configs bake in an absolute `--path`, because the IDE controls the spawn cwd and auto-detection alone isn't reliable there. Unbound (tests, or no `.devmind` to find) falls back to the legacy per-call behavior unchanged.
+
+**`session_id` came off reads.** Searching and reading mutate nothing, so gating them on a session bought nothing but friction — the very first thing an agent does in a conversation is usually a search, and it used to error. Only writes require it now. `get_activity_log`'s own optional `session_id` filter is also no longer force-promoted to required by the blanket injection it used to go through.
+
+**And `devsmind -v` reports the real version.** It answered `1.0.0` from the first commit through 2.5.0 — hardcoded next to `package.json`'s real number and never once updated. That's worse than having no version flag at all: someone filing a bug reads it and believes it, and so does whoever tries to reproduce against that release. The CLI, the MCP server's `serverInfo`, and `GET /health` all derive from `package.json` now, so there's one number and nothing left to keep in sync.
+
+### 2.5.0 — A new view app, an activity log with revert, explicit sessions, two rule styles
+
+Everything in this section shipped as one release. None of it was ever published to npm individually — 2.4.0 was the last version that actually went out, so this is a single jump, not five quiet ones.
+
+**`edit_node`'s missing half.** 2.4.0 made `edit_node` the way an agent writes code, which quietly took something away: a native edit tool shows you a diff and lets you reject it, `edit_node` wrote straight to disk and told you a node id. `edit_node` now returns the diff of what it just changed as a rendered `+`/`-` block in its own tool result — a second content block alongside the JSON, so nothing that parsed the old response breaks — and it keeps the pre-edit code of every symbol it touches (it already computed this internally to tell which symbols changed; it just used to throw it away) as an `edits` trail on the history JSON. That trail is what makes `devsmind diff`/`devsmind revert` possible from the terminal. Two limits are permanent rather than unfinished: only the newest edit to an entity can be reverted, and only while the file still matches what was recorded — anything else means restoring a "before" that later work was built on top of, which git handles correctly and this defers to. And nothing recorded before this release has a before-state to diff or revert; it can't be backfilled.
+
+**The activity log** (`devsmind view` → Chat) answers a different question than a single node's diff: "what did I do today," and lets you walk back more than one edit at a time. The unit is a **message** — one user request, however many `commit_changes` calls it took to satisfy; pass `message` with the request text and consecutive commits for the same request merge into one entry instead of scattering into several. It lives in `.devmind/local/`, gitignored from the start: message text is only ever meaningful on the machine that wrote it, and `brain.db` is documented as a disposable cache that gets rebuilt from committed JSON, so an activity log that could vanish on a rebuild wasn't one worth having.
+
+The interesting design problem was revert, and the shape came directly from how the person using it actually thinks about undo: *"if I revert one message in the middle, all the messages after it should revert too, and I can un-revert them one by one as changes stack on each other."* That's a stack, not a delete. Reverting message *N* takes everything from *N* to the newest still-applied message, newest first, because each one was written against the code the previous one produced. Un-revert is the mirror: only the oldest currently-reverted message can come back, one at a time, in the order things came off. Both directions refuse rather than force when a file has drifted since — the cascade stops at a clean boundary and says exactly where. This is explicitly a *second* revert system next to `devsmind revert`, not a replacement for it: that one stays permanent, no backup, one entity — a fast "that was wrong" for a single function. This one trades simplicity for reversibility and scope: a whole request, backed up, undoable.
+
+It initially inherited a scope limit it shouldn't have: `edit_node` writing a non-code file (CSS, JSON, XML, Markdown, ...), or landing outside any function in a traceable file, correctly gets no *graph* node — the graph is deliberately code-only — but as an unintended side effect it also left no trace in the activity log either. The file was written; there was just no record of it once the session ended. Fixed by staging a whole-file before/after for exactly that case (never instead of a traced node edit, only when there isn't one), so `commit_changes` folds it into the same message as everything else in that commit. The one real subtlety: a single commit can mix a traced node edit and an untraced whole-file edit on the *same* file, and the whole-file reconstruction undoes a file's edits newest-first — so it depends on true chronological order, not "all node edits, then all whole-file edits," which a naive concatenation would produce. Staged entries are now stamped with when they were staged, and the activity message sorts by that before saving.
+
+**A new view app.** The three-separate-pages layout (`/` 2D graph, `/3d`, `/activity`) is retired in favor of one app with Chat and Graph tabs, and it now works fully offline — the graph libraries are vendored into the package instead of loaded from a CDN. Chat renders the activity log above as an actual chat transcript, with git-style whole-file diffs (a "view full file" toggle shows the complete reconstructed file, not just the changed hunks) and revert/un-revert inline. Graph is a deliberate rebuild around the complaint that a whole-graph render doesn't scale: a repo→type accordion sidebar with search drives what you look at, clicking a node opens a small labeled ego-graph of just its uses/used-by neighbors (colours, arrows, a legend, click-to-re-center) instead of the entire graph at once, filters (type/developer/date-range, each with select-all/none) persist across reloads, and a "See whole graph (2D)" button stays as the escape hatch for when the big picture is genuinely what's wanted. One bug worth naming: `view.html` was being cached once at server start while its JS/CSS were always read fresh — a server left running across an update could serve a stale page paired with newer JS expecting elements the stale page didn't have. Both are now re-read on every request, with `Cache-Control: no-store`.
+
+**Explicit sessions.** The activity log's session identity was the weak link — `session_id` was optional, so a missing one got silently auto-minted per commit, scattering one task's work across several sessions instead of grouping it the way the feature promised. A new `start_session` tool is now the only way a session comes into being; every other DevsMind tool call, reads included, now REQUIRES the `session_id` it returns, echoed back on every single response afterward so it survives a long conversation or a context compaction — one mention at the top of a session doesn't reliably make it to turn 40, a value repeated on every response does. `commit_changes` now also hard-requires `message`, validated *before* anything is written or staging is cleared, so a rejected commit for a missing message is a true no-op, safe to retry. DevsMind stays fully stateless through this — it never tracks "the active session" server-side, so two agents on the same project never collide over a shared "current" id.
+
+**Reasoning, once per commit instead of once per edit.** Every `edit_node`/`stage_change` call used to require its own `reasoning` object — `what_changed`/`why`/`goal`, sometimes `requirement`/`decision`/`previous_state` too — even though a commit almost always answers one request, so five edits in service of it meant retyping a near-identical justification five times for no real payoff (nobody reads five copies of the same "why"). `reasoning` moved to `commit_changes`, required exactly once there, and now gets recorded against every node staged since the last commit. The one thing this trades away is the ability to give two nodes in the same commit genuinely different reasons — the position taken here is that if that's ever actually needed, it's two commits, not two reasoning params on one. Every consumer of the old per-edit field already ran at commit time anyway (`updateHistory`'s write into node history, the workflow-step/activity summary), so nothing earlier in the pipeline needed it in the first place — this is a straightforward move of a required argument to where it was already being used.
+
+**Two rule workflow styles.** Every rule up to this point assumed the AI should stage and commit everything proactively — the right default for a team's shared graph, but not the only reasonable way to run it. `devsmind rule` now asks up front: **Automatic** (unchanged) or **Manual** (search/read tools stay fully on, but `stage_change`/`commit_changes` are off-limits unless explicitly asked for). `session_id` and `message` stay hard-required by the protocol in both — a rule can shape the agent's judgment, it can't waive a server-side validation; the style only changes whether the agent *decides on its own* to write. Every run also prints a short **session kickoff prompt**, deliberately kept out of the persistent rule file, meant to be pasted fresh at the start of every new conversation — a direct instruction rather than background context a long session, or a brand-new one, might not weigh appropriately on its own. The shortest, strictest version of that reminder, usable regardless of which style a project is set to:
+
+> Before doing anything else: fully read and follow this project's DevsMind rule — no exceptions, no shortcuts, not even for a small edit.
+> Call `start_session` first and carry its `session_id` on every DevsMind call this conversation, or nothing else will work.
+
+The one thing none of this adds is pre-write approval — catching a bad edit before it lands, rather than undoing it after. That needs an inline diff inside the editor itself, which an MCP tool cannot draw; only a real IDE extension can. It remains open.
 
 ### 2.4.0 — `edit_node`: one write path for every file
 
