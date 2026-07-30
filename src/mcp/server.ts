@@ -32,7 +32,7 @@ import { parseNodeId, isAstParseable, findTouchedSymbols, invalidateParsedFile, 
 import { replaceTextInFile, createFileWithContent } from '../utils/edit';
 import { validateDescription } from '../utils/tokenize';
 import { DEVSMIND_VERSION } from '../utils/version';
-import { stageEntry, readStaged, clearStaged, commitStagedChanges, summarizeEntriesForWorkflow, StagedEntry, stageFileEdit, readStagedFileEdits, overwriteStaged, resolveEntryId } from '../db/staging';
+import { stageEntry, readStaged, clearStaged, commitStagedChanges, summarizeEntriesForWorkflow, StagedEntry, stageFileEdit, readStagedFileEdits, overwriteStaged, resolveEntryId, partitionStagedForSession, clearStagedForSession } from '../db/staging';
 import { recordMessage } from '../db/activity';
 import { runAnalysis } from '../db/analyze';
 import {
@@ -642,7 +642,7 @@ export function createMcpServer(): Server {
         {
           name: 'commit_changes',
           description:
-            'Flush all buffered edit_node/stage_change entries in one atomic pass: creates/updates every staged node, writes every history snapshot with the ONE `reasoning` you give here, resolves all connections via local AST (auto-creating any referenced-but-missing nodes), then clears the buffer. Every entity staged since the last commit gets the SAME reasoning — a commit is one logical change, so it needs one why, not one per node. If a workflow is currently active, this ALSO auto-records a step on its timeline from that reasoning — you do not need a separate workflow_add_step call for the normal case. Call commit_changes at natural checkpoints — after a batch of related nodes, or when switching context — not only once at the very end of a long task; a checkpoint commit can\'t be forgotten the way a single end-of-task one can. Always call it again before ending the turn if anything is still staged: an uncommitted turn leaves the whole team\'s graph stale, not just yours.',
+            'Flush THIS SESSION\'s buffered edit_node/stage_change entries in one atomic pass: creates/updates every staged node, writes every history snapshot with the ONE `reasoning` you give here, resolves all connections via local AST (auto-creating any referenced-but-missing nodes), then clears only this session\'s share of the buffer. Every entity staged since your last commit gets the SAME reasoning — a commit is one logical change, so it needs one why, not one per node. The staging buffer is shared by every session pointed at this .devmind directory, but a commit only ever touches entries YOUR session staged — another session\'s still-pending work (possibly in an unrelated file or repo) is never included and is never cleared out from under it; `other_sessions_pending` in the response tells you if any exist. If a workflow is currently active, this ALSO auto-records a step on its timeline from that reasoning — you do not need a separate workflow_add_step call for the normal case. Call commit_changes at natural checkpoints — after a batch of related nodes, or when switching context — not only once at the very end of a long task; a checkpoint commit can\'t be forgotten the way a single end-of-task one can. Always call it again before ending the turn if anything is still staged: an uncommitted turn leaves your own work out of the graph.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1653,12 +1653,11 @@ export function createMcpServer(): Server {
             }
           }
 
-          let pending = readStaged(devmindPath).length;
           const staged: any[] = [];
           const diffBlocks: string[] = [];
           for (const t of touched) {
             const nodeId = t.node_id || `${editDb.toRepoRelativePath(filePath)}#${t.symbolName}`;
-            pending = stageEntry(devmindPath, {
+            stageEntry(devmindPath, {
               node_id: nodeId,
               file_path: filePath,
               code_snapshot: t.codeSnapshot,
@@ -1707,10 +1706,18 @@ export function createMcpServer(): Server {
             stageFileEdit(devmindPath, {
               file_path: filePath,
               before: result.before ?? '',
-              after: afterContent
+              after: afterContent,
+              session_id: sessionId
             });
             fileEditStaged = true;
           }
+
+          // Scoped to THIS session — the buffer is shared by every session pointed at this
+          // .devmind directory, so counting the raw buffer length here would inflate the "pending"
+          // total with other sessions' unrelated in-flight work and mislead this agent about how
+          // much IT still needs to commit. See partitionStagedForSession.
+          const { entries: myPendingEntries, fileEdits: myPendingFileEdits } = partitionStagedForSession(devmindPath, sessionId);
+          const pending = myPendingEntries.length + myPendingFileEdits.length;
 
           const ext = path.extname(filePath).toLowerCase();
           const callerCount = staged.reduce((sum, s) => sum + s.callers_total, 0);
@@ -1823,7 +1830,12 @@ export function createMcpServer(): Server {
             description: stageDescription,
             session_id: sessionId
           };
-          const pendingCount = stageEntry(devmindPath, entry);
+          stageEntry(devmindPath, entry);
+          // Scoped to THIS session, not the raw buffer length — see partitionStagedForSession.
+          // The shared buffer can also hold another session's unrelated staged work, which must
+          // never be counted as "yours to commit".
+          const scoped = partitionStagedForSession(devmindPath, sessionId);
+          const pendingCount = scoped.entries.length + scoped.fileEdits.length;
           return {
             content: [{
               type: 'text',
@@ -1869,10 +1881,25 @@ export function createMcpServer(): Server {
             // a commit_changes rejection, and the description must land in the buffer so it
             // reaches upsertNode when the AI retries the commit — writing straight to the DB here
             // would do nothing, since that node doesn't exist there yet.
-            const stagedEntry = staged.find(e => e.node_id === nodeId || `${db.toRepoRelativePath(e.file_path)}#${e.node_id}` === nodeId);
+            //
+            // Restricted to entries THIS session owns (see belongsToSession in staging.ts) — the
+            // buffer is shared by every session pointed at this .devmind directory, so without
+            // this check one session could write a description onto another session's still
+            // uncommitted node, which then ships with that commit under the OTHER session's
+            // reasoning even though the describing session never touched or reviewed that change.
+            const matchesNodeId = (e: StagedEntry) => e.node_id === nodeId || `${db.toRepoRelativePath(e.file_path)}#${e.node_id}` === nodeId;
+            const stagedEntry = staged.find(e => matchesNodeId(e) && (!e.session_id || e.session_id === sessionId));
             if (stagedEntry) {
               stagedEntry.description = description;
               results.push({ node_id: nodeId, ok: true, target: 'staged' });
+              continue;
+            }
+            if (staged.some(matchesNodeId)) {
+              results.push({
+                node_id: nodeId, ok: false,
+                error: 'staged by another session, not this one — that session must add the description (or commit first, then use add_description on the committed node).',
+                target: 'unknown'
+              });
               continue;
             }
 
@@ -2004,11 +2031,22 @@ export function createMcpServer(): Server {
           const requestText = requireStr(args, 'message', 'commit_changes');
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const entries = readStaged(devmindPath);
-          const fileEdits = readStagedFileEdits(devmindPath);
+          // Scoped to THIS session's own staged work — the buffer is shared by every session
+          // pointed at this .devmind directory, so a plain commit must never sweep up another
+          // session's still-in-progress edits (possibly from an unrelated file or repo) just
+          // because they happened to be pending at the same time. See partitionStagedForSession.
+          const { entries, fileEdits, otherSessionsPending } = partitionStagedForSession(devmindPath, sessionId);
           if (entries.length === 0 && fileEdits.length === 0) {
             return {
-              content: [{ type: 'text', text: JSON.stringify({ committed: false, message: 'Nothing staged. Call stage_change first.' }) }]
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  committed: false,
+                  message: otherSessionsPending > 0
+                    ? `Nothing staged by this session. ${otherSessionsPending} entr(y/ies) from another session are pending but left untouched — call stage_change/edit_node first.`
+                    : 'Nothing staged. Call stage_change first.'
+                })
+              }]
             };
           }
           if (!args.reasoning) {
@@ -2092,7 +2130,7 @@ export function createMcpServer(): Server {
 
           const reasoning = args.reasoning as any;
           const summary = await commitStagedChanges(db, devmindPath, entries, reasoning); // no-ops cleanly when entries is empty
-          clearStaged(devmindPath);
+          clearStagedForSession(devmindPath, sessionId);
 
           // A summary for both the workflow step and the activity message — the commit's own
           // reasoning takes priority when it has a what_changed; a commit that only touched
@@ -2216,12 +2254,14 @@ export function createMcpServer(): Server {
                 message: `✅ Committed ${summary.nodes} node(s), ${summary.history_entries} history entr(ies), ${summary.edges_added} connection(s) resolved` +
                   (summary.missing_filled > 0 ? `, ${summary.missing_filled} missing node(s) auto-created.` : '.') +
                   (fileEdits.length ? ` ${fileEdits.length} non-code file(s) recorded to the activity log only.` : '') +
-                  (workflowStepId ? ` Logged as a step on workflow "${boundWorkflow!.name}".` : ''),
+                  (workflowStepId ? ` Logged as a step on workflow "${boundWorkflow!.name}".` : '') +
+                  (otherSessionsPending > 0 ? ` ${otherSessionsPending} entr(y/ies) staged by another session were left pending, untouched by this commit.` : ''),
                 ...summary,
                 file_edits_recorded: fileEdits.length,
                 workflow_step_id: workflowStepId,
                 activity_message_id: activityMessage.id,
-                session_id: sessionId
+                session_id: sessionId,
+                other_sessions_pending: otherSessionsPending
               }, null, 2)
             }]
           };

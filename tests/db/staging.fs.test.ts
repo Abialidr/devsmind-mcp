@@ -9,6 +9,8 @@ import {
   overwriteStaged,
   clearStaged,
   removeLastStagedEntry,
+  partitionStagedForSession,
+  clearStagedForSession,
   StagedEntry,
   StagedFileEdit
 } from '../../src/db/staging';
@@ -146,5 +148,43 @@ describe('staging buffer (filesystem)', () => {
     expect(fs.existsSync(path.join(dir, 'history_scratchpad.json'))).toBe(true);
     expect(readStaged(dir)).toEqual([]);
     expect(readStagedFileEdits(dir)).toHaveLength(1);
+  });
+
+  describe('multi-session isolation (partitionStagedForSession / clearStagedForSession)', () => {
+    it('partitionStagedForSession only returns entries/file_edits stamped with the caller\'s session_id', () => {
+      stageEntry(dir, entry({ node_id: 'mine', session_id: 'session-A' }));
+      stageEntry(dir, entry({ node_id: 'theirs', session_id: 'session-B' }));
+      stageFileEdit(dir, { file_path: '/repo/mine.css', before: '', after: 'a', session_id: 'session-A' });
+      stageFileEdit(dir, { file_path: '/repo/theirs.css', before: '', after: 'b', session_id: 'session-B' });
+
+      const partition = partitionStagedForSession(dir, 'session-A');
+      expect(partition.entries.map(e => e.node_id)).toEqual(['mine']);
+      expect(partition.fileEdits.map(e => e.file_path)).toEqual(['/repo/mine.css']);
+      expect(partition.otherSessionsPending).toBe(2);
+    });
+
+    it('treats entries with no session_id (pre-existing buffers) as claimable by any session, not stranded forever', () => {
+      stageEntry(dir, entry({ node_id: 'legacy' })); // no session_id at all
+      const partition = partitionStagedForSession(dir, 'session-A');
+      expect(partition.entries.map(e => e.node_id)).toEqual(['legacy']);
+      expect(partition.otherSessionsPending).toBe(0);
+    });
+
+    it('clearStagedForSession removes only the caller\'s entries, leaving another session\'s work staged', () => {
+      stageEntry(dir, entry({ node_id: 'mine', session_id: 'session-A' }));
+      stageEntry(dir, entry({ node_id: 'theirs', session_id: 'session-B' }));
+
+      clearStagedForSession(dir, 'session-A');
+
+      const remaining = readStaged(dir);
+      expect(remaining.map(e => e.node_id)).toEqual(['theirs']);
+    });
+
+    it('clearStagedForSession deletes the buffer file entirely once no other session has anything left', () => {
+      stageEntry(dir, entry({ node_id: 'only', session_id: 'session-A' }));
+      clearStagedForSession(dir, 'session-A');
+      expect(fs.existsSync(path.join(dir, 'history_scratchpad.json'))).toBe(false);
+      expect(readStaged(dir)).toEqual([]);
+    });
   });
 });

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { connectMcpClient, callTool, callToolJson, McpTestHarness } from '../helpers/mcpClient';
-import { makeFixture, Fixture, repoFile, stageAndCommit } from '../helpers/fixture';
+import { makeFixture, Fixture, repoFile, stageAndCommit, defaultReasoning, defaultFeedback } from '../helpers/fixture';
 import { DevMindDatabase, NO_STATIC_CALLERS_NOTE } from '../../src/db/database';
 import { readProductFeedback } from '../../src/db/feedback';
 
@@ -1165,6 +1165,172 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       });
       expect(isError).toBe(false);
       expect(parsed).toBeTruthy();
+    });
+
+    it('commit_changes only commits/clears the calling session\'s own staged work, never another session\'s pending edits', async () => {
+      // Reproduces the multi-session staging bug: two sessions pointed at the same .devmind
+      // directory share one on-disk staging buffer. Session B stages a change but never commits
+      // it. Session A must be able to stage and commit its OWN unrelated change without B's
+      // still-pending entry being swept into A's commit (wrong reasoning attached to B's node) or
+      // wiped from the buffer (B's work silently lost).
+      const hB = await connectMcpClient();
+      try {
+        const { parsed: sB } = await callToolJson(hB.client, 'start_session', {
+          devmind_path: fx.devmindPath
+        }) as { parsed: { session_id: string } };
+
+        await callTool(hB.client, 'stage_change', {
+          devmind_path: fx.devmindPath,
+          session_id: sB.session_id,
+          node_id: 'staysStagedForB',
+          file_path: repoFile(fx, 'bar.ts'),
+          code_snapshot: 'export function staysStagedForB() { return 99; }',
+          description: 'Belongs to session B only — must not be pulled into session A\'s commit.'
+        });
+
+        // Session A stages and commits its own change to a DIFFERENT, already-described node.
+        await callTool(harness.client, 'edit_node', {
+          devmind_path: fx.devmindPath,
+          session_id: sessionId,
+          file_path: repoFile(fx, 'bar.ts'),
+          old_string: 'return "hi " + s;',
+          new_string: 'return "yo " + s;',
+          description: 'Formats a raw string into the "yo <value>" greeting format used for this test.'
+        });
+        const { parsed: commitA } = await callToolJson(harness.client, 'commit_changes', {
+          devmind_path: fx.devmindPath,
+          session_id: sessionId,
+          message: 'session A change',
+          reasoning: defaultReasoning({ what_changed: 'A\'s own change' }),
+          feedback: defaultFeedback()
+        }) as { parsed: { other_sessions_pending: number } };
+
+        // A's commit sees B's entry pending but leaves it alone.
+        expect(commitA.other_sessions_pending).toBe(1);
+        expect(fx.db.getNode('{app}/bar.ts#staysStagedForB')).toBeNull();
+
+        // B's own entry is still sitting in the shared buffer, untouched by A's commit — B can
+        // commit it later and it still lands correctly, with B's own reasoning.
+        const { parsed: commitB } = await callToolJson(hB.client, 'commit_changes', {
+          devmind_path: fx.devmindPath,
+          session_id: sB.session_id,
+          message: 'session B change',
+          reasoning: defaultReasoning({ what_changed: 'B\'s own change' }),
+          feedback: defaultFeedback()
+        }) as { parsed: { other_sessions_pending: number; nodes: number } };
+
+        expect(commitB.other_sessions_pending).toBe(0);
+        expect(commitB.nodes).toBe(1);
+        expect(fx.db.getNode('{app}/bar.ts#staysStagedForB')).toBeTruthy();
+      } finally {
+        await hB.close();
+      }
+    });
+
+    it('add_description refuses to write onto a node staged by another session, and still works on the caller\'s own', async () => {
+      const hB = await connectMcpClient();
+      try {
+        const { parsed: sB } = await callToolJson(hB.client, 'start_session', {
+          devmind_path: fx.devmindPath
+        }) as { parsed: { session_id: string } };
+
+        // Session B stages a brand-new node with no description yet.
+        await callTool(hB.client, 'stage_change', {
+          devmind_path: fx.devmindPath,
+          session_id: sB.session_id,
+          node_id: 'bOwnsThisNode',
+          file_path: repoFile(fx, 'bar.ts'),
+          code_snapshot: 'export function bOwnsThisNode() { return 7; }'
+          // description intentionally omitted.
+        });
+        const bNodeId = '{app}/bar.ts#bOwnsThisNode';
+
+        // Session A tries to describe B's staged node — must be refused, not silently applied.
+        const { parsed: fromA } = await callToolJson(harness.client, 'add_description', {
+          devmind_path: fx.devmindPath,
+          session_id: sessionId,
+          descriptions: [{
+            node_id: bNodeId,
+            description: 'An attempt from session A to describe session B\'s own staged node.'
+          }]
+        }) as { parsed: { described: boolean; results: { ok: boolean; error?: string }[] } };
+        expect(fromA.described).toBe(false);
+        expect(fromA.results[0].ok).toBe(false);
+        expect(fromA.results[0].error?.toLowerCase()).toContain('another session');
+
+        // Session B describing its OWN staged node still works as normal.
+        const { parsed: fromB } = await callToolJson(hB.client, 'add_description', {
+          devmind_path: fx.devmindPath,
+          session_id: sB.session_id,
+          descriptions: [{
+            node_id: bNodeId,
+            description: 'A trivial test function only session B staged and may describe.'
+          }]
+        }) as { parsed: { described: boolean; results: { ok: boolean; target: string }[] } };
+        expect(fromB.described).toBe(true);
+        expect(fromB.results[0].target).toBe('staged');
+
+        // And A's earlier rejected attempt left B's staged description untouched by A entirely —
+        // B's own commit now succeeds without needing to describe it again.
+        const { parsed: commitB } = await callToolJson(hB.client, 'commit_changes', {
+          devmind_path: fx.devmindPath,
+          session_id: sB.session_id,
+          message: 'session B adds bOwnsThisNode',
+          reasoning: defaultReasoning({ what_changed: 'B added bOwnsThisNode' }),
+          feedback: defaultFeedback()
+        }) as { parsed: { nodes: number } };
+        expect(commitB.nodes).toBe(1);
+        expect(fx.db.getNode(bNodeId)).toBeTruthy();
+      } finally {
+        await hB.close();
+      }
+    });
+
+    it('stage_change and edit_node report pending_count scoped to the calling session, not the whole shared buffer', async () => {
+      const hB = await connectMcpClient();
+      try {
+        const { parsed: sB } = await callToolJson(hB.client, 'start_session', {
+          devmind_path: fx.devmindPath
+        }) as { parsed: { session_id: string } };
+
+        // Session B stages one entry and never commits it.
+        await callTool(hB.client, 'stage_change', {
+          devmind_path: fx.devmindPath,
+          session_id: sB.session_id,
+          node_id: 'bStaysPending',
+          file_path: repoFile(fx, 'bar.ts'),
+          code_snapshot: 'export function bStaysPending() { return 1; }',
+          description: 'A trivial test function belonging only to session B\'s own pending work.'
+        });
+
+        // Session A stages its own, unrelated entry via stage_change — pending_count must reflect
+        // only A's own staged work (1), not the shared buffer's total (2).
+        const { parsed: stageA } = await callToolJson(harness.client, 'stage_change', {
+          devmind_path: fx.devmindPath,
+          session_id: sessionId,
+          node_id: 'aStagesThis',
+          file_path: repoFile(fx, 'foo.ts'),
+          code_snapshot: 'export function aStagesThis() { return 2; }',
+          description: 'A trivial test function belonging only to session A\'s own pending work.'
+        }) as { parsed: { pending_count: number } };
+        expect(stageA.pending_count).toBe(1);
+
+        // Same for edit_node's pending_count on a second, traced edit by session A. edit_node's
+        // response carries a leading human-readable diff block ahead of the JSON one, so parse
+        // the LAST text block rather than assuming the JSON is first (unlike stage_change/commit).
+        const { textBlocks: editABlocks } = await callTool(harness.client, 'edit_node', {
+          devmind_path: fx.devmindPath,
+          session_id: sessionId,
+          file_path: repoFile(fx, 'bar.ts'),
+          old_string: 'return "hi " + s;',
+          new_string: 'return "yo " + s;',
+          description: 'Formats a raw string into the "yo <value>" greeting format used for this test.'
+        });
+        const editA = JSON.parse(editABlocks.find(b => b.trim().startsWith('{'))!) as { pending_count: number };
+        expect(editA.pending_count).toBe(2); // A's stage_change entry + this new edit_node entry.
+      } finally {
+        await hB.close();
+      }
     });
 
     it('edit_node rejects a file path outside every configured repo', async () => {

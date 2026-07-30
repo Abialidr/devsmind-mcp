@@ -51,6 +51,7 @@ export interface StagedFileEdit {
   file_path: string;
   before: string;
   after: string;
+  session_id?: string;
   /** When this was staged — set automatically by `stageFileEdit`. See StagedEntry.staged_at. */
   staged_at?: string;
 }
@@ -93,6 +94,55 @@ export function readStaged(devmindPath: string): StagedEntry[] {
 
 export function readStagedFileEdits(devmindPath: string): StagedFileEdit[] {
   return readBuffer(devmindPath).file_edits;
+}
+
+/**
+ * An entry with no `session_id` predates this field (a buffer written before session-scoping
+ * existed) — there is no session left to ever reclaim it, so it is treated as belonging to
+ * whoever commits next rather than staying stranded in the buffer forever. Anything stamped
+ * with a DIFFERENT session's id is a genuinely different in-flight task and must not be swept
+ * up by someone else's commit.
+ */
+function belongsToSession<T extends { session_id?: string }>(item: T, sessionId: string): boolean {
+  return !item.session_id || item.session_id === sessionId;
+}
+
+export interface SessionStagingPartition {
+  entries: StagedEntry[];
+  fileEdits: StagedFileEdit[];
+  /** Count of staged entries/file edits left behind because another session owns them. */
+  otherSessionsPending: number;
+}
+
+/**
+ * Splits the shared buffer into "what this session may commit" vs. "left behind" — the fix for
+ * the multi-session bug where `commit_changes` used to flush the ENTIRE buffer regardless of who
+ * staged what, silently pulling unrelated in-flight work (sometimes from other repos entirely)
+ * into a commit and stamping it with the committing session's reasoning. A plain commit now only
+ * ever touches its own session's staged work; other sessions' entries stay staged untouched.
+ */
+export function partitionStagedForSession(devmindPath: string, sessionId: string): SessionStagingPartition {
+  const buf = readBuffer(devmindPath);
+  const entries = buf.entries.filter(e => belongsToSession(e, sessionId));
+  const fileEdits = buf.file_edits.filter(e => belongsToSession(e, sessionId));
+  const otherSessionsPending = (buf.entries.length - entries.length) + (buf.file_edits.length - fileEdits.length);
+  return { entries, fileEdits, otherSessionsPending };
+}
+
+/**
+ * Removes only this session's staged entries/file edits, leaving any other session's pending
+ * work in place — the scoped counterpart to `clearStaged`, which used to wipe the whole buffer
+ * (including work another session had not committed yet) after every commit.
+ */
+export function clearStagedForSession(devmindPath: string, sessionId: string): void {
+  const buf = readBuffer(devmindPath);
+  const entries = buf.entries.filter(e => !belongsToSession(e, sessionId));
+  const file_edits = buf.file_edits.filter(e => !belongsToSession(e, sessionId));
+  if (entries.length || file_edits.length) {
+    writeBuffer(devmindPath, { entries, file_edits, updated_at: new Date().toISOString() });
+  } else {
+    clearStaged(devmindPath);
+  }
 }
 
 /** Appends one entry to the buffer (stamping `staged_at`) and returns the new pending count. */
