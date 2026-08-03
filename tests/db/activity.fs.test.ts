@@ -287,7 +287,17 @@ describe('queryActivityLog', () => {
 
   it('returns an empty result when there are no messages at all', () => {
     const result = queryActivityLog(dir);
-    expect(result).toEqual({ total_messages: 0, all_files: [], entries: [] });
+    expect(result).toEqual({ total_messages: 0, total_matched: 0, all_files: [], entries: [] });
+  });
+
+  it('reports the pre-limit match count alongside the returned count', () => {
+    saveMessage(dir, msg({ id: 'a', created_at: '2024-01-01T00:00:00.000Z' }));
+    saveMessage(dir, msg({ id: 'b', created_at: '2024-01-02T00:00:00.000Z' }));
+    saveMessage(dir, msg({ id: 'c', created_at: '2024-01-03T00:00:00.000Z' }));
+    const result = queryActivityLog(dir, { limit: 2 });
+    // total_messages is what came back; total_matched is what the filters actually matched.
+    expect(result.total_messages).toBe(2);
+    expect(result.total_matched).toBe(3);
   });
 });
 

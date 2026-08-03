@@ -382,6 +382,53 @@ export function parseReasoningBlocks(raw: string): ReasoningObject[] {
   return parsed.reverse();
 }
 
+/** One reasoning block recovered from an accumulated history blob, with the time it was written. */
+export interface TimedReasoningBlock {
+  /**
+   * The block's verbatim trimmed text. This is the GROUPING KEY for reconstructing a commit from
+   * history: `commitStagedChanges` passes one `reasoning` object to `updateHistory` for every node
+   * in the batch, so every node touched by a single commit_changes call ends up carrying a
+   * byte-identical block. Nothing else in the shared record identifies a commit — `history.id` is
+   * per-node, and the timestamps differ by milliseconds because each node's `updateHistory` call
+   * stamps its own `new Date()`.
+   */
+  text: string;
+  /** When this block was written — the `── Update @ … ──` separator's own timestamp, or the row's
+   * `created_at` for the first block, which has no separator preceding it. */
+  at: string;
+  parsed: ReasoningObject;
+}
+
+/**
+ * {@link parseReasoningBlocks} plus the one thing it throws away: each block's timestamp.
+ *
+ * The separator that `updateHistory` writes between merged blocks embeds the moment of the update,
+ * so an accumulated blob is already a dated log — but the existing parser splits on a
+ * non-capturing pattern and returns bare objects, which is all `get_node_code` ever needed.
+ * Reconstructing per-commit activity from shared history does need the dates (that's the whole
+ * time-filter), hence a sibling rather than a breaking change to a parser with other callers.
+ *
+ * Returned OLDEST FIRST — accumulation order, the opposite of `parseReasoningBlocks` — because the
+ * caller here regroups across rows by timestamp rather than reading "the latest" off the front.
+ */
+export function parseReasoningBlocksTimed(raw: string, createdAt: string): TimedReasoningBlock[] {
+  if (!raw || typeof raw !== 'string') return [];
+  // Capturing the timestamp (not the whole separator) means split() interleaves it into the
+  // result: [block0, ts1, block1, ts2, block2, …] — blocks even, timestamps odd.
+  const parts = raw.split(/\n*── Update @ ([^\n]*?)\s*──\n/g);
+  const out: TimedReasoningBlock[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const text = (parts[i] || '').trim();
+    if (!text) continue;
+    const at = i === 0 ? createdAt : ((parts[i - 1] || '').trim() || createdAt);
+    // parseReasoningBlocks on a separator-free chunk always yields exactly one entry; the fallback
+    // mirrors its own "unlabelled text is still reasoning" rule rather than dropping the block.
+    const parsed = parseReasoningBlocks(text)[0] || ({ what_changed: text, why: '', goal: '' } as ReasoningObject);
+    out.push({ text, at, parsed });
+  }
+  return out;
+}
+
 export class DevMindDatabase {
   private db: Database.Database;
   private dbPath: string;
@@ -1297,6 +1344,62 @@ export class DevMindDatabase {
     `);
     const rows = stmt.all(resolvedId, limit, offset) as any[];
     return { entries: rows.map(row => this.populateHistoryFromDisk(row)), total: totalRow.c };
+  }
+
+  /**
+   * Every history row in a time/session window, joined to its node's file path — the SHARED
+   * counterpart to the local activity log, and the backing query for `get_activity_log`'s graph
+   * fallback (see db/activity-graph.ts).
+   *
+   * Deliberately reads SQLite ONLY, never `populateHistoryFromDisk`. Everything the fallback needs
+   * — reasoning (which carries developer + requirement, see formatReasoning), both timestamps,
+   * session_id, and the file path — is already in columns; the disk JSON adds only `code_snapshot`
+   * and `edits`, neither of which an activity listing reports. That matters because this scans
+   * ROWS, not one node's history: routing it through the per-row file read would turn a single
+   * indexed query into one synchronous readFileSync per revision in the window.
+   *
+   * The date bounds test the row's [created_at, updated_at] span against the window rather than a
+   * single point. One row accumulates blocks for up to an hour past `created_at` (the merge rule),
+   * so `created_at >= since` would silently drop a row whose in-window blocks were appended to an
+   * out-of-window row. This over-selects instead, and the caller filters per block, where the real
+   * timestamps live.
+   *
+   * `file_path` is null when the node is gone (history outlives its node — a hard delete leaves
+   * rows behind). Nulls are the caller's to skip; dropping them here would silently shrink the
+   * edit counts a fallback entry reports.
+   */
+  queryHistoryForActivity(opts: {
+    sessionId?: string;
+    since?: string;
+    until?: string;
+    /** Hard cap on rows scanned, newest-updated first. Bounds a full-table scan on a mature repo;
+     * the caller reports when it bites rather than passing off a truncated log as complete. */
+    limit?: number;
+  } = {}): { id: string; node_id: string; session_id: string; created_at: string; updated_at: string; reasoning: string; file_path: string | null }[] {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (opts.sessionId) {
+      where.push('h.session_id = ?');
+      params.push(opts.sessionId);
+    }
+    if (opts.since) {
+      where.push('h.updated_at >= ?');
+      params.push(opts.since);
+    }
+    if (opts.until) {
+      where.push('h.created_at <= ?');
+      params.push(opts.until);
+    }
+    const sql = `
+      SELECT h.id, h.node_id, h.session_id, h.created_at, h.updated_at, h.reasoning, n.file_path
+      FROM history h
+      LEFT JOIN nodes n ON n.id = h.node_id
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY h.updated_at DESC
+      LIMIT ?
+    `;
+    params.push(opts.limit ?? 5000);
+    return this.db.prepare(sql).all(...params) as any[];
   }
 
   /** Distinct source node ids of edges pointing INTO this node (its "used-by" callers). */

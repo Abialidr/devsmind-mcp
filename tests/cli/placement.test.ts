@@ -557,6 +557,44 @@ describe('TARGETS registry integrity', () => {
       expect(t.memory.scopes?.length).toBeGreaterThan(0);
     }
   });
+
+  /**
+   * Antigravity (IDE + CLI) and Codex all discover `.agents/skills/devsmind/SKILL.md`. Writes
+   * there are `standalone` — whole-file — so if their wrappers ever diverge, seeding for one tool
+   * silently rewrites the file the others read, and the last command run wins. Identical bytes are
+   * what make that collision harmless.
+   */
+  it('every target sharing the .agents/skills path writes identical bytes', () => {
+    const sharing = TARGETS.filter(t =>
+      t.memory.scopes?.some(s => resolveOsPath(s.dir).includes('.agents/skills')));
+    expect(sharing.map(t => t.id).sort()).toEqual(['antigravity', 'antigravity-cli', 'codex']);
+
+    const rendered = sharing.map(t => {
+      const scope = t.memory.scopes!.find(s => resolveOsPath(s.dir).includes('.agents/skills'))!;
+      expect(scope.file).toBe('SKILL.md');
+      expect(scope.format).toBe('skill-md');
+      return t.memory.wrap!('BODY');
+    });
+    expect(new Set(rendered).size).toBe(1);
+    expect(rendered[0]).toContain('name: devsmind');
+  });
+
+  /**
+   * Codex's `~/.codex/memories/` is generated state its own docs warn against hand-editing, and a
+   * background job rewrites it. Supporting Codex means writing a SKILL.md, never that directory —
+   * this fails if any future scope drifts into it.
+   */
+  it('no memory scope ever targets a tool-generated store', () => {
+    const forbidden = ['.codex/memories', '.qwen/projects', 'codeium/windsurf/memories'];
+    for (const t of TARGETS) {
+      for (const scope of t.memory.scopes ?? []) {
+        const dir = resolveOsPath(scope.dir).replace(/\\/g, '/');
+        for (const bad of forbidden) {
+          expect(`${t.id}:${dir}`).not.toContain(bad);
+        }
+      }
+    }
+  });
 });
 
 // ── Integration: the real placement path, for every real target ──────────────

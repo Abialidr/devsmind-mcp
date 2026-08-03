@@ -48,6 +48,19 @@ describe('devsmind memory --print', () => {
     expect(out).toContain('Tool playbook');
   });
 
+  it('seeds Codex through the same skill file as Antigravity', async () => {
+    await handleMemory({ print: true, tool: 'codex' });
+    const antigravity = out;
+    out = '';
+    await handleMemory({ print: true, tool: 'antigravity' });
+
+    expect(antigravity).toContain('.agents/skills/devsmind');
+    expect(antigravity).toContain('SKILL.md');
+    // Same path, same bytes — otherwise seeding one tool rewrites the other's file.
+    expect(antigravity.split('SKILL.md').pop()).toBe(out.split('SKILL.md').pop());
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
   it('defaults to a shape and says which, rather than picking one silently', async () => {
     await handleMemory({ print: true });
 

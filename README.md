@@ -177,8 +177,9 @@ devsmind start     # 7. start the server (skip if stdio)
 |---|---|
 | Claude Code (Auto Memory) | ✅ |
 | Google Antigravity (Skills / `/learn`) | ✅ |
+| OpenAI Codex CLI (Skills) | ✅ — the same `.agents/skills/devsmind/SKILL.md` Antigravity reads, so seeding once covers both. Codex's own `~/.codex/memories/` is generated state and is never touched |
 | Qwen Code CLI | Already covered by `devsmind rule` |
-| Codex CLI, Cursor, Windsurf, Kiro, VS Code Copilot | ❌ — prints why + what to do instead |
+| Cursor, Windsurf, Kiro, VS Code Copilot | ❌ — prints why + what to do instead |
 
 > ⚠️ **The rule is a nudge, not a guarantee.** On long sessions agents drift back to grep and raw file reads, and quietly stop calling `search_nodes` / `commit_changes`.
 >
@@ -292,7 +293,7 @@ DevsMind exposes 35 tools to the agent. The ones you'll see referenced most:
 |---|---|
 | **Session (call before your first write)** | `start_session` — mints a `session_id`. Every **write** requires it; read-only tools don't, so an agent can search from its very first call. Every response echoes the id back so it survives a long or compacted conversation |
 | **Search/discovery** | `search_nodes` — one call covering the graph **and** a real grep of every repo; takes a natural-language `query` and/or `pattern` (a real regex, used exactly as you'd give grep). `list_nodes` enumerates a component or directory, paged |
-| **Read code/history** | `get_node_code` — the one node-read call. Code, metadata, imports, named callers **and** callees, a file outline, and recent reasoning, all included by default; `graph_depth`/`graph_direction` walk further for a blast radius or a whole call flow, and `history:"full"` returns every revision with diffs. `get_activity_log` answers "what changed recently / which files did we touch" |
+| **Read code/history** | `get_node_code` — the one node-read call. Code, metadata, imports, named callers **and** callees, a file outline, and recent reasoning, all included by default; `graph_depth`/`graph_direction` walk further for a blast radius or a whole call flow, and `history:"full"` returns every revision with diffs. `get_activity_log` answers "what changed recently / which files did we touch" — from your local log, falling back to the committed history everyone shares, so it still answers on a fresh clone (`source:"both"` to see teammates' work alongside your own) |
 | **Write (the important one)** | `edit_node` — edits any file, traces what changed, and **returns the red/green diff of what it changed** so you see it in the session — all in one call. `stage_change` covers what it can't (non-TS/JS languages). `commit_changes` flushes everything staged and takes the one `reasoning` (why/goal) that gets recorded against all of it. |
 | **Maintenance** | `analyze_graph` (zero-token health check), `recheck_graph`, `rename_node`/`deprecate_node`, and the feedback loop: `read_graph_feedback` → fix → `mark_graph_feedback_processed` |
 | **Multi-day workflows** | `workflow_create`, `workflow_bind` (per session, local to you), `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_sync`, `workflow_archive`, `workflow_import` |

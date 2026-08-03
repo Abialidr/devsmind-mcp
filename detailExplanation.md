@@ -244,8 +244,8 @@ devsmind memory
 | Google Antigravity (IDE + CLI) | Skills / `/learn` | ✅ — confirmed by Google's own codelab plus a firsthand test that a manually-placed `SKILL.md` is discovered the same as an agent-created one |
 | Claude Code | Auto Memory | ✅ — writes a `devsmind.md` topic file plus a one-line pointer appended into `MEMORY.md` (topic files only load "on demand," so the pointer is what makes it get found) |
 | Qwen Code CLI | `QWEN.md` | Already handled — it's the same file `devsmind rule` writes to |
-| Codex CLI | Memories | ❌ manual guidance only — Codex's own docs warn these files are "generated state" a background job regenerates; a manual write would likely get silently overwritten |
-| Qwen Code CLI | background auto-memory dir | ❌ manual guidance only — same undocumented, auto-generated pattern as Codex, no source confirms a manual file survives |
+| Codex CLI | Skills | ✅ — writes the same `.agents/skills/devsmind/SKILL.md` Antigravity reads, so seeding once covers both. Codex's *other* store, `~/.codex/memories/`, stays untouched: its own docs warn those files are "generated state" a background job regenerates, so a manual write would just get overwritten |
+| Qwen Code CLI | background auto-memory dir | ❌ manual guidance only — same undocumented, auto-generated pattern as Codex's `memories/`, no source confirms a manual file survives |
 | Cursor | Memories | ❌ manual guidance only — internal database, requires the agent to propose and you to approve, nothing to write a file to |
 | Windsurf | Cascade Memories | ❌ manual guidance only — no source confirms whether a manually-placed file is ever discovered |
 | Kiro | Knowledge / PR-comment learning | ❌ manual guidance only — not file-based (JSON+embeddings or AWS-internal, opaque) |
@@ -795,6 +795,50 @@ Nor is `local/` — your requests, your revert backups, your feedback. That stay
 ---
 
 ## Changelog
+
+### 3.0.1 — `get_activity_log` answers on a fresh clone, and Codex gets seeded like Antigravity
+
+A patch release: nothing removed, nothing renamed, no schema anyone was relying on changed shape. Re-running `devsmind memory` is worth it if you use Codex, because it now has somewhere to write.
+
+#### `get_activity_log` was answering from one store, and it was the wrong one for everybody else
+
+The local activity log is gitignored on purpose. It holds the verbatim text of what you asked for and a full before/after backup of every edit — neither belongs in a shared repo, and the gitignore is the feature, not an oversight.
+
+What nobody traced was the consequence for the person *reading*. `get_activity_log` read that store and only that store. So a teammate who cloned the repo, or you on a second machine, asked "what changed here lately?" and got back `{ total_messages: 0, entries: [] }` — while `.devmind/history/` had been recording exactly that information the whole time, committed and pulled and sitting right there. Empty is the worst answer it could have given. It doesn't read as "I looked in the wrong place"; it reads as "nothing happened."
+
+The fix is a `source` param that **defaults to `auto`**: read local, and fall through to committed history only when local produced nothing. A fresh clone gets a real answer instead of silence.
+
+`auto` alone doesn't finish the job, though, and it's worth being explicit about why `both` also exists. The moment you have any local activity of your own, `auto` stops at the first non-empty store — so it never consults shared history, and you still never see a teammate's work. `both` is the honest team-wide view: your own entries at full fidelity, plus shared history for every commit that didn't happen on this machine. `local` and `graph` force one store when you want to be sure which you're looking at.
+
+**Reconstructing a commit from per-node history.** History is stored one row per node, but a commit is not a node — so the entries have to be regrouped. `commitStagedChanges` hands a single `reasoning` object to every node in the batch, so all of them come back carrying a byte-identical formatted block. That text is the commit's identity.
+
+`session_id` looks like the obvious discriminator and is deliberately *not* part of the key. The 1-hour merge rule writes a later block into an existing history row and keeps that row's **original** session id. So within one commit, a node whose row already existed reports the session that created it, while a node getting a fresh row reports the current one — key on session and you split one real commit into two. That is a strictly worse error than the one it would prevent.
+
+What actually separates two commits that share reasoning text is time. Blocks from a single commit are stamped inside a synchronous per-node loop, milliseconds apart; a genuine repeat of the same text is a separate editing act minutes or hours later. So grouping cuts on the gap between **consecutive** blocks, never on total span — which means a slow many-node commit stays intact however long it ran end to end. The irreducible ambiguity is two sessions committing identical reasoning within the same minute; the shared record genuinely cannot tell those apart, and nothing here pretends otherwise.
+
+**Saying what the shared view can't tell you.** A graph-backed response carries a `caveats` array. `status` is always `applied`, because revert state is a local-log concept and claiming anything else would be invention. `request` is the reasoning's `Requirement` field rather than what you actually typed, because the verbatim ask is never committed. Whole-file edits that traced to no graph node are absent. These travel *with* the data because callers act on it — reverting, attributing, scoping a test pass — and a silently thinner entry reads as an authoritative one.
+
+**De-duplication in `both`, and why it takes two signals.** Every commit made on this machine exists in both stores, so the merge has to drop one copy or double-count all of your own work. Session id is the first check. It is not sufficient: because the merge can file a teammate's block under one of *your* session ids, session alone would classify their work as yours and hide it — which is precisely the failure `both` exists to fix. The `Developer` field is written per block and survives the merge intact, so it settles the disagreement. When the two signals conflict, the entry is kept. Showing your own work twice is visible and harmless; dropping someone else's is not.
+
+**A capped result was indistinguishable from a complete one.** `total_messages` was computed after `limit` was applied, so asking for 10 out of 50 matches answered `10` with nothing to indicate more existed. `total_matched` now reports the true pre-`limit` count — the same honesty contract `nodes_total` and `getHistoryPage().total` already keep elsewhere — on both stores.
+
+#### Codex gets seeded automatically, and it turned out to be a smaller change than expected
+
+Codex was marked unsupported for `devsmind memory`, and the reasoning was sound as far as it went: `~/.codex/memories/` is generated state, its own docs warn against hand-editing it, and a background consolidation job rewrites it. Writing there would be undone. That is still true and that directory is still never touched — there's a test that fails if any memory scope ever resolves into it.
+
+The mistake was stopping there. Codex has a second store, and unlike the first it is human-authored by design: skills, discovered by scanning `.agents/skills/` for a `SKILL.md`. That is **the same path Antigravity already writes**. So supporting Codex was less a new integration than pointing a third target at a file that already existed — and anyone who had run `devsmind memory` for Antigravity already had a Codex-discoverable skill sitting in their repo without knowing it.
+
+Antigravity, Antigravity CLI and Codex now share one scope and one frontmatter wrapper. That sharing is load-bearing rather than tidy: these writes are whole-file, so per-tool wrappers would mean seeding for one tool silently rewrote the file the other two read, with the last command run winning. Identical bytes make the collision a no-op instead, and a test asserts all three render the same thing.
+
+No new flags, no new commands. Same picker, same preview, same confirmation — the goal was parity with Antigravity, not a second and larger interface.
+
+One thing worth knowing rather than acting on: a skill loads only when the task matches its description, while `AGENTS.md` is read every turn. `devsmind rule` already targets `AGENTS.md` for Codex, so both halves exist; the command now says to run both.
+
+#### `devsmind memory` stops rewriting files that are already correct
+
+Re-running it walked the whole preview-and-confirm flow to write bytes identical to what was already on disk. It now compares first and reports that it's up to date. That matters more than it sounds now that two tools share one file: seeding Antigravity genuinely does finish the job for Codex, and the command should be able to say so instead of making you confirm a no-op.
+
+It deliberately does not short-circuit on the pointer file. Claude Code's topic files load only on demand, via the index block in `MEMORY.md` — current topic files with a missing index is a broken install, not a finished one, and reporting "already seeded" there would hide the single thing that makes them findable. A corrupted-marker merge is excluded for the same reason: it returns the file unchanged, which would otherwise read as a match and swallow the error.
 
 ### 3.0.0 — Workflows rebuilt around sessions, search that survives one turn, no more `devmind_path`
 

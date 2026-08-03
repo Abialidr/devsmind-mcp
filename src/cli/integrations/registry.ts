@@ -167,9 +167,24 @@ const entryHttpUrl = (t: Transport, ctx: EntryContext) =>
 const cursorMdcWrap = (body: string): string =>
   `---\ndescription: DevsMind — Team AI Brain workspace rule\nalwaysApply: true\n---\n\n${body}\n`;
 
-/** Antigravity Skills format: YAML frontmatter (name + description) + markdown body. */
-const antigravitySkillWrap = (body: string): string =>
+/**
+ * Skill format: YAML frontmatter (name + description) + markdown body.
+ *
+ * Shared by every target that reads `.agents/skills/` — Antigravity (IDE + CLI) and Codex all
+ * discover the SAME `.agents/skills/devsmind/SKILL.md`. One wrap, deliberately: these writes are
+ * whole-file (`standalone`), so per-tool frontmatter would mean whichever command ran last
+ * silently rewrote the others' file. Identical bytes make that collision a no-op instead.
+ */
+const skillMdWrap = (body: string): string =>
   `---\nname: devsmind\ndescription: DevsMind team code-graph MCP server — when and how to use it\n---\n\n${body}\n`;
+
+/** The one skill location all `.agents/skills/` readers share. See {@link skillMdWrap}. */
+const AGENTS_SKILL_SCOPE: MemoryScope = {
+  scope: 'project',
+  dir: '.agents/skills/devsmind',
+  file: 'SKILL.md',
+  format: 'skill-md',
+};
 
 // VS Code user-profile mcp.json lives in the platform user-data dir.
 const VSCODE_GLOBAL: OsPath = {
@@ -294,11 +309,9 @@ export const TARGETS: IdeTarget[] = [
     memory: {
       supported: true,
       featureName: 'Skills (/learn)',
-      scopes: [
-        { scope: 'project', dir: '.agents/skills/devsmind', file: 'SKILL.md', format: 'skill-md' },
-      ],
-      wrap: antigravitySkillWrap,
-      note: 'Antigravity discovers skills by scanning .agents/skills/ for any SKILL.md — same mechanism whether it was created via /learn or placed here directly.',
+      scopes: [AGENTS_SKILL_SCOPE],
+      wrap: skillMdWrap,
+      note: 'Antigravity discovers skills by scanning .agents/skills/ for any SKILL.md — same mechanism whether it was created via /learn or placed here directly. Codex reads this same file.',
     },
   },
 
@@ -352,10 +365,8 @@ export const TARGETS: IdeTarget[] = [
     memory: {
       supported: true,
       featureName: 'Skills (/learn)',
-      scopes: [
-        { scope: 'project', dir: '.agents/skills/devsmind', file: 'SKILL.md', format: 'skill-md' },
-      ],
-      wrap: antigravitySkillWrap,
+      scopes: [AGENTS_SKILL_SCOPE],
+      wrap: skillMdWrap,
       note: 'Same Skills mechanism as the Antigravity IDE — the CLI\'s /skills command browses this same .agents/skills/ directory.',
     },
   },
@@ -381,9 +392,16 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: false,
-      featureName: 'Memories',
-      note: 'Codex\'s own docs explicitly warn: "these files are treated as generated state... don\'t rely on editing them by hand." A background consolidation job periodically regenerates ~/.codex/memories/MEMORY.md and memory_summary.md, so a manual write would likely just get overwritten. Nothing is written here — let Codex build this on its own over real sessions.',
+      supported: true,
+      featureName: 'Skills',
+      scopes: [AGENTS_SKILL_SCOPE],
+      wrap: skillMdWrap,
+      // Codex has two stores and only one of them is ours to write. `~/.codex/memories/` is
+      // generated state its own docs warn against hand-editing ("don't rely on editing them by
+      // hand") and a background job regenerates — untouched, here and everywhere else. Skills are
+      // the human-authored surface, and Codex scans the same `.agents/skills/` directory
+      // Antigravity does, so this is one file serving both tools rather than a new integration.
+      note: 'Codex discovers skills by scanning .agents/skills/ for any SKILL.md — the same file Antigravity reads, so seeding once covers both. Codex\'s own ~/.codex/memories/ is generated state and is never touched. Pair this with `devsmind rule` (AGENTS.md): a skill loads only when the task matches its description, while AGENTS.md is read every turn.',
     },
   },
   {

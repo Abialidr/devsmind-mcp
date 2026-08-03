@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { resolveDevmindDir } from '../../utils/config';
 import { IdeTarget, MemoryScope, TARGETS, getTarget, resolveOsPath, resolveScopeFile } from './registry';
@@ -84,6 +85,29 @@ export async function handleMemory(opts: { path?: string; print?: boolean; tool?
       return { doc, filePath, ...mergeRuleFile(filePath, doc.content, 'standalone') };
     });
 
+    const indexLines = mem.pointerFile && docs.length > 1 ? MEMORY_TOPICS.map(renderIndexLine).join('\n') : null;
+    const pointerPath = mem.pointerFile ? path.join(targetDir, mem.pointerFile.file) : null;
+    const pointerMerged = mem.pointerFile && pointerPath
+      ? mergeRuleFile(pointerPath, indexLines ?? singlePointerLine(docs[0].file), mem.pointerFile.style)
+      : null;
+
+    // Nothing to do — every file we'd write already holds exactly this content. Worth checking
+    // because these paths are shared: Antigravity and Codex read the SAME .agents/skills/ file, so
+    // seeding for one already covers the other, and re-running should say so rather than walk
+    // through a preview and a confirm to rewrite identical bytes.
+    //
+    // The pointer file counts. Claude Code's topic files load only on demand via the index in
+    // MEMORY.md, so up-to-date topics with a missing index is a broken install, not a done one —
+    // reporting "already seeded" there would hide the one thing that makes them findable. An error
+    // from the merge (corrupted markers) is likewise never "up to date": it returns the file
+    // unchanged, which would otherwise read as a match and swallow the error.
+    const pointerCurrent = !pointerMerged || (!pointerMerged.error && fileHolds(pointerPath!, pointerMerged.content));
+    if (pointerCurrent && merged.every(m => fileHolds(m.filePath, m.content))) {
+      console.log(`\n✅ Already seeded — ${target.label}'s ${mem.featureName} is up to date at ${targetDir.replace(/\\/g, '/')}`);
+      console.log(`   Nothing written. Re-run after a DevsMind upgrade to pick up contract changes.`);
+      return;
+    }
+
     console.log(`\n📝 Target: ${targetDir.replace(/\\/g, '/')}`);
     if (merged.length === 1) {
       console.log(`   ${merged[0].doc.file}  (${merged[0].existed ? 'overwrite our own file' : 'create new'})`);
@@ -98,7 +122,6 @@ export async function handleMemory(opts: { path?: string; print?: boolean; tool?
       }
     }
 
-    const indexLines = mem.pointerFile && docs.length > 1 ? MEMORY_TOPICS.map(renderIndexLine).join('\n') : null;
     if (indexLines && mem.pointerFile) {
       console.log(`\n   …plus an index block in ${mem.pointerFile.file} (that file is what loads every session — without it these are never found):\n`);
       console.log(indent(indexLines));
@@ -115,16 +138,13 @@ export async function handleMemory(opts: { path?: string; print?: boolean; tool?
       `${merged.length === 1 ? merged[0].filePath.replace(/\\/g, '/') : `${merged.length} files in ${targetDir.replace(/\\/g, '/')}`}`
     );
 
-    if (mem.pointerFile) {
-      const pointerPath = path.join(targetDir, mem.pointerFile.file);
-      const body = indexLines ?? singlePointerLine(docs[0].file);
+    if (mem.pointerFile && pointerMerged && pointerPath) {
       const pointerConfirm = await confirmPrompt(
         `\nAlso write the ${indexLines ? 'index block' : 'pointer line'} into ${mem.pointerFile.file}, so this gets found ` +
         `(it only loads "on demand" otherwise)?`,
         true
       );
       if (pointerConfirm) {
-        const pointerMerged = mergeRuleFile(pointerPath, body, mem.pointerFile.style);
         if (pointerMerged.error) {
           console.error(`❌ ${pointerMerged.error}`);
         } else {
@@ -262,6 +282,16 @@ function printManual(
     console.log(`${divider}\n`);
     console.log(indent(docs.length > 1 ? MEMORY_TOPICS.map(renderIndexLine).join('\n') : singlePointerLine(docs[0].file)));
     console.log('');
+  }
+}
+
+/** True when the file exists and already holds exactly `content`. A missing or unreadable file is
+ * "not current", never an error — the caller's next step is to write it anyway. */
+function fileHolds(filePath: string, content: string): boolean {
+  try {
+    return fs.readFileSync(filePath, 'utf-8') === content;
+  } catch {
+    return false;
   }
 }
 

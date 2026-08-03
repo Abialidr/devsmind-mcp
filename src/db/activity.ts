@@ -275,10 +275,27 @@ export function listMessages(devmindPath: string): ActivityMessage[] {
   return messages;
 }
 
+/**
+ * Where one activity entry was reconstructed from.
+ *
+ * `'local'` is this machine's message store — verbatim request text, per-edit before/after, and a
+ * live revert status. `'graph'` is the committed history every teammate shares, which carries less
+ * (see db/activity-graph.ts) but is the ONLY thing a fresh clone has. Reported per entry so a
+ * merged listing never leaves the caller guessing which fields are trustworthy.
+ */
+export type ActivitySource = 'local' | 'graph';
+
 /** One message's changes, shaped for `get_activity_log` — the per-commit "what changed" view. */
 export interface ActivityLogEntry {
   id: string;
+  /** Always `'local'` from this file; graph-derived entries are built in db/activity-graph.ts. */
+  source: ActivitySource;
   session_id: string;
+  /** Graph-derived entries only. Committed history stores the session that CREATED each row, not
+   * the one that wrote each block (the 1-hour merge reuses the original), so one reconstructed
+   * commit can legitimately cite more than one — `session_id` is just the first of these. Absent
+   * on local entries, where a message belongs to exactly one session. */
+  session_ids?: string[];
   developer: string | null;
   created_at: string;
   updated_at: string;
@@ -295,7 +312,12 @@ export interface ActivityLogEntry {
 }
 
 export interface ActivityLogResult {
+  /** How many entries this response actually carries — i.e. after `limit` was applied. */
   total_messages: number;
+  /** How many entries MATCHED the filters, before `limit` truncated them. Without this,
+   * `total_messages` alone makes a capped result indistinguishable from a complete one — the same
+   * honesty contract `nodes_total`/`getHistoryPage().total` keep elsewhere. */
+  total_matched: number;
   /** Every distinct file touched across ALL returned entries, flattened — "give me every file
    * that changed" in one list, e.g. to scope a test-writing pass, without walking `entries`
    * yourself. */
@@ -374,12 +396,13 @@ export function queryActivityLog(
       }
     }
     return {
-      id: m.id, session_id: m.session_id, developer: m.developer, created_at: m.created_at, updated_at: m.updated_at,
+      id: m.id, source: 'local' as const, session_id: m.session_id, developer: m.developer,
+      created_at: m.created_at, updated_at: m.updated_at,
       request: m.request, summary: m.summary, status: m.status, files, node_ids: nodeIds, edit_count: m.edits.length
     };
   });
 
-  return { total_messages: entries.length, all_files: Array.from(allFilesSet), entries };
+  return { total_messages: entries.length, total_matched: messages.length, all_files: Array.from(allFilesSet), entries };
 }
 
 /**

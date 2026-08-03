@@ -572,21 +572,25 @@ flowchart TD
 
 ## L. Activity / Session Tracking
 
-**What it does:** Local, per-developer, never-pushed timeline of sessions → messages → edits.
+**What it does:** Local, per-developer, never-pushed timeline of sessions → messages → edits — plus a shared-history fallback so the same questions still answer on a machine that has no local log.
 
 **MCP tools:** `start_session`, `get_activity_log`
 **CLI:** `activity`, `activity --since <days>`
 **Web:** `/api/activity` (Chat view)
-**Files:** `db/activity.ts`
+**Files:** `db/activity.ts`, `db/activity-graph.ts`
 
 **Detail:** All JSON under gitignored `local/` (self-heals `.gitignore` on first write — see area A), atomic writes, no SQLite. `start_session` mints a UUID; **every WRITE requires `session_id`** — reads do **not**, as of 3.0.0. Searching and reading mutate nothing, so gating them bought nothing but friction: the first thing an agent does in a conversation is usually a search, and it used to error. `get_activity_log`'s own optional `session_id` **filter** is also no longer force-promoted to required by the blanket injection it used to pass through. `recordMessage` (called by commit) records a commit's edits into a message, and also stamps `workflow_sync` bookkeeping so area M's sync won't re-propose work already recorded. `queryActivityLog` filters by developer/session/time-window/requirement-substring. `deriveStatus` = applied/partial/reverted (single source of truth so revert can't drift).
+
+**The fallback (`db/activity-graph.ts`):** being gitignored is what makes the local log safe to hold verbatim requests and full before/after backups — and also what made it empty for a teammate on a fresh clone, who got nothing back even though `history/` had been recording all along. `get_activity_log`'s `source` param resolves that: `auto` (default) reads local and falls through to committed history only when local is empty; `both` merges the two for a team-wide view; `local`/`graph` force one. Graph entries are reconstructed by grouping history blocks on **reasoning text + a 60s cluster gap** — `commitStagedChanges` writes one identical reasoning block per node in a commit, while `session_id` is unusable as a key because the 1-hour merge reuses the row-creating session's id. The view is lossier by construction (no revert status, `request` degrades to the reasoning's Requirement, untraced whole-file edits absent), so every graph-backed response carries a `caveats` array. `both` de-dupes your own commits — which exist in both stores — on local session id **AND** developer, in that order of evidence: session alone would hide a teammate whose block the merge filed under your session, and showing a duplicate beats hiding someone's work.
 
 ```mermaid
 flowchart TD
   SS[start_session → UUID] --> REQ[Required on WRITES only - reads work from the first call]
   CM[commit_changes] --> RM[recordMessage → edits into message]
+  CM --> HIST[(history/ JSON - committed and pulled)]
   RM --> LOG[(local/ activity JSON - never pushed)]
-  GA[get_activity_log] -->|filter dev/session/time/requirement| LOG
+  GA[get_activity_log] -->|source: auto/local/both| LOG
+  GA -->|auto when local empty; graph; both| HIST
   CLI[devsmind activity --since N] --> LOG
   WEB[Web Chat view /api/activity] --> LOG
 ```
@@ -599,6 +603,9 @@ flowchart TD
 - [ ] `get_activity_log` filters by developer, sinceHours/since/until, requirement substring.
 - [ ] `devsmind activity` groups by Today/Yesterday/date; `--since` filters.
 - [ ] Activity data stays in `local/` and is never git-pushed.
+- [ ] On a fresh clone with an empty `local/`, `get_activity_log` still answers — `source:"graph"`, `fell_back:true`, `caveats` present.
+- [ ] `source:"both"` shows a teammate's commits alongside yours, with your own listed once, not twice.
+- [ ] One commit touching several nodes comes back as ONE graph entry; two commits sharing reasoning text hours apart come back as two.
 - [ ] Status (applied/partial/reverted) stays consistent after web reverts.
 
 ---

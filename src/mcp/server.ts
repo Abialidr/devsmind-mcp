@@ -19,6 +19,7 @@ import {
   readSessions, listMessages, readMessage, createSession, queryActivityLog,
   bindSessionWorkflow, readSessionWorkflow, lastBoundWorkflowId, saveMessage, ActivityMessage
 } from '../db/activity';
+import { resolveActivityLog, ActivitySourceMode } from '../db/activity-graph';
 import { revertMessage, unrevertMessage, revertMessageFile, unrevertMessageFile, revertMessageEdit, unrevertMessageEdit } from '../db/message-revert';
 import { fileDiffForMessage } from '../db/file-diff';
 import {
@@ -876,18 +877,23 @@ export function createMcpServer(): Server {
         {
           name: 'get_activity_log',
           description:
-            'The one tool for "what changed" — replaces get_recent_changes/get_developer_activity/get_changes_by_requirement (all three removed; this covers everything they did, plus what none of them did: the actual FILES touched). Reads the local activity log (one entry per commit_changes call), filterable by developer, a time window, one session, and/or requirement/ticket text — all filters compose (AND together). Each entry reports `files` (every file that commit touched — this is what "show me all the files you changed" needs, e.g. before writing tests against recent work) and `node_ids`, plus `developer`/`created_at`/`request`/`summary`/`status`. The response also includes `all_files` — every distinct file across ALL matched entries, flattened into one list. Local and gitignored: this only ever reflects what happened on THIS machine, never the shared graph.',
+            'The one tool for "what changed" — replaces get_recent_changes/get_developer_activity/get_changes_by_requirement (all three removed; this covers everything they did, plus what none of them did: the actual FILES touched). One entry per commit_changes call, filterable by developer, a time window, one session, and/or requirement/ticket text — all filters compose (AND together). Each entry reports `files` (every file that commit touched — this is what "show me all the files you changed" needs, e.g. before writing tests against recent work), `node_ids`, `developer`/`created_at`/`request`/`summary`/`status`, and `source`. The response also includes `all_files` (every distinct file across the returned entries, flattened) and `total_matched` (how many matched BEFORE `limit` — compare with `total_messages` to detect truncation). TWO STORES: the local activity log is rich but gitignored, so it is empty on a teammate\'s clone or your second machine; committed graph history is shared by everyone but lossier. `source` picks between them and DEFAULTS TO AUTO — local first, shared history only if local has nothing, so a fresh clone still gets an answer. Use source:"both" for a team-wide view (your own local entries plus every session that did not run on this machine — no double-counting). Graph-backed responses carry a `caveats` array; read it before acting on them.',
           inputSchema: {
             type: 'object',
             properties: {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              developer: { type: 'string', description: 'Case-insensitive substring match on developer name/email (e.g. "AbialiDr"). Omit for all developers.' },
+              source: {
+                type: 'string',
+                enum: ['auto', 'local', 'graph', 'both'],
+                description: 'Which store to read. "auto" (default): local activity log, falling back to shared graph history only when local returns nothing — the right choice on a fresh clone. "both": local PLUS shared history for every session that did not happen on this machine — the only way to see TEAMMATES\' work when you also have local activity of your own, since auto stops at the first non-empty store. "local": this machine only (full fidelity — verbatim request text, revert status, whole-file edits). "graph": committed history only (shared, but status is always "applied", `request` degrades to the reasoning\'s Requirement field, and untraced whole-file edits are absent).'
+              },
+              developer: { type: 'string', description: 'Case-insensitive substring match on developer name/email (e.g. "AbialiDr"). Omit for all developers. On graph-backed entries this reads the Developer field recorded in the commit reasoning, and is null for commits made before a DEVELOPER_NAME was configured.' },
               session_id: { type: 'string', description: 'Restrict to one session id (from start_session).' },
               since_hours: { type: 'number', description: 'Lookback window in hours — e.g. 48 for "the past 2 days". Ignored if `since` is also given.' },
               since: { type: 'string', description: 'ISO timestamp lower bound (inclusive). Takes priority over since_hours.' },
               until: { type: 'string', description: 'ISO timestamp upper bound (inclusive).' },
               requirement_contains: { type: 'string', description: 'Case-insensitive substring match against the request text or summary — for finding changes tied to a ticket/requirement.' },
-              limit: { type: 'number', description: 'Maximum entries to return, most recent first (optional, default 100).' }
+              limit: { type: 'number', description: 'Maximum entries to return, most recent first (optional, default 100). Check `total_matched` to see how many were dropped.' }
             },
             required: ['devmind_path']
           }
@@ -2575,7 +2581,12 @@ export function createMcpServer(): Server {
 
         case 'get_activity_log': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const result = queryActivityLog(devmindPath, {
+          const db = getDatabase(devmindPath);
+          const rawSource = args.source ? String(args.source) : 'auto';
+          if (!['auto', 'local', 'graph', 'both'].includes(rawSource)) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: `get_activity_log: source must be one of auto|local|graph|both, got "${rawSource}"` }) }] };
+          }
+          const result = resolveActivityLog(db, devmindPath, rawSource as ActivitySourceMode, {
             developer: args.developer ? String(args.developer) : undefined,
             sessionId: args.session_id ? String(args.session_id) : undefined,
             sinceHours: args.since_hours !== undefined ? Number(args.since_hours) : undefined,
