@@ -60,6 +60,17 @@ describe('DevMindDatabase.searchNodes — remaining branches', () => {
     }
   });
 
+  it('says "none configured" in the rejection when the brain has no repos at all', async () => {
+    // With zero repos the roots list is empty, so the message would otherwise read
+    // "(...)" with nothing inside it and give the caller no idea why the scope failed.
+    const fx = makeFixture({ configOverrides: { repos: [] }, skipDefaultFiles: true });
+    try {
+      await expect(fx.db.searchNodes('greet', { path: 'C:\\anywhere' })).rejects.toThrow(/none configured/);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   it('DEVSMIND_PERF_DEBUG=1 logs the [perf] breakdown line on the full ranked path', async () => {
     const fx = makeFixture();
     const prevDebug = process.env.DEVSMIND_PERF_DEBUG;

@@ -321,7 +321,7 @@ describe('revert.ts — revertLastEdit', () => {
   });
 
   it('erases the whole history row when it has never had a describable edit (before-less entry)', async () => {
-    // stage_change-style entry: code_before undefined -> newEdit is null -> entry.edits is empty.
+    // Legacy update_history / index-snapshot style entry: code_before undefined -> newEdit is null -> entry.edits is empty.
     fx = makeFixture();
     const summary = await stageAndCommit(fx, [
       {

@@ -3,10 +3,12 @@ import * as path from 'path';
 import { DevMindConfig, loadProjectContext, resolveRepoPath } from './config';
 
 /**
- * Extensions we consider indexable source files. Also the source of truth for
- * what `stage_change` will accept — DevsMind models functions/classes/logic
- * entities, not stylesheets, markup, config, or other non-code assets, so
- * anything outside this set is out of scope by design, not an oversight.
+ * Extensions we consider indexable source files — this is the FILE-SCAN set (what `walkDir`
+ * even looks at), broader than what can actually be parsed into graph nodes: `edit_node` and the
+ * in-chat indexing tools only trace structure from `AST_PARSEABLE_EXTENSIONS` (see ast.ts) —
+ * currently TS/JS. Everything else here still gets a whole-file activity-log entry on edit, just
+ * no graph node. Stylesheets, markup, config, and other non-code assets are outside this set
+ * entirely, by design, not an oversight.
  */
 export const INDEXABLE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',

@@ -82,7 +82,7 @@ describe('DevMindDatabase — history machinery', () => {
         fx.db.upsertNode({ id: nodeId, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
 
         // undefined -> nothing to diff against, no edit recorded at all.
-        fx.db.updateHistory({ node_id: nodeId, code_snapshot: 'v1', code_before: undefined, reasoning: 'no diff (stage_change)' });
+        fx.db.updateHistory({ node_id: nodeId, code_snapshot: 'v1', code_before: undefined, reasoning: 'no diff (legacy update_history)' });
         let full = fx.db.getFullHistory(nodeId)[0];
         expect(full.edits).toEqual([]);
 
@@ -280,7 +280,7 @@ describe('DevMindDatabase — history machinery', () => {
     it('refuses when the entry has no recorded edits', async () => {
       const fx = makeFixture();
       try {
-        // code_before undefined -> no edit recorded (stage_change style entry).
+        // code_before undefined -> no edit recorded (legacy update_history / index-snapshot style entry).
         const summary = await stageAndCommit(fx, [
           { node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: FOO_SNIPPET, name: 'greet', type: 'function' }
         ]);

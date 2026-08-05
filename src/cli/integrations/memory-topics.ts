@@ -3,17 +3,19 @@ import { DEVSMIND_INSTRUCTIONS } from '../../mcp/server';
 /**
  * The DevsMind workflow contract, split into one fact per topic.
  *
- * Why split at all: agent-memory stores differ in how they load. Claude Code's
- * keeps one file per fact and pulls a file in ON DEMAND, ranked by its
- * `description` frontmatter — so an editing task should surface the `edit_node`
- * rule without also dragging in indexing and CLI trivia. A single monolithic
- * file defeats that: it either loads whole or not at all. Antigravity's Skills
- * are the opposite — one SKILL.md per skill directory, discovered by scanning —
- * so there the same topics get collapsed back into one document.
+ * `devsmind memory` no longer writes any of this to a file — see `renderMemoryPrompt` at the
+ * bottom of this file for what it prints instead, and its own doc comment for why. Research
+ * across every tool DevsMind integrates with turned up the same finding independently, stated in
+ * several of those tools' own docs: background/automatic memory is discretionary by design, and
+ * an explicit in-chat "remember this" is the one thing that reliably lands. Writing a file never
+ * crosses that trigger at all — several tools (Cursor, Windsurf, Kiro) don't even have a safe
+ * file to write to in the first place.
  *
- * Hence: ONE source of truth here, two renderers below. Add a fact once and both
- * shapes pick it up. Keep bodies short and self-contained — a topic that only
- * makes sense next to its neighbours belongs merged into one of them instead.
+ * This catalog is kept as the canonical, structured breakdown of the contract — reference
+ * material and a record of what each fact is FOR, in case a genuinely safe per-tool write target
+ * ever shows up again. `renderMemoryPrompt` deliberately does not flatten all of it into the
+ * paste-able prompt: a short, human-readable ask beats a wall of reference docs for something
+ * meant to be read and acted on by another AI in one sitting.
  */
 export interface MemoryTopic {
   /** Slug — also the filename (`<name>.md`) in a file-per-fact store. */
@@ -50,7 +52,7 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
       '',
       "**Why:** it traces where the text landed to the actual function/class changed, stages it, and answers with that node's callers — a plain edit tool records nothing. Writes that land outside any function (markup, config, an import line) get no graph node; that is expected, not a failure, and the whole-file change is still staged for the local activity log.",
       '',
-      "**How to apply:** default to `edit_node` for every write. `stage_change` is only for languages with no AST support (`.py`, `.go`, `.java`, …) — `edit_node` still writes those files and its response tells you when it couldn't trace one.",
+      "**How to apply:** `edit_node` is the write path for every file — there is no second write tool to reach for instead.",
     ].join('\n'),
   },
   {
@@ -60,7 +62,7 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
     hook: 'session_id is required on every DevsMind WRITE; reads (search_nodes, get_node_code, get_activity_log, etc.) do not need one.',
     type: 'feedback',
     body: [
-      '`start_session` mints a `session_id` that every WRITE tool (edit_node, stage_change, commit_changes, and the other mutating calls) REQUIRES. Read-only tools (search_nodes, get_node_code, list_nodes, get_activity_log, and the other getters) do NOT need it — search and read freely from the very first call, before start_session has even run. Never invent a session_id. On a resumed conversation that already called start_session earlier (visible in reloaded history), reuse that same id instead of starting a new one.',
+      '`start_session` mints a `session_id` that every WRITE tool (edit_node, commit_changes, and the other mutating calls) REQUIRES. Read-only tools (search_nodes, get_node_code, list_nodes, get_activity_log, and the other getters) do NOT need it — search and read freely from the very first call, before start_session has even run. Never invent a session_id. On a resumed conversation that already called start_session earlier (visible in reloaded history), reuse that same id instead of starting a new one.',
       '',
       '**Why:** a session ties a request\'s WRITES together on the local Activity log and makes them revertable as a unit — reads mutate nothing, so gating them buys nothing and only adds friction to the first thing an agent does (usually a search). `get_activity_log` additionally accepts `session_id` as its own OPTIONAL filter ("show me just this session\'s activity") — do not default to passing your own conversation\'s session_id there just because you have it, or you\'ll silently scope an otherwise-broad query (e.g. "what did I do today") down to only this one conversation.',
       '',
@@ -150,7 +152,7 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
       '',
       'It also REFUSES any batch containing a brand-NEW node with no `description` (1-3 sentences of what it does and its domain concepts, in words a teammate might search by — never a restatement of the name). Nothing staged is lost: describe it via `add_description` and retry the same call.',
       '',
-      '**Why:** `edit_node`/`stage_change` only stage; nothing reaches the graph or the activity log until commit. `feedback` is the only channel that improves DevsMind over time — it routes to a local graph-fix queue and a product log ([[devsmind-graph-feedback-queue]]).',
+      '**Why:** `edit_node` only stages; nothing reaches the graph or the activity log until commit. `feedback` is the only channel that improves DevsMind over time — it routes to a local graph-fix queue and a product log ([[devsmind-graph-feedback-queue]]).',
       '',
       '**How to apply:** commit at natural checkpoints during a long task, and always before ending a turn with staged work. Pass `description` inline on [[devsmind-edit-node-always]] when the edit created exactly one new symbol. Noticed something worth reporting but are not committing right now? `add_feedback` takes the same 5 categories ON DEMAND — any one or more, nothing required, no commit needed (see [[devsmind-graph-feedback-queue]]).',
     ].join('\n'),
@@ -323,4 +325,25 @@ export function renderCombined(header: string): string {
     '',
     ...rest.flatMap(t => [`### ${t.title}`, '', flattenLinks(t.body), '']),
   ].join('\n').replace(/\n*$/, '\n');
+}
+
+/**
+ * The ONE thing `devsmind memory` prints — a single block meant to be pasted directly into any
+ * AI chat and framed as an explicit "remember this" request, not written to a file on the user's
+ * behalf. Leads with the two rules that matter most (edit_node is the only write path; prefer
+ * search_nodes/get_node_code over grepping or opening files) so they survive even a skim, then
+ * carries the full live contract below — the SAME `DEVSMIND_INSTRUCTIONS` text the MCP handshake
+ * and `devsmind rule` both use, so this can never quietly drift from what the server enforces.
+ */
+export function renderMemoryPrompt(): string {
+  return [
+    "Please remember the following about working in this codebase — it's the DevsMind MCP workflow, and it applies every time we work in a project with a DevsMind server:",
+    '',
+    '1. Always write files with the `edit_node` tool — never your own built-in edit/write tool, whatever the file type.',
+    '2. Prefer `search_nodes` and `get_node_code` over grepping or opening files directly — they already know this codebase\'s structure and history.',
+    '',
+    'The full contract, so nothing gets missed:',
+    '',
+    DEVSMIND_INSTRUCTIONS,
+  ].join('\n');
 }

@@ -1,6 +1,7 @@
 import { connectMcpClient, McpTestHarness } from '../helpers/mcpClient';
 import { buildRule, buildKickoffPrompt } from '../../src/cli/rule';
 import { MEMORY_TOPICS, renderTopicFile, renderIndexLine, renderCombined } from '../../src/cli/integrations/memory-topics';
+import { DEVSMIND_INSTRUCTIONS } from '../../src/mcp/server';
 import { DevMindConfig } from '../../src/utils/config';
 
 /**
@@ -33,11 +34,13 @@ const RULE_VARIANTS: [string, string][] = [['automatic', RULE_AUTOMATIC], ['manu
  * `workflow_pause`/`workflow_resume` (now `workflow_bind`), `workflow_get_steps` (now part of
  * `workflow_get_context`), `workflow_search` (now `workflow_list`'s `query`),
  * `workflow_add_artifact`/`workflow_read_artifact` (now `doc_paths`), and
- * `workflow_sync_retroactive` (now `workflow_sync`).
+ * `workflow_sync_retroactive` (now `workflow_sync`). And `stage_change` — REMOVED outright (its
+ * handler no longer exists, not just unadvertised), folded into `edit_node`; see RETIRED_TOOL_NAMES
+ * below for the assertion that catches a leftover mention, which this list alone cannot.
  */
 const TOOLS_REFERENCED = [
   'start_session', 'search_nodes', 'list_nodes', 'get_node_code',
-  'get_activity_log', 'edit_node', 'stage_change', 'add_description', 'add_feedback', 'commit_changes',
+  'get_activity_log', 'edit_node', 'add_description', 'add_feedback', 'commit_changes',
   'rename_node', 'deprecate_node', 'index_start', 'index_checkpoint', 'index_continue', 'index_complete',
   'analyze_graph', 'recheck_graph', 'get_visualizer_url',
   'read_graph_feedback', 'mark_graph_feedback_processed', 'flag_indexer_rule',
@@ -45,6 +48,16 @@ const TOOLS_REFERENCED = [
   'workflow_list', 'workflow_bind', 'workflow_get_context', 'workflow_add_step',
   'workflow_create', 'workflow_archive', 'workflow_sync', 'workflow_import',
 ];
+
+/**
+ * Tools that once existed and are now gone ENTIRELY — not merely unadvertised (like the
+ * get_node_graph-style folds above, whose legacy handlers are deliberately retained). A mention
+ * of one of these anywhere in the generated docs is pure drift: `TOOLS_REFERENCED`'s own
+ * existence check is one-directional (it only checks names IN the list), so removing a retired
+ * name from that list — the correct fix once a tool is gone — would otherwise make a leftover
+ * mention invisible. This is the assertion that catches it.
+ */
+const RETIRED_TOOL_NAMES = ['stage_change'];
 
 describe('generated rule + memory stay in sync with the MCP server', () => {
   let harness: McpTestHarness;
@@ -66,6 +79,13 @@ describe('generated rule + memory stay in sync with the MCP server', () => {
 
   it('names only tools the server actually exposes', () => {
     expect([...TOOLS_REFERENCED].filter(name => !toolNames.has(name))).toEqual([]);
+  });
+
+  it('never names a retired tool in the rule, the memory bodies, or the server instructions', () => {
+    const corpus = [RULE_AUTOMATIC, RULE_MANUAL, ...MEMORY_TOPICS.map(t => t.body), DEVSMIND_INSTRUCTIONS].join('\n');
+    for (const gone of RETIRED_TOOL_NAMES) {
+      expect(corpus).not.toContain(gone);
+    }
   });
 
   describe.each(RULE_VARIANTS)('rule (%s)', (_style, rule) => {

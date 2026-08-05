@@ -63,7 +63,7 @@ export function revertLastEdit(db: DevMindDatabase, devmindPath: string, nodeId:
   if (!entry.edits.length) {
     return {
       ok: false,
-      error: `The last change to ${resolvedId} was recorded without a before-state, so there is nothing to restore it to. Entries written before edit_node tracked diffs, and entries from stage_change (non-TS/JS files), are both like this. Use git to restore the file.`
+      error: `The last change to ${resolvedId} was recorded without a before-state, so there is nothing to restore it to. Entries written before edit_node tracked diffs, and legacy update_history / initial index snapshots, are both like this. Use git to restore the file.`
     };
   }
 

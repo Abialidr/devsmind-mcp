@@ -64,8 +64,15 @@ program
       }
     }
     if (opts.stdio) {
-      // Stdio mode: IDE manages the process directly
-      runStdioMcpServer(opts.path);
+      // Stdio mode: IDE manages the process directly. Errors here (e.g. a bad --path) must not
+      // be an unhandled throw — same clean-exit treatment as the HTTP branch below, just via
+      // stderr since stdout is the JSON-RPC pipe.
+      try {
+        runStdioMcpServer(opts.path);
+      } catch (err) {
+        console.error(`❌ MCP Server failed to start: ${(err as Error).message}`);
+        process.exit(1);
+      }
     } else {
       // HTTP mode: IDE connects over the network
       const port = parseInt(opts.port, 10);
@@ -117,11 +124,10 @@ program
 
 program
   .command('memory')
-  .description('Seed a tool\'s own persistent agent-memory/skills store (guided, per-tool), or print it')
-  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .option('--print', 'Just print the memory files to stdout (no interactive placement)')
-  .option('--tool <id>', 'Which tool\'s memory shape to print (claude-code, antigravity, antigravity-cli). Only used with --print/non-interactive; the interactive flow asks.')
-  .action(async (opts: { path?: string; print?: boolean; tool?: string }) => {
+  .description('Print one paste-able prompt asking your AI to remember the DevsMind workflow — writes nothing to disk')
+  .option('--print', 'Skip the interactive tool picker and print immediately (non-interactive use)')
+  .option('--tool <id>', 'Which tool\'s framing line to print (claude-code, cursor, antigravity, ...). The prompt itself is the same either way. Only used with --print/non-interactive; the interactive flow asks.')
+  .action(async (opts: { print?: boolean; tool?: string }) => {
     try {
       await handleMemory(opts);
     } catch (err) {
@@ -399,8 +405,8 @@ program
       console.log(`   Brain : ${resolved}`);
       console.log(`\n📋 To index your codebase, tell your AI assistant:\n`);
       console.log(`   "Call devsmind.index_start with devmind_path = ${resolved}"`);
-      console.log(`   "Then read every file it returns and call stage_change for each entity, then commit_changes."`);
-      console.log(`   "Checkpoint every 10 files. Call index_complete when done."`);
+      console.log(`   "It already parses the code itself — describe each node it hands you with add_description, then call index_continue."`);
+      console.log(`   "Repeat index_continue until every file is extracted and described, then call index_complete."`);
       console.log(`   "NEVER use or write external scripts (like Python) to index files."\n`);
       console.log(`   Or run it locally in the background using:\n`);
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY`);

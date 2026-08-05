@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { DevMindDatabase, parseReasoningBlocks } from '../../src/db/database';
+import { DevMindDatabase, parseReasoningBlocks, parseReasoningBlocksTimed } from '../../src/db/database';
 import { hashDescription, EMBEDDING_MODEL_ID, EMBEDDING_DIM } from '../../src/db/embedder';
 import { tokenizeText } from '../../src/utils/tokenize';
 import { makeFixture, stageAndCommit, repoFile } from '../helpers/fixture';
@@ -2123,6 +2123,87 @@ describe('DevMindDatabase — coverage gaps', () => {
       try {
         expect(() => fx.db.writeGraphToDisk('')).not.toThrow();
         expect(() => fx.db.writeVectorsToDisk('')).not.toThrow();
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
+  describe('parseReasoningBlocksTimed (pure function)', () => {
+    const CREATED_AT = '2026-01-01T00:00:00.000Z';
+
+    it('dates the first block from created_at and every later block from its own separator', () => {
+      // The separator's captured timestamp is what makes a block groupable back into the commit
+      // that wrote it; only block 0 predates any separator and so inherits created_at.
+      const blocks = parseReasoningBlocksTimed(
+        'first block\n── Update @ 2026-01-02T00:00:00.000Z ──\nsecond block',
+        CREATED_AT
+      );
+      expect(blocks.map(b => b.text)).toEqual(['first block', 'second block']);
+      expect(blocks.map(b => b.at)).toEqual([CREATED_AT, '2026-01-02T00:00:00.000Z']);
+    });
+
+    it('skips the empty leading chunk when the blob opens with a separator', () => {
+      // An accumulated log whose first write was itself an update has nothing before the first
+      // separator. That empty chunk must be dropped, not emitted as a blank block.
+      const blocks = parseReasoningBlocksTimed(
+        '── Update @ 2026-01-02T00:00:00.000Z ──\nonly block',
+        CREATED_AT
+      );
+      expect(blocks.map(b => b.text)).toEqual(['only block']);
+      expect(blocks[0].at).toBe('2026-01-02T00:00:00.000Z');
+    });
+
+    it('falls back to created_at when a separator carries no timestamp', () => {
+      const blocks = parseReasoningBlocksTimed('first\n── Update @  ──\nsecond', CREATED_AT);
+      expect(blocks.map(b => b.text)).toEqual(['first', 'second']);
+      expect(blocks.map(b => b.at)).toEqual([CREATED_AT, CREATED_AT]);
+    });
+
+    it('parses each block through parseReasoningBlocks, keeping unlabelled text as reasoning', () => {
+      const blocks = parseReasoningBlocksTimed(
+        'What changed: renamed greet\nWhy: clarity\nGoal: readability\n── Update @ 2026-01-02T00:00:00.000Z ──\njust free text',
+        CREATED_AT
+      );
+      expect(blocks[0].parsed.what_changed).toBe('renamed greet');
+      expect(blocks[0].parsed.why).toBe('clarity');
+      expect(blocks[1].parsed.what_changed).toBe('just free text');
+    });
+  });
+
+  describe('queryHistoryForActivity — default row cap', () => {
+    it('applies the built-in LIMIT when the caller passes no limit', async () => {
+      const fx = makeFixture();
+      try {
+        await stageAndCommit(fx, [
+          { node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: FOO_SNIPPET, name: 'greet', type: 'function' }
+        ]);
+        const rows = fx.db.queryHistoryForActivity({});
+        expect(rows.length).toBeGreaterThan(0);
+        expect(rows[0].node_id).toBeTruthy();
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
+  describe('getHistoryMissingDeveloper — blank reasoning', () => {
+    it('reports a row whose reasoning is an empty string', () => {
+      const fx = makeFixture();
+      try {
+        const nodeId = '{app}/foo.ts#greet';
+        fx.db.upsertNode({ id: nodeId, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        const now = new Date().toISOString();
+        // A row lands here once every reasoning block has been erased off it (schema keeps the
+        // column NOT NULL, so "no reasoning left" is ''). Unattributable is exactly what this
+        // query exists to surface, so it must be listed rather than skipped by the regex.
+        raw(fx.db).prepare(`
+          INSERT INTO history (id, node_id, session_id, created_at, updated_at, code_snapshot, reasoning)
+          VALUES (?, ?, ?, ?, ?, '', '')
+        `).run('hist-blank-reasoning', nodeId, 'session-1', now, now);
+
+        const missing = fx.db.getHistoryMissingDeveloper();
+        expect(missing.map(m => m.id)).toContain('hist-blank-reasoning');
       } finally {
         fx.cleanup();
       }

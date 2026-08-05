@@ -113,13 +113,13 @@ npm install -g devsmind-mcp
 devsmind init      # 1. Create .devmind/ — interactive: project name, repos, tech stack
 devsmind mcp       # 2. Connect your IDE/CLI to the MCP server
 devsmind rule      # 3. Paste the workspace rule — this is what teaches your agent to actually use it
-devsmind memory    # 4. Seed your tool's OWN memory store, so the rule survives a long session
+devsmind memory    # 4. Print a prompt to paste into your AI chat, asking it to remember the workflow
 devsmind start     # 5. Start the server (skip if your IDE launches it via stdio)
 devsmind index --run --provider gemini --key YOUR_KEY   # 6. (optional) index the codebase now
 git add .devmind && git commit -m "Add DevsMind brain"  # 7. share it
 ```
 
-> **Step 4 is the one people skip and then wonder why the agent drifts.** A pasted rule is a file *you* maintain; several tools also have their own persistent memory the agent reads back automatically, every session, without anyone re-pasting anything. Where DevsMind can safely write to that store it does — Claude Code (Auto Memory) and Antigravity (Skills) today. For every other tool it prints why it isn't safe and what to do instead, rather than writing something that silently gets overwritten. `--print` shows exactly what it would write without touching anything.
+> **Step 4 is the one people skip and then wonder why the agent drifts.** A pasted rule is a file *you* maintain and it's always loaded — that part isn't optional. `devsmind memory` is a second, complementary lever: it writes nothing, it just prints a natural-language block framed as an explicit "remember this" request, because that's the one thing that actually gets an AI's own memory feature to save something reliably (background/automatic memory turns out to be discretionary almost everywhere — several tools say so in their own docs). Paste it once and ask your AI to remember it.
 
 ### Joining a brain a teammate already created
 
@@ -128,22 +128,20 @@ git pull           # 1. .devmind/ is already in the repo
 devsmind init      # 2. sets up YOUR machine only (dev identity, local paths) — doesn't touch the shared graph
 devsmind mcp       # 3. connect your IDE/CLI
 devsmind rule      # 4. paste the workspace rule
-devsmind memory    # 5. seed your tool's own memory store (see above)
+devsmind memory    # 5. print the "remember this" prompt (see above)
 devsmind sync      # 6. load teammates' committed changes into your local cache
 devsmind start     # 7. start the server (skip if stdio)
 ```
 
-> `mcp`, `rule` and `memory` are all **per-machine, per-tool** — they configure your editor, not the shared brain. A teammate's setup never reaches you, so each of you runs these once.
+> `mcp` and `rule` are **per-machine, per-tool** — they configure your editor, not the shared brain. `memory` writes nothing at all, so there's nothing to re-run per machine there — just re-paste its output into a fresh chat whenever you want the reminder in front of your AI again. A teammate's setup never reaches you, so each of you runs `mcp`/`rule` once.
 
 > **Already set up, just upgrading?**
 > ```bash
 > npm install -g devsmind-mcp@latest
 > devsmind rule     # re-paste — the generated rule changes between releases
-> devsmind memory   # re-seed — same reason, and it goes stale the same way
 > ```
-> Both, not just the rule. They carry the same contract into two different places, so upgrading one and not the other leaves your agent half-informed.
 >
-> **This matters more for 3.0.0 than for any release before it**, because 3.0.0 *removed* tools rather than adding them. A rule or memory file written against 2.x tells your agent to call `workflow_pause`, `get_node_graph`, `search_decisions` and `search_nodes`' `keywords` — none of which exist now. It won't fail loudly; the agent will just waste turns on tools that aren't there. Check the [Changelog](CHANGELOG.md) after any upgrade — some releases need this re-run, some don't.
+> **This matters more for 4.0.0 than for any release before it**, because 4.0.0 *removed a tool* (`stage_change`, folded into `edit_node`) and changed the indexing protocol. A rule written against an older version tells your agent to call `stage_change` — which no longer exists. It won't fail loudly; the agent will just waste turns on a tool that isn't there. Check the [Changelog](CHANGELOG.md) after any upgrade — some releases need a re-paste, some don't.
 
 ---
 
@@ -153,9 +151,9 @@ devsmind start     # 7. start the server (skip if stdio)
 |---|---|---|
 | `devsmind mcp` | Can your agent *reach* the tools at all? | DevsMind tools don't exist from the agent's point of view |
 | `devsmind rule` | Does your agent *know* to use them? | Agent defaults back to grep/raw file reads out of habit |
-| `devsmind memory` *(optional)* | Does that behavior *persist* without re-pasting? | Only matters for a handful of tools with their own agent-writable memory store |
+| `devsmind memory` *(optional)* | Want the reminder to persist without re-pasting the rule? | Prints a "remember this" prompt for you to paste — works the same for every tool, nothing written |
 
-`mcp`, `rule` and `memory` are all guided: pick your tool (Cursor, VS Code, Claude Code, Codex, Windsurf, Kiro, Antigravity, Qwen Code, …), then either copy a printed snippet or let DevsMind write/merge the config file for you. `devsmind rule` also asks which **workflow style** you want — **Automatic** (default: the agent stages, commits, and tracks every edit without being asked) or **Manual** (search/read stays always-on, but the agent only stages/commits when you explicitly ask it to — you stay the one deciding what reaches the graph). Either way it also prints a short **session kickoff prompt** to paste at the start of a fresh chat.
+`mcp` and `rule` are guided: pick your tool (Cursor, VS Code, Claude Code, Codex, Windsurf, Kiro, Antigravity, Qwen Code, …), then either copy a printed snippet or let DevsMind write/merge the config file for you. `devsmind rule` also asks which **workflow style** you want — **Automatic** (default: the agent stages, commits, and tracks every edit without being asked) or **Manual** (search/read stays always-on, but the agent only stages/commits when you explicitly ask it to — you stay the one deciding what reaches the graph). Either way it also prints a short **session kickoff prompt** to paste at the start of a fresh chat. `devsmind memory` only asks which tool's memory feature to name in the framing line — the prompt itself never changes, and it never writes anything.
 
 > ### 🧪 Which tools are actually *verified* — and where you can help
 >
@@ -171,15 +169,7 @@ devsmind start     # 7. start the server (skip if stdio)
 >
 > Benchmarks against a raw agent on the same task are especially welcome. [Open an issue](https://github.com/Abialidr/devsmind-mcp/issues) with your tool, version, and what you saw — including "it just worked," which is a result too.
 
-**`devsmind memory`** only writes where it's actually confirmed safe:
-
-| Tool | Seeded automatically? |
-|---|---|
-| Claude Code (Auto Memory) | ✅ |
-| Google Antigravity (Skills / `/learn`) | ✅ |
-| OpenAI Codex CLI (Skills) | ✅ — the same `.agents/skills/devsmind/SKILL.md` Antigravity reads, so seeding once covers both. Codex's own `~/.codex/memories/` is generated state and is never touched |
-| Qwen Code CLI | Already covered by `devsmind rule` |
-| Cursor, Windsurf, Kiro, VS Code Copilot | ❌ — prints why + what to do instead |
+**`devsmind memory`** writes nothing, for any tool — it prints one prompt and you paste it. That's a deliberate change: DevsMind used to hand-write into each tool's own memory/skills store, but research across every tool it integrates with turned up the same result independently, several of them saying so in their own docs — background/automatic memory is discretionary by design (e.g. Qwen's docs: *"auto-memory is best-effort, QWEN.md is guaranteed"*), while an EXPLICIT in-chat "remember this" is the one thing that reliably lands. `devsmind memory --tool <id>` only changes which feature name gets called out in the framing line (Claude Code's "Auto Memory", Cursor's "Memories", …) — the prompt itself is identical either way.
 
 > ⚠️ **The rule is a nudge, not a guarantee.** On long sessions agents drift back to grep and raw file reads, and quietly stop calling `search_nodes` / `commit_changes`.
 >
@@ -287,14 +277,14 @@ Rough benchmark (~1,080-file repo, informal): local Ollama model took ~15h at ~5
 
 ## 🔌 MCP tools, grouped by purpose
 
-DevsMind exposes 35 tools to the agent. The ones you'll see referenced most:
+DevsMind exposes 34 tools to the agent. The ones you'll see referenced most:
 
 | Group | Tools |
 |---|---|
 | **Session (call before your first write)** | `start_session` — mints a `session_id`. Every **write** requires it; read-only tools don't, so an agent can search from its very first call. Every response echoes the id back so it survives a long or compacted conversation |
 | **Search/discovery** | `search_nodes` — one call covering the graph **and** a real grep of every repo; takes a natural-language `query` and/or `pattern` (a real regex, used exactly as you'd give grep). `list_nodes` enumerates a component or directory, paged |
 | **Read code/history** | `get_node_code` — the one node-read call. Code, metadata, imports, named callers **and** callees, a file outline, and recent reasoning, all included by default; `graph_depth`/`graph_direction` walk further for a blast radius or a whole call flow, and `history:"full"` returns every revision with diffs. `get_activity_log` answers "what changed recently / which files did we touch" — from your local log, falling back to the committed history everyone shares, so it still answers on a fresh clone (`source:"both"` to see teammates' work alongside your own) |
-| **Write (the important one)** | `edit_node` — edits any file, traces what changed, and **returns the red/green diff of what it changed** so you see it in the session — all in one call. `stage_change` covers what it can't (non-TS/JS languages). `commit_changes` flushes everything staged and takes the one `reasoning` (why/goal) that gets recorded against all of it. |
+| **Write (the important one)** | `edit_node` — the ONE write path, for every file. Edits any file, traces what changed, and **returns the red/green diff of what it changed** so you see it in the session — all in one call. `commit_changes` flushes everything staged and takes the one `reasoning` (why/goal) that gets recorded against all of it. |
 | **Maintenance** | `analyze_graph` (zero-token health check), `recheck_graph`, `rename_node`/`deprecate_node`, and the feedback loop: `read_graph_feedback` → fix → `mark_graph_feedback_processed` |
 | **Multi-day workflows** | `workflow_create`, `workflow_bind` (per session, local to you), `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_sync`, `workflow_archive`, `workflow_import` |
 

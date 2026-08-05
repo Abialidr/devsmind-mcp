@@ -13,8 +13,9 @@ export interface StagedEntry {
   code_snapshot: string;
   /**
    * The entity's text before this edit. Only `edit_node` can supply it (it holds the pre-edit
-   * file); `stage_change` takes a snapshot with nothing to diff against and leaves it undefined.
-   * Absent means the entry gets no diff and no revert.
+   * file); the legacy `update_history` path and an initial index snapshot both take a code
+   * snapshot with nothing to diff against and leave it undefined. Absent means the entry gets
+   * no diff and no revert.
    */
   code_before?: string | null;
   name?: string;
@@ -281,7 +282,7 @@ export async function commitStagedChanges(
     }
   }
 
-  // Batched, not per-entry — this is where a STAGED description (from stage_change, or from
+  // Batched, not per-entry — this is where a STAGED description (from edit_node, or from
   // add_description filling in a gate rejection) first has somewhere to actually store a vector.
   // No-op (embedTextsInt8 returns null) if the optional ONNX dependency is unavailable; those
   // nodes just fall into the `devsmind embed` queue like any other unembedded description.

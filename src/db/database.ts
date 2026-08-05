@@ -312,9 +312,10 @@ const REASONING_SEPARATOR = /(\n*── Update @ [^\n]*──\n)/g;
  * Removes one block from an accumulated reasoning log, matched by its exact text and searched
  * from the newest end.
  *
- * Not simply "drop the last block": an update that carries no code change (a `stage_change`, a
- * bare `update_history`) appends reasoning without recording an edit, so blocks and edits are not
- * one-to-one and positional removal would take the wrong one. Matching on content is exact when
+ * Not simply "drop the last block": an update that carries no code change (a bare
+ * `update_history`, or an initial index snapshot) appends reasoning without recording an edit,
+ * so blocks and edits are not one-to-one and positional removal would take the wrong one.
+ * Matching on content is exact when
  * the block is there, and when it isn't the log is returned untouched — leaving a stale line is
  * recoverable, mangling someone else's reasoning is not.
  *
@@ -1118,7 +1119,7 @@ export class DevMindDatabase {
     if (!srcNode) {
       console.warn(
         `⚠️ DevsMind: connection skipped — source node "${sourceNodeId}" does not exist in ` +
-        `the graph. Add it (stage_change / update_history) before connecting it, otherwise the edge ` +
+        `the graph. Add it (edit_node / update_history) before connecting it, otherwise the edge ` +
         `cannot be persisted to disk and would not survive a restart.`
       );
       return;
@@ -1493,7 +1494,7 @@ export class DevMindDatabase {
       exists: false,
       node_id: resolvedId,
       message:
-        'No code found on disk or in cache. Read the source file, then stage_change + commit_changes so future agents skip the file read entirely.'
+        'No code found on disk or in cache. Read the source file, then edit_node + commit_changes so future agents skip the file read entirely.'
     };
   }
 
@@ -1660,7 +1661,8 @@ export class DevMindDatabase {
     /**
      * The entity's text before this edit, when the caller knows it (`edit_node` does; it holds
      * the pre-edit file). `null` means the entity did not exist yet — a pure addition. `undefined`
-     * means the caller has no before-state at all (`stage_change`), and no edit is recorded to
+     * means the caller has no before-state at all (the legacy `update_history` path, or an
+     * initial index snapshot), and no edit is recorded to
      * the trail: an entry with nothing to compare against gets no diff and no revert.
      */
     code_before?: string | null;
@@ -3320,14 +3322,14 @@ export class DevMindDatabase {
 
   /**
    * True if `absPath` sits inside a configured repo root or the workspace root itself.
-   * Used to reject `stage_change`/`update_history` file paths that would otherwise let a
+   * Used to reject `edit_node`/`update_history` file paths that would otherwise let a
    * tool call read/write any file on disk (absolute path, or a `../` escape) instead of
    * just repo source — nothing upstream of this validates that the AI-supplied path is
    * actually inside the project.
    */
   /**
-   * Gate for every AI-facing write (edit_node, stage_change, the legacy update_history):
-   * true only for paths inside a configured repo. `.devmind` itself — this project's OWN
+   * Gate for every AI-facing write (edit_node, the legacy update_history): true only for
+   * paths inside a configured repo. `.devmind` itself — this project's OWN
    * config, brain.db, and cached graph JSON — is never writable through these tools, even
    * though it sits next to (and, before this check, was indistinguishable from) real source:
    * without this, a write tool built to "never refuse a file type" would just as happily

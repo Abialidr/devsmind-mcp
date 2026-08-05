@@ -2,6 +2,13 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
+## 4.0.0 — One write path, a server-driven indexer, and memory that writes nothing
+> **Breaking.** `stage_change` is removed — `edit_node` is now the only write tool. The in-chat indexing protocol changed shape. Re-run `devsmind rule` after upgrading; a rule written against an older version still tells your agent to call a tool that no longer exists.
+
+- **`stage_change` removed, folded into `edit_node`.** It covered code `edit_node` couldn't trace by being *told* (`node_id`/`type`/`code_snapshot` supplied by hand) instead of *discovering* it from where a write landed. DevsMind has been TS/JS-only since before this release, and `edit_node`'s tracing already covers all of it, so the split no longer earned its keep. Every rule/memory/instruction reference to "which write tool" now just says `edit_node`. Forcing a graph resync with no real code change (the one thing `edit_node` structurally can't do — it requires `old_string` to differ from `new_string`) is now `devsmind reindex`'s job.
+- **In-chat indexing (`index_start`/`index_continue`/`index_checkpoint`/`index_complete`) rebuilt around local AST extraction.** The server now parses structure itself, deterministically, no LLM — the same machinery `devsmind index --run` already used. No code crosses back to the server anymore; the AI's only job is writing descriptions via `add_description` (which now also takes an optional `type`, to upgrade the AST's generic type to a framework-specific one). Connections still resolve once over the whole graph in `index_complete`, resumably. `index_checkpoint` is a zero-argument progress read now.
+- **`devsmind memory` writes nothing, for any tool.** Research across all 9 integrated tools found background/automatic memory to be discretionary by design almost everywhere — several tools say so in their own docs. It now prints one natural-language "remember this" prompt to paste into any AI chat instead; `--tool <id>` only changes the framing line, not the prompt content.
+
 ## 3.0.1 — `get_activity_log` answers on a fresh clone, and Codex gets seeded like Antigravity
 > No breaking changes and no tools removed. `devsmind memory` is worth re-running if you use Codex — it now has somewhere to write.
 

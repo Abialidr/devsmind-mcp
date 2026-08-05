@@ -49,16 +49,17 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       expect(parsed).toBeTruthy();
     });
 
-    it('rejects a WRITE tool (stage_change) when session_id is omitted', async () => {
+    it('rejects a WRITE tool (edit_node) when session_id is omitted', async () => {
       let threw = false;
       let errorText = '';
       try {
         // Every required field EXCEPT session_id, so the ONLY thing missing is the session gate.
-        const { isError, textBlocks } = await callTool(harness.client, 'stage_change', {
+        // The gate runs BEFORE the tool switch, so the file is never actually written here.
+        const { isError, textBlocks } = await callTool(harness.client, 'edit_node', {
           devmind_path: fx.devmindPath,
-          node_id: 'src-repo/foo.ts#greet',
           file_path: repoFile(fx, 'foo.ts'),
-          code_snapshot: 'export function greet(name: string): string { return name; }'
+          old_string: 'return format(name);',
+          new_string: 'return format(name) + "!";'
         });
         threw = isError;
         errorText = textBlocks.join(' ');
@@ -163,6 +164,27 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
         devmind_path: fx.devmindPath
       });
       expect(orphanedErr).toBe(false);
+    });
+  });
+
+  describe('stage_change — removed, not retired (unlike the block above)', () => {
+    it('is absent from listTools() and a direct/legacy call now errors — the handler itself was deleted, not just unadvertised', async () => {
+      const { tools } = await harness.client.listTools();
+      expect(tools.map(t => t.name)).not.toContain('stage_change');
+
+      const { parsed: session } = await callToolJson(harness.client, 'start_session', {
+        devmind_path: fx.devmindPath
+      }) as { parsed: { session_id: string } };
+
+      const { isError, textBlocks } = await callTool(harness.client, 'stage_change', {
+        devmind_path: fx.devmindPath,
+        session_id: session.session_id,
+        node_id: 'wontWork',
+        file_path: repoFile(fx, 'foo.ts'),
+        code_snapshot: 'export function wontWork() { return 1; }'
+      });
+      expect(isError).toBe(true);
+      expect(textBlocks.join(' ').toLowerCase()).toContain('tool not found');
     });
   });
 
@@ -1034,6 +1056,15 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       sessionId = parsed.session_id;
     });
 
+    /** edit_node's JSON block is NOT the first content block (a human-readable diff leads it),
+     *  unlike every other tool here — so callToolJson (which only ever parses textBlocks[0])
+     *  can't be used directly against it. */
+    async function callEditNodeJson(client: Parameters<typeof callTool>[0], args: Record<string, unknown>) {
+      const { isError, textBlocks } = await callTool(client, 'edit_node', args);
+      const jsonBlock = textBlocks.find(b => b.trim().startsWith('{'));
+      return { isError, parsed: jsonBlock ? JSON.parse(jsonBlock) : undefined, textBlocks };
+    }
+
     it('edit_node writes the file to disk and stages the touched symbol', async () => {
       const filePath = repoFile(fx, 'bar.ts');
       const { isError, textBlocks } = await callTool(harness.client, 'edit_node', {
@@ -1053,12 +1084,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
 
     it('commit_changes rejects when message is missing', async () => {
-      await callTool(harness.client, 'stage_change', {
+      await callTool(harness.client, 'edit_node', {
         devmind_path: fx.devmindPath,
         session_id: sessionId,
-        node_id: 'newThing',
-        file_path: repoFile(fx, 'foo.ts'),
-        code_snapshot: 'export function newThing() { return 1; }',
+        file_path: repoFile(fx, 'newthing.ts'),
+        old_string: '',
+        new_string: 'export function newThing() { return 1; }\n',
         description: 'A trivial test function that returns the constant 1, used to exercise commit gating.'
       });
 
@@ -1077,12 +1108,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
 
     it('commit_changes rejects when reasoning is missing', async () => {
-      await callTool(harness.client, 'stage_change', {
+      await callTool(harness.client, 'edit_node', {
         devmind_path: fx.devmindPath,
         session_id: sessionId,
-        node_id: 'anotherThing',
-        file_path: repoFile(fx, 'foo.ts'),
-        code_snapshot: 'export function anotherThing() { return 2; }',
+        file_path: repoFile(fx, 'anotherthing.ts'),
+        old_string: '',
+        new_string: 'export function anotherThing() { return 2; }\n',
         description: 'A trivial test function that returns the constant 2, used to exercise commit gating.'
       });
 
@@ -1100,12 +1131,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
 
     it('commit_changes rejects when feedback is missing', async () => {
-      await callTool(harness.client, 'stage_change', {
+      await callTool(harness.client, 'edit_node', {
         devmind_path: fx.devmindPath,
         session_id: sessionId,
-        node_id: 'thirdThing',
-        file_path: repoFile(fx, 'foo.ts'),
-        code_snapshot: 'export function thirdThing() { return 3; }',
+        file_path: repoFile(fx, 'thirdthing.ts'),
+        old_string: '',
+        new_string: 'export function thirdThing() { return 3; }\n',
         description: 'A trivial test function that returns the constant 3, used to exercise commit gating.'
       });
 
@@ -1120,12 +1151,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
 
     it('commit_changes rejects a brand-new node with no description', async () => {
-      await callTool(harness.client, 'stage_change', {
+      await callTool(harness.client, 'edit_node', {
         devmind_path: fx.devmindPath,
         session_id: sessionId,
-        node_id: 'noDescriptionThing',
-        file_path: repoFile(fx, 'foo.ts'),
-        code_snapshot: 'export function noDescriptionThing() { return 4; }'
+        file_path: repoFile(fx, 'nodescriptionthing.ts'),
+        old_string: '',
+        new_string: 'export function noDescriptionThing() { return 4; }\n'
         // description intentionally omitted — this node has never been described before.
       });
 
@@ -1144,12 +1175,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
 
     it('commit_changes succeeds end-to-end with all gates satisfied', async () => {
-      await callTool(harness.client, 'stage_change', {
+      await callTool(harness.client, 'edit_node', {
         devmind_path: fx.devmindPath,
         session_id: sessionId,
-        node_id: 'fullyGatedThing',
-        file_path: repoFile(fx, 'foo.ts'),
-        code_snapshot: 'export function fullyGatedThing() { return 5; }',
+        file_path: repoFile(fx, 'fullygatedthing.ts'),
+        old_string: '',
+        new_string: 'export function fullyGatedThing() { return 5; }\n',
         description: 'A trivial test function returning the constant 5, used to prove the full commit gate succeeds.'
       });
 
@@ -1179,14 +1210,17 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
           devmind_path: fx.devmindPath
         }) as { parsed: { session_id: string } };
 
-        await callTool(hB.client, 'stage_change', {
+        // B writes to its OWN new file — edit_node writes to disk (unlike the old stage_change),
+        // so B must never touch a file session A is about to edit in this same test.
+        const bEdit = await callEditNodeJson(hB.client, {
           devmind_path: fx.devmindPath,
           session_id: sB.session_id,
-          node_id: 'staysStagedForB',
-          file_path: repoFile(fx, 'bar.ts'),
-          code_snapshot: 'export function staysStagedForB() { return 99; }',
+          file_path: repoFile(fx, 'staysstagedforb.ts'),
+          old_string: '',
+          new_string: 'export function staysStagedForB() { return 99; }\n',
           description: 'Belongs to session B only — must not be pulled into session A\'s commit.'
         });
+        const bNodeId = bEdit.parsed.touched[0].node_id as string;
 
         // Session A stages and commits its own change to a DIFFERENT, already-described node.
         await callTool(harness.client, 'edit_node', {
@@ -1207,7 +1241,7 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
 
         // A's commit sees B's entry pending but leaves it alone.
         expect(commitA.other_sessions_pending).toBe(1);
-        expect(fx.db.getNode('{app}/bar.ts#staysStagedForB')).toBeNull();
+        expect(fx.db.getNode(bNodeId)).toBeNull();
 
         // B's own entry is still sitting in the shared buffer, untouched by A's commit — B can
         // commit it later and it still lands correctly, with B's own reasoning.
@@ -1221,7 +1255,7 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
 
         expect(commitB.other_sessions_pending).toBe(0);
         expect(commitB.nodes).toBe(1);
-        expect(fx.db.getNode('{app}/bar.ts#staysStagedForB')).toBeTruthy();
+        expect(fx.db.getNode(bNodeId)).toBeTruthy();
       } finally {
         await hB.close();
       }
@@ -1234,16 +1268,16 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
           devmind_path: fx.devmindPath
         }) as { parsed: { session_id: string } };
 
-        // Session B stages a brand-new node with no description yet.
-        await callTool(hB.client, 'stage_change', {
+        // Session B stages a brand-new node with no description yet, on its own file.
+        const bEdit = await callEditNodeJson(hB.client, {
           devmind_path: fx.devmindPath,
           session_id: sB.session_id,
-          node_id: 'bOwnsThisNode',
-          file_path: repoFile(fx, 'bar.ts'),
-          code_snapshot: 'export function bOwnsThisNode() { return 7; }'
+          file_path: repoFile(fx, 'bownsthisnode.ts'),
+          old_string: '',
+          new_string: 'export function bOwnsThisNode() { return 7; }\n'
           // description intentionally omitted.
         });
-        const bNodeId = '{app}/bar.ts#bOwnsThisNode';
+        const bNodeId = bEdit.parsed.touched[0].node_id as string;
 
         // Session A tries to describe B's staged node — must be refused, not silently applied.
         const { parsed: fromA } = await callToolJson(harness.client, 'add_description', {
@@ -1286,39 +1320,37 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       }
     });
 
-    it('stage_change and edit_node report pending_count scoped to the calling session, not the whole shared buffer', async () => {
+    it('edit_node reports pending_count scoped to the calling session, not the whole shared buffer', async () => {
       const hB = await connectMcpClient();
       try {
         const { parsed: sB } = await callToolJson(hB.client, 'start_session', {
           devmind_path: fx.devmindPath
         }) as { parsed: { session_id: string } };
 
-        // Session B stages one entry and never commits it.
-        await callTool(hB.client, 'stage_change', {
+        // Session B stages one entry, on its own file, and never commits it.
+        await callTool(hB.client, 'edit_node', {
           devmind_path: fx.devmindPath,
           session_id: sB.session_id,
-          node_id: 'bStaysPending',
-          file_path: repoFile(fx, 'bar.ts'),
-          code_snapshot: 'export function bStaysPending() { return 1; }',
+          file_path: repoFile(fx, 'bstayspending.ts'),
+          old_string: '',
+          new_string: 'export function bStaysPending() { return 1; }\n',
           description: 'A trivial test function belonging only to session B\'s own pending work.'
         });
 
-        // Session A stages its own, unrelated entry via stage_change — pending_count must reflect
-        // only A's own staged work (1), not the shared buffer's total (2).
-        const { parsed: stageA } = await callToolJson(harness.client, 'stage_change', {
+        // Session A stages its own, unrelated entry — pending_count must reflect only A's own
+        // staged work (1), not the shared buffer's total (2).
+        const stageA = await callEditNodeJson(harness.client, {
           devmind_path: fx.devmindPath,
           session_id: sessionId,
-          node_id: 'aStagesThis',
-          file_path: repoFile(fx, 'foo.ts'),
-          code_snapshot: 'export function aStagesThis() { return 2; }',
+          file_path: repoFile(fx, 'astagesthis.ts'),
+          old_string: '',
+          new_string: 'export function aStagesThis() { return 2; }\n',
           description: 'A trivial test function belonging only to session A\'s own pending work.'
-        }) as { parsed: { pending_count: number } };
-        expect(stageA.pending_count).toBe(1);
+        });
+        expect(stageA.parsed.pending_count).toBe(1);
 
-        // Same for edit_node's pending_count on a second, traced edit by session A. edit_node's
-        // response carries a leading human-readable diff block ahead of the JSON one, so parse
-        // the LAST text block rather than assuming the JSON is first (unlike stage_change/commit).
-        const { textBlocks: editABlocks } = await callTool(harness.client, 'edit_node', {
+        // A second, traced edit by session A must bring A's own pending_count to 2.
+        const editA = await callEditNodeJson(harness.client, {
           devmind_path: fx.devmindPath,
           session_id: sessionId,
           file_path: repoFile(fx, 'bar.ts'),
@@ -1326,8 +1358,7 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
           new_string: 'return "yo " + s;',
           description: 'Formats a raw string into the "yo <value>" greeting format used for this test.'
         });
-        const editA = JSON.parse(editABlocks.find(b => b.trim().startsWith('{'))!) as { pending_count: number };
-        expect(editA.pending_count).toBe(2); // A's stage_change entry + this new edit_node entry.
+        expect(editA.parsed.pending_count).toBe(2); // A's first edit_node entry + this second one.
       } finally {
         await hB.close();
       }

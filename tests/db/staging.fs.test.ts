@@ -180,6 +180,18 @@ describe('staging buffer (filesystem)', () => {
       expect(remaining.map(e => e.node_id)).toEqual(['theirs']);
     });
 
+    it('clearStagedForSession removes only the caller\'s file edits, leaving another session\'s staged', () => {
+      // The entries and file_edits lists are filtered independently, so scoping one correctly
+      // says nothing about the other — an unscoped file_edits wipe would silently discard
+      // another session's pending edit to a file it had already staged.
+      stageFileEdit(dir, { file_path: '/repo/mine.css', before: '', after: 'a', session_id: 'session-A' });
+      stageFileEdit(dir, { file_path: '/repo/theirs.css', before: '', after: 'b', session_id: 'session-B' });
+
+      clearStagedForSession(dir, 'session-A');
+
+      expect(readStagedFileEdits(dir).map(e => e.file_path)).toEqual(['/repo/theirs.css']);
+    });
+
     it('clearStagedForSession deletes the buffer file entirely once no other session has anything left', () => {
       stageEntry(dir, entry({ node_id: 'only', session_id: 'session-A' }));
       clearStagedForSession(dir, 'session-A');

@@ -25,9 +25,10 @@ import { fileDiffForMessage } from '../db/file-diff';
 import {
   readScratchpad,
   createScratchpad,
-  updateScratchpad,
-  completeScratchpad
+  completeScratchpad,
+  writeScratchpad
 } from '../db/indexer';
+import { extractFilesIntoGraph, pendingDescriptionNodes, resolveEdgesIncrementally } from '../db/index-build';
 import { scanRepoFiles, INDEXABLE_EXTENSIONS } from '../utils/scanner';
 import { parseNodeId, isAstParseable, findTouchedSymbols, invalidateParsedFile, extractNodeFromFile, listFileImports, outlineFile } from '../utils/ast';
 import { replaceTextInFile, createFileWithContent } from '../utils/edit';
@@ -60,21 +61,19 @@ export const DEVSMIND_INSTRUCTIONS = `DevsMind is this team's persistent shared 
 If you skip recording a change, you are not skipping a formality. You are leaving the whole team's graph stale for every other AI agent that queries this code later — tomorrow, on a different task, in a different session. And the reasoning behind your change (why it was made, what ticket drove it, what was broken before, what you tried and rejected) exists ONLY in this conversation, right now. It is not in the diff. It is not in the commit message. If it isn't captured at commit_changes this turn, it is gone forever — no reindex, no log, no git blame can recover it later.
 
 Non-negotiable workflow:
-1. Call start_session once, before your first WRITE of the conversation (edit_node/stage_change/commit_changes and the other mutating tools). It mints a session_id that every write REQUIRES — it ties a request's edits together on the local Activity log and makes them revertable as a unit — and every response echoes it back so it stays in front of you, including after a context compaction. Read-only tools (search_nodes, get_node_code, list_nodes, and the other getters) do NOT need it: search and read freely from the very first call. Never invent a session_id yourself; if a write errors saying session_id is required, start_session was skipped — call it now, then retry. If you are resuming a conversation that already called start_session earlier (visible in the reloaded history), reuse that same session_id instead of starting a new one.
+1. Call start_session once, before your first WRITE of the conversation (edit_node/commit_changes and the other mutating tools). It mints a session_id that every write REQUIRES — it ties a request's edits together on the local Activity log and makes them revertable as a unit — and every response echoes it back so it stays in front of you, including after a context compaction. Read-only tools (search_nodes, get_node_code, list_nodes, and the other getters) do NOT need it: search and read freely from the very first call. Never invent a session_id yourself; if a write errors saying session_id is required, start_session was skipped — call it now, then retry. If you are resuming a conversation that already called start_session earlier (visible in the reloaded history), reuse that same session_id instead of starting a new one.
 2. Before any filesystem search, grep, or file read: call search_nodes FIRST — it is now the one call for both "find this node" AND "find where X lives across files", so you should not need an external grep. Two inputs, pass either or both: a natural-language query (a real phrase — drives meaning-matching, so "authentication" finds a node described only as "sign-in") and/or pattern, a REAL regex used exactly as you'd give it to grep (e.g. "heartRed|onLikeTap|item\.liked" — nothing is re-escaped or split for you). Pattern-only is a precision mode: exact grep + code-body matches, no semantic blur. It returns two buckets: nodes (the indexed graph — the primary answer for "which function/class", with a true nodes_total before the top-20 cap) and files (a real grep of every repo, or just the path scope if given — the answer for things the graph does not index: CSS, JSON, config, .env, markup, wiring like "where is CORS configured" or "what mounts this middleware" — each sample line reports which function/class it falls inside, and files_total tells you honestly whether there's more than the page shown; pass a bigger offset for the next page). Triage by each node's confidence and relevance, NOT by which name looks right to you — confidence reflects how many independent layers corroborated the hit, which your own reading of a name cannot. Lockfiles and build artifacts are excluded by default, so what comes back is real source. If the response carries a compacted field, it was trimmed to fit and says exactly what was dropped — all counts stay exact, and compact:false gets you the untrimmed payload. It only returns real evidence — genuinely-absent things come back empty with a hint; if so, retry once with a different pattern/query before concluding it is not there. Only drop to a manual grep/read if search_nodes itself says truncated, or you need full file context after it points you at the file.
 3. To read one function/class: call get_node_code instead of opening the file, and do not follow it with a file read for context — this is the ONE node-read call, not a lean summary. It already includes the file's imports, the node's own name/type/signature/description, up to 20 named callers AND callees per direction (with exact uses/used_by counts even when the lists are capped), and up to 40 other declarations from the same file (file_outline — this is how you tell "was this renamed?" or "what else lives here" without opening the file). Reach further in the SAME call instead of a second tool: graph_depth + graph_direction walks the transitive graph past the direct neighbors already included (add graph_code:true for a whole call flow's source in one round trip — if some nodes' code doesn't fit the budget they are named in graph.code_omitted_node_ids, so fetch exactly those rather than re-running blind), and history:"full" returns every revision with diffable edits, pageable with history_limit/history_offset. Every capped section is honest about it (*_truncated, *_hint) — a hint means more is reachable in this same call, not a dead end.
 4. Before touching any function's signature: get_node_code already includes its direct callers by name (used_by_nodes) — for the FULL transitive blast radius, pass graph_direction:"in" with a graph_depth of 2-3 in that same call. Git shows you what changed; it never shows you what depends on it. Find out before you break something, not after.
 5. Before refactoring: get_node_code already includes the last 3 changes' reasoning by default — for the full revision trail with diffable before/after edits, pass history:"full" in that same call. Git blame tells you who and when; it never tells you why. The actual decision context only exists here.
-6. Write EVERY file with edit_node — .ts, .vue, .css, .json, .xml, .md, anything — and never your editor's own edit/write tools. It takes file_path + old_string + new_string exactly like an ordinary edit tool and never refuses a file type; to create a file that doesn't exist yet, pass old_string: "" and the whole file as new_string. Because it knows where your text landed, it works out which function/class you changed automatically: no node_id to look up, no code_snapshot to send back, and no stage_change call. It answers with every caller of what you changed. Writes landing outside any function (markup, config, an import) get no graph node — normal and expected, not a failure — but the whole-file change is still staged for the local activity log, so commit_changes makes it revertable there like any other edit.
-7. stage_change is now only for what no parser can read: a language with no AST support (.py, .go, .java, .cs, .rb, .php, .rs, .swift, .kt, .dart). edit_node still writes those files, and its response tells you when it couldn't trace one — so never guess. One call per node, not per file, never batched for later. On a long task, call commit_changes at natural checkpoints too (not only once at the very end) — waiting until the whole task is "done" is how staged work gets left uncommitted when a session runs long.
-8. Scope: the graph is source code only (functions/classes/logic). stage_change will be REJECTED for stylesheets, markup, JSON/config, docs, images, or any other non-code asset. Do not stage those files — they have no callers/callees to resolve and only bloat the graph.
-9. commit_changes REQUIRES a message AND a reasoning — the call fails without either. message is the user's request, verbatim, that led to this commit; it builds a local, private, never-pushed activity log (devsmind view → Activity) grouping your work by request and letting the user revert a request as a whole. Pass the exact same text again on a later commit that's still answering the same request — that merges them into one entry instead of splitting it. reasoning (what_changed/why/goal) is ONE object covering everything staged since the last commit — a commit is one logical change, so it gets one why, recorded against every node it touches, not one per edit_node/stage_change call.
-10. commit_changes also REFUSES any batch containing a brand-NEW node with no description — a description is what makes that node findable later by a natural-language search_nodes query instead of only by its exact identifier. If edit_node or stage_change just created a node, call add_description with it (1-3 sentences of what it does and the domain concepts involved — never a restatement of the name) before commit_changes will accept it. Nothing staged is lost by the refusal; retry the same commit_changes call once it's described. Existing nodes are never gated by this — only ones new this commit.
-11. A workflow is a named log of how ONE piece of functionality grew, across many sessions — read it to learn how the code got this way. start_session tells you if there is a recent one worth continuing; otherwise, when starting work that might belong to an existing multi-session feature, call workflow_list. If a description matches, ask the user before continuing it, then workflow_bind to attach THIS session. Binding is local to you: it never moves, pauses, or steals anyone else's workflow, and two sessions can work different ones at the same time.
-12. Once bound, commit_changes logs a step for you automatically — you do NOT need workflow_add_step for ordinary code work. Call it for the thing a commit cannot express: a DECISION OR RESEARCH FINDING THAT CHANGED NO CODE ("evaluated X, rejected it because Y"), attaching the docs behind it via doc_paths. That is the one kind of knowledge nothing else keeps — git has the diff, history has the per-node reasoning, but neither records what was considered and rejected. If you did work while unbound, or on the wrong workflow, workflow_sync attaches it afterwards from your local activity log: it previews first and only writes when you pass confirm:true, so nothing has to be got right in the moment.
-13. commit_changes also REQUIRES a feedback object (5 fields) — this is the only channel that improves DevsMind over time, so answer it for real, not as a formality. Before writing "none" on any field, actually check: did anything in THIS task take an extra tool call, a guess, a re-read, or a wrong turn? There almost always is something, even on an easy task — a specific one-line answer with evidence (file:line) is far more useful than a reflexive "none". "none" is correct only when you genuinely paid attention and nothing applies. Noticed something worth reporting but aren't committing right now (or don't want to wait until you are)? Call add_feedback directly — same 5 categories, but any one or more, nothing required, no commit needed. Passing evidence (file + snippet) on a graph_problem/edge_problem gets it verified fresh at call time and marked confirmed instead of suspected.`;
+6. Write EVERY file with edit_node — .ts, .vue, .css, .json, .xml, .md, anything — and never your editor's own edit/write tools. There is no second write tool: edit_node is the only one. It takes file_path + old_string + new_string exactly like an ordinary edit tool and never refuses a file type; to create a file that doesn't exist yet, pass old_string: "" and the whole file as new_string. Because it knows where your text landed, it works out which function/class you changed automatically: no node_id to look up, no code_snapshot to send back. It answers with every caller of what you changed. The graph only ever holds source code (functions/classes/logic) though — writes landing outside any function (markup, config, an import) get no graph node, normal and expected, not a failure — but the whole-file change is still staged for the local activity log, so commit_changes makes it revertable there like any other edit.
+7. commit_changes REQUIRES a message AND a reasoning — the call fails without either. message is the user's request, verbatim, that led to this commit; it builds a local, private, never-pushed activity log (devsmind view → Activity) grouping your work by request and letting the user revert a request as a whole. Pass the exact same text again on a later commit that's still answering the same request — that merges them into one entry instead of splitting it. reasoning (what_changed/why/goal) is ONE object covering everything staged since the last commit — a commit is one logical change, so it gets one why, recorded against every node it touches, not one per edit_node call.
+8. commit_changes also REFUSES any batch containing a brand-NEW node with no description — a description is what makes that node findable later by a natural-language search_nodes query instead of only by its exact identifier. If edit_node just created a node, call add_description with it (1-3 sentences of what it does and the domain concepts involved — never a restatement of the name) before commit_changes will accept it. Nothing staged is lost by the refusal; retry the same commit_changes call once it's described. Existing nodes are never gated by this — only ones new this commit.
+9. A workflow is a named log of how ONE piece of functionality grew, across many sessions — read it to learn how the code got this way. start_session tells you if there is a recent one worth continuing; otherwise, when starting work that might belong to an existing multi-session feature, call workflow_list. If a description matches, ask the user before continuing it, then workflow_bind to attach THIS session. Binding is local to you: it never moves, pauses, or steals anyone else's workflow, and two sessions can work different ones at the same time.
+10. Once bound, commit_changes logs a step for you automatically — you do NOT need workflow_add_step for ordinary code work. Call it for the thing a commit cannot express: a DECISION OR RESEARCH FINDING THAT CHANGED NO CODE ("evaluated X, rejected it because Y"), attaching the docs behind it via doc_paths. That is the one kind of knowledge nothing else keeps — git has the diff, history has the per-node reasoning, but neither records what was considered and rejected. If you did work while unbound, or on the wrong workflow, workflow_sync attaches it afterwards from your local activity log: it previews first and only writes when you pass confirm:true, so nothing has to be got right in the moment.
+11. commit_changes also REQUIRES a feedback object (5 fields) — this is the only channel that improves DevsMind over time, so answer it for real, not as a formality. Before writing "none" on any field, actually check: did anything in THIS task take an extra tool call, a guess, a re-read, or a wrong turn? There almost always is something, even on an easy task — a specific one-line answer with evidence (file:line) is far more useful than a reflexive "none". "none" is correct only when you genuinely paid attention and nothing applies. Noticed something worth reporting but aren't committing right now (or don't want to wait until you are)? Call add_feedback directly — same 5 categories, but any one or more, nothing required, no commit needed. Passing evidence (file + snippet) on a graph_problem/edge_problem gets it verified fresh at call time and marked confirmed instead of suspected.`;
 
-// Shared node-type taxonomy description, reused by update_history and stage_change.
+// Shared node-type taxonomy description, reused by update_history and add_description.
 const NODE_TYPE_DESCRIPTION =
   'The type of node. Be highly specific and framework-aware. Choose from the taxonomy below (or use a custom value if nothing fits).\n\n' +
   'UNIVERSAL: function | method | class | abstract_class | interface | type_alias | enum | constant | variable | module | namespace | decorator\n\n' +
@@ -106,7 +105,7 @@ const NODE_TYPE_DESCRIPTION =
   'TESTS: test_suite | test_case | test_helper | mock | fixture\n' +
   'UTILITY: util_function | helper | transformer | validator | formatter';
 
-// Shared `description` field schema, reused by stage_change and add_description. This is what
+// Shared `description` field schema, reused by edit_node and add_description. This is what
 // makes search_nodes findable by natural language — an identifier alone is a handful of words;
 // this is where the domain vocabulary (login/auth/sign-in, cart/basket, ...) actually lives.
 const DESCRIPTION_FIELD_SCHEMA = {
@@ -456,14 +455,14 @@ export function createMcpServer(): Server {
           }
         },
         // NOTE: `update_history`, `add_node`, and `add_connection` are intentionally NOT listed
-        // here. They are deprecated in favour of `stage_change` + `commit_changes` (to avoid
+        // here. They are deprecated in favour of `edit_node` + `commit_changes` (to avoid
         // confusing the AI with overlapping write tools), but their handlers are retained below
         // so any direct/legacy call still works.
         // ────────────────── Indexing tools ─────────────────────────────────────────
         {
           name: 'index_start',
           description:
-            'Initialize an indexing session. Scans all configured repos, counts files, creates a scratchpad to track progress. Returns the full file list per repo so the AI can begin reading and indexing files. IMPORTANT: You must index natively in-chat using MCP tools. NEVER write or execute external scripts (like Python or custom scripts) to index files.',
+            'Start indexing this workspace. The server parses each file\'s structure itself, locally, deterministically — no LLM, so nothing is silently missed. You never extract entities and never send code back: the response already carries a first batch of nodes (with their code) that need a one-line description each. Write those with ONE add_description call, then call index_continue for the next batch. Repeat until index_continue reports no files remain, then call index_complete.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -475,29 +474,19 @@ export function createMcpServer(): Server {
         {
           name: 'index_checkpoint',
           description:
-            'Save current indexing progress to the scratchpad. Call this every ~10 files so progress survives a context reset.',
+            'Read current indexing progress — no arguments needed, the server tracks it. Reports files done/total, phase, and how many extracted nodes still need a description. Purely informational; call it any time to see where a long index stands.',
           inputSchema: {
             type: 'object',
             properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              last_file_indexed: { type: 'string', description: 'Absolute path to the last file that was fully indexed' },
-              files_done: { type: 'number', description: 'Total files indexed so far' },
-              nodes_created: { type: 'number', description: 'Total nodes created so far' },
-              connections_created: { type: 'number', description: 'Total connections created so far' },
-              current_repo: { type: 'string', description: 'Name of the repo currently being indexed' },
-              repos_done: {
-                type: 'array',
-                items: { type: 'string' },
-                description: 'Names of repos fully indexed so far'
-              }
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
             },
-            required: ['devmind_path', 'files_done', 'nodes_created']
+            required: ['devmind_path']
           }
         },
         {
           name: 'index_continue',
           description:
-            'Read the scratchpad and return exactly where indexing left off. Use this to resume after a context reset. IMPORTANT: You must index natively in-chat using MCP tools. NEVER write or execute external scripts (like Python or custom scripts) to index files.',
+            'Extract the next batch of nodes and re-serve any still-undescribed nodes from earlier batches (so a description never gets silently dropped). Call this after describing the previous batch, and again after a context reset — the server, not the AI, tracks exactly where indexing left off.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -509,7 +498,7 @@ export function createMcpServer(): Server {
         {
           name: 'index_complete',
           description:
-            'Mark the indexing session as complete. Call this when all files in all repos have been indexed.',
+            'Call once every file is extracted and every node described. Resolves connections across the WHOLE graph in one resumable pass (never per-batch, since a node from an early batch can be the target of one from a much later batch) — call again if it reports `resume:true`. On completion: fills any used-but-unextracted references, vacuums the DB, and reports how many nodes still have no description.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -522,7 +511,7 @@ export function createMcpServer(): Server {
           name: 'edit_node',
           description:
             "Write ANY file in this project. Use this for EVERY edit AND every new file, in place of your editor's own edit/write tools — .ts, .js, .vue, .css, .json, .xml, .md, .py, anything. It never refuses a file for being the wrong type, and it works exactly like an ordinary edit tool: pass `file_path`, the exact `old_string` to find, and the `new_string` to put there. To CREATE a file that doesn't exist yet, pass `old_string: \"\"` and the whole file as `new_string` (parent directories are made for you).\n\n" +
-            "What it does that a plain edit tool cannot: it knows WHERE your text landed, so it works out which function/class you actually changed — no node_id to look up, no code_snapshot to send back, no follow-up stage_change call. That covers code you just added and files you just created, since the code is on disk by the time it looks. In return it tells you every CALLER of what you changed (i.e. what you may have just broken), what it calls out to, and the reasoning previously recorded against it.\n\n" +
+            "What it does that a plain edit tool cannot: it knows WHERE your text landed, so it works out which function/class you actually changed — no node_id to look up, no code_snapshot to send back. That covers code you just added and files you just created, since the code is on disk by the time it looks. In return it tells you every CALLER of what you changed (i.e. what you may have just broken), what it calls out to, and the reasoning previously recorded against it.\n\n" +
             "Writes that don't land inside any function — markup, config, an import line, a stylesheet — get no graph node. That is a normal, expected outcome, not a failure: the file is still written, and the whole-file change is staged for the local activity log regardless, so `commit_changes` still makes it individually revertable in `devsmind view` -> Chat. So there is never a reason to reach for another edit or write tool.\n\n" +
             "Nothing reaches the graph — or the activity log — until commit_changes, where you give ONE `reasoning` covering everything staged since the last commit. For renames use rename_node.\n\n" +
             "If this edit creates exactly ONE new function/class (the common case), pass `description` in this same call — you already know what you just wrote, so there is no reason to wait for commit_changes to refuse it and make a separate add_description round trip. When an edit touches more than one symbol, `description` is ignored (ambiguous which one it's for); use add_description for those after this call.",
@@ -543,28 +532,9 @@ export function createMcpServer(): Server {
           }
         },
         {
-          name: 'stage_change',
-          description:
-            `Stage ONE changed code node (function/class/method/etc.) into a buffer, right after you finish editing it — don't wait until the whole task is done. Call once per NODE, not once per file: a file with 3 changed functions is 3 calls. SCOPE: source code only — ${Array.from(INDEXABLE_EXTENSIONS).sort().join(', ')}. Rejected for stylesheets, markup, JSON/config, docs, or other non-code assets (no callers/callees to resolve). Pass only the code; connections are resolved automatically by commit_changes, not by you. Staging is buffered on disk and survives a context reset, but is inert until commit_changes runs — that's also where you give the one \`reasoning\` covering everything staged since the last commit.`,
-          inputSchema: {
-            type: 'object',
-            properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              node_id: { type: 'string', description: 'Unique identifier for the node (e.g. "CartService.applyPromoCode" or "calculateDiscount")' },
-              file_path: { type: 'string', description: 'Source file path where the node is located' },
-              code_snapshot: { type: 'string', description: 'Full source code content of the node at this moment' },
-              name: { type: 'string', description: 'Display name of the node (optional, inferred if omitted)' },
-              type: { type: 'string', description: '(optional, defaults to function) ' + NODE_TYPE_DESCRIPTION },
-              signature: { type: 'string', description: 'Parameter types + return type signature (optional)' },
-              description: DESCRIPTION_FIELD_SCHEMA
-            },
-            required: ['devmind_path', 'node_id', 'file_path', 'code_snapshot']
-          }
-        },
-        {
           name: 'add_description',
           description:
-            'Give a natural-language description to one or more nodes that don\'t have one yet. This is what `search_nodes` matches against, so it is the ONLY way a teammate\'s natural-language question ("where do we handle X") finds this code later — an identifier alone rarely does. Two situations call for this: (1) `commit_changes` refused because a NEW node from this turn has no description — call this with exactly those node_ids, then call commit_changes again; (2) you noticed an EXISTING committed node has no description (or a poor one) and want to add/fix it directly, which writes immediately with no commit needed. Write 1-3 sentences describing PURPOSE — what it does and the domain concepts involved — using the words a developer would actually search by (e.g. mention "login"/"sign-in"/"authentication" together, not just whichever one the identifier happens to use). Never just restate the identifier: "verifyCredentials verifies credentials" is rejected — it adds no findable vocabulary.',
+            'Give a natural-language description to one or more nodes that don\'t have one yet. This is what `search_nodes` matches against, so it is the ONLY way a teammate\'s natural-language question ("where do we handle X") finds this code later — an identifier alone rarely does. Three situations call for this: (1) `commit_changes` refused because a NEW node from this turn has no description — call this with exactly those node_ids, then call commit_changes again; (2) you noticed an EXISTING committed node has no description (or a poor one) and want to add/fix it directly, which writes immediately with no commit needed; (3) `index_start`/`index_continue` handed you a batch of freshly-extracted nodes — this is how you describe them, no separate indexing tool exists. Write 1-3 sentences describing PURPOSE — what it does and the domain concepts involved — using the words a developer would actually search by (e.g. mention "login"/"sign-in"/"authentication" together, not just whichever one the identifier happens to use). Never just restate the identifier: "verifyCredentials verifies credentials" is rejected — it adds no findable vocabulary.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -576,7 +546,8 @@ export function createMcpServer(): Server {
                   type: 'object',
                   properties: {
                     node_id: { type: 'string', description: 'The exact node_id, as given in the commit_changes rejection or from search/list_nodes.' },
-                    description: DESCRIPTION_FIELD_SCHEMA
+                    description: DESCRIPTION_FIELD_SCHEMA,
+                    type: { type: 'string', description: '(optional) Upgrades the node\'s type — e.g. from get_node_code/index_start\'s generic AST-derived "function"/"class" to a specific framework role. ' + NODE_TYPE_DESCRIPTION }
                   },
                   required: ['node_id', 'description']
                 }
@@ -643,7 +614,7 @@ export function createMcpServer(): Server {
         {
           name: 'commit_changes',
           description:
-            'Flush THIS SESSION\'s buffered edit_node/stage_change entries in one atomic pass: creates/updates every staged node, writes every history snapshot with the ONE `reasoning` you give here, resolves all connections via local AST (auto-creating any referenced-but-missing nodes), then clears only this session\'s share of the buffer. Every entity staged since your last commit gets the SAME reasoning — a commit is one logical change, so it needs one why, not one per node. The staging buffer is shared by every session pointed at this .devmind directory, but a commit only ever touches entries YOUR session staged — another session\'s still-pending work (possibly in an unrelated file or repo) is never included and is never cleared out from under it; `other_sessions_pending` in the response tells you if any exist. If a workflow is currently active, this ALSO auto-records a step on its timeline from that reasoning — you do not need a separate workflow_add_step call for the normal case. Call commit_changes at natural checkpoints — after a batch of related nodes, or when switching context — not only once at the very end of a long task; a checkpoint commit can\'t be forgotten the way a single end-of-task one can. Always call it again before ending the turn if anything is still staged: an uncommitted turn leaves your own work out of the graph.',
+            'Flush THIS SESSION\'s buffered edit_node entries in one atomic pass: creates/updates every staged node, writes every history snapshot with the ONE `reasoning` you give here, resolves all connections via local AST (auto-creating any referenced-but-missing nodes), then clears only this session\'s share of the buffer. Every entity staged since your last commit gets the SAME reasoning — a commit is one logical change, so it needs one why, not one per node. The staging buffer is shared by every session pointed at this .devmind directory, but a commit only ever touches entries YOUR session staged — another session\'s still-pending work (possibly in an unrelated file or repo) is never included and is never cleared out from under it; `other_sessions_pending` in the response tells you if any exist. If a workflow is currently active, this ALSO auto-records a step on its timeline from that reasoning — you do not need a separate workflow_add_step call for the normal case. Call commit_changes at natural checkpoints — after a batch of related nodes, or when switching context — not only once at the very end of a long task; a checkpoint commit can\'t be forgotten the way a single end-of-task one can. Always call it again before ending the turn if anything is still staged: an uncommitted turn leaves your own work out of the graph.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1434,45 +1405,45 @@ export function createMcpServer(): Server {
         // ————————————————————————————————— Indexing tool handlers —————————————————————————————————
         case 'index_start': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
+          const db = getDatabase(devmindPath);
           const { repos, total_files } = scanRepoFiles(devmindPath);
-          const pad = createScratchpad(devmindPath, total_files);
+          const allFiles = repos.flatMap(r => r.files);
 
-          const repoSummaries = repos.map(r => ({
-            repo_name: r.repo_name,
-            repo_path: r.repo_path,
-            file_count: r.file_count,
-            files: r.files // full list so AI can iterate
-          }));
+          // Informational only — files_total below stays the FULL INDEXABLE_EXTENSIONS scan
+          // count, matching walkDir/scanRepoFiles, so resume arithmetic never changes shape
+          // depending on how many of those files happen to be AST-parseable.
+          const skippedByExt: Record<string, number> = {};
+          for (const f of allFiles) {
+            if (!isAstParseable(f)) {
+              const ext = path.extname(f).toLowerCase() || '(no extension)';
+              skippedByExt[ext] = (skippedByExt[ext] || 0) + 1;
+            }
+          }
+          const existingNodeCount = db.listNodes().length;
+
+          const pad = createScratchpad(devmindPath, total_files);
+          const batch = extractFilesIntoGraph(db, allFiles);
+          pad.files_done = batch.filesExtracted.length;
+          pad.last_file_indexed = batch.cursor;
+          pad.nodes_created = batch.nodesCreated;
+          writeScratchpad(devmindPath, pad);
 
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
-                message: 'Indexing session started. Extract nodes with stage_change (one call per entity), then call commit_changes to write them all and resolve connections automatically via AST. Call index_checkpoint every 10 files.',
+                message: 'Indexing started — structure is parsed locally and deterministically, no LLM. You never extract entities and never send code back: describe every node in `batch.nodes` with ONE add_description call, then call index_continue for the next batch.',
                 scratchpad: pad,
-                repos: repoSummaries,
+                repos: repos.map(r => ({ repo_name: r.repo_name, repo_path: r.repo_path, file_count: r.file_count })),
                 total_files,
+                skipped: { count: Object.values(skippedByExt).reduce((a, b) => a + b, 0), by_extension: skippedByExt },
+                existing_nodes: existingNodeCount > 0 ? existingNodeCount : undefined,
+                batch: { files: batch.filesExtracted, nodes: batch.nodes, file_imports: batch.fileImports },
                 instructions: [
-                  '⚠️⚠️⚠️  CRITICAL INSTRUCTION FOR THE INDEXING AGENT — MUST READ ⚠️⚠️⚠️ ',
-                  'YOU MUST EXPLICITLY CALL THE "stage_change" MCP TOOL FOR EVERY ENTITY YOU EXTRACT, THEN "commit_changes" TO WRITE THEM.',
-                  'DO NOT JUST PRINT THE RESULTS AS TEXT IN THE CHAT WINDOW. PRINTING RESULTS WITHOUT CALLING THE MCP TOOLS DOES NOT WRITE THEM TO THE DATABASE AND MAKES THE ENTIRE INDEXING RUN A WASTE OF TIME AND TOKENS.',
-                  'NEVER WRITE OR EXECUTE EXTERNAL SCRIPTS (like Python, Node.js, Bash, etc.) to automate or lazy load indexing. You must read files and call the MCP tools step-by-step natively in the chat. This ensures progress is tracked in the SQLite scratchpad database and can be resumed/continued in subsequent chats if context limits are hit.',
-                  'ONCE YOU START INDEXING, DO NOT STOP or pause to ask for confirmation between checkpoints. Keep executing and indexing files continuously until the codebase is fully indexed or your context token limit is reached.',
-                  'IF YOU ENCOUNTER CONTEXT RESETS, RESUME WORK BY CALLING "index_continue" AND CONTINUOUSLY COMMIT PROGRESS BY CALLING "index_checkpoint" EVERY 10 FILES.',
-                  '',
-                  '📋 CODE EXCLUSION & PRECISION RULES:',
-                  '1. EXCLUDE Language Globals / Built-ins: Do NOT stage nodes for Promise, Map, Set, JSON, console, Error, Object, Array, RegExp, Date, Math, etc.',
-                  '2. EXCLUDE Primitive/Native Types: Do NOT stage nodes for string, number, boolean, any, void, unknown, never, null, undefined, dict, list, etc.',
-                  '3. EXCLUDE External / Third-party Modules: Do NOT stage nodes for lodash, express, react, @nestjs/common, etc.',
-                  '4. INTERNAL ENTITIES ONLY: Only stage nodes for constructs defined inside this codebase.',
-                  '',
-                  '📋 STAGE → COMMIT INDEXING PROTOCOL:',
-                  '1. For each file in each repo: read it, extract ALL defined nodes — functions, methods, classes, interfaces, types, DTOs, routing handlers, schemas, resolvers, etc.',
-                  '2. Call stage_change for EVERY entity found — pass its node_id, file_path, code_snapshot, the most specific taxonomy type, AND a `description`: 1-3 sentences of what it actually DOES and the domain concepts involved, using words a developer would search by later — NOT a restatement of the name ("verifyCredentials verifies credentials" is rejected). You are reading the whole file right now, with maximum context — this is the cheapest moment this description will ever be to write; skipping it here means commit_changes will refuse the node later and you will have to come back to it anyway. You do NOT need to figure out connections; commit_changes resolves them from the code via AST.',
-                  '3. Call index_checkpoint every 10 files to save progress.',
-                  '4. Every ~50 entities (or at the end of a repo), call commit_changes to flush the staged buffer — it creates all nodes, writes all history, and resolves all connections (including into already-committed nodes) in one pass. Committing in batches keeps the buffer small. Pass ONE `reasoning` per commit_changes call describing this batch (e.g. "Initial index of <repo>") — it is required, and applies to every entity in that batch. commit_changes REFUSES any batch containing a new node with no description — if that happens, call add_description with the node_ids it lists, then call commit_changes again; nothing staged is lost by the rejection.',
-                  '5. When the whole codebase is staged and committed, call index_complete.',
-                  '6. AFTER index_complete, CALL "recheck_graph" to automatically prune any spurious, built-in, or orphaned nodes and ensure high graph precision.'
+                  'NEVER write or execute external scripts (Python, Node.js, Bash, etc.) to index files — this tool already did the extraction; you only describe.',
+                  'Write a 1-3 sentence description for EVERY node in `batch.nodes` — PURPOSE, not a restatement of the name ("verifyCredentials verifies credentials" is rejected) — using words a developer would search by later. Send them all in ONE `add_description` call. Pass `type` too if the AST\'s generic type (function/method/class/…) is too coarse for what this actually is (e.g. "nest_service", "react_component").',
+                  'Then call index_continue for the next batch. Repeat until it reports no files remain — do not stop or pause for confirmation between batches.',
+                  'When index_continue reports extraction complete and every node is described, call index_complete, then recheck_graph to prune anything spurious.'
                 ]
               }, null, 2)
             }]
@@ -1481,27 +1452,34 @@ export function createMcpServer(): Server {
 
         case 'index_checkpoint': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const pad = updateScratchpad(devmindPath, {
-            last_file_indexed: args.last_file_indexed ? String(args.last_file_indexed) : undefined,
-            files_done: typeof args.files_done === 'number' ? args.files_done : 0,
-            nodes_created: typeof args.nodes_created === 'number' ? args.nodes_created : 0,
-            connections_created: typeof args.connections_created === 'number' ? args.connections_created : 0,
-            current_repo: args.current_repo ? String(args.current_repo) : undefined,
-            repos_done: Array.isArray(args.repos_done) ? (args.repos_done as string[]) : undefined
-          });
-          const pct = pad.files_total > 0
-            ? Math.round((pad.files_done / pad.files_total) * 100)
-            : 0;
+          const pad = readScratchpad(devmindPath);
+          if (!pad) {
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ error: 'No indexing session found. Call index_start first.' }) }]
+            };
+          }
+          const db = getDatabase(devmindPath);
+          const activeNodes = db.getAllNodes().filter(n => !n.deprecated);
+          const described = activeNodes.filter(n => n.description).length;
+          const pct = pad.files_total > 0 ? Math.round((pad.files_done / pad.files_total) * 100) : 0;
           return {
             content: [{
               type: 'text',
-              text: JSON.stringify({ saved: true, progress: `${pad.files_done}/${pad.files_total} files (${pct}%)`, scratchpad: pad }, null, 2)
+              text: JSON.stringify({
+                scratchpad: pad,
+                progress: `${pad.files_done}/${pad.files_total} files (${pct}%)`,
+                phase: pad.phase,
+                nodes_total: activeNodes.length,
+                described,
+                undescribed: activeNodes.length - described
+              }, null, 2)
             }]
           };
         }
 
         case 'index_continue': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
+          const db = getDatabase(devmindPath);
           const pad = readScratchpad(devmindPath);
           if (!pad) {
             return {
@@ -1513,31 +1491,58 @@ export function createMcpServer(): Server {
               content: [{ type: 'text', text: JSON.stringify({ status: 'complete', message: 'Indexing already completed.', scratchpad: pad }, null, 2) }]
             };
           }
-          // Re-scan to get file lists so AI knows which files are left
-          const { repos } = scanRepoFiles(devmindPath);
-          const reposDone = new Set(pad.repos_done);
-          const remaining = repos
-            .filter(r => !reposDone.has(r.repo_name))
-            .map(r => ({ repo_name: r.repo_name, repo_path: r.repo_path, files: r.files, file_count: r.file_count }));
+
+          // Re-served ahead of a fresh batch, every call, so a still-undescribed node from an
+          // earlier batch grows the visible backlog instead of silently vanishing from view.
+          const stillUndescribed = pendingDescriptionNodes(db, 25);
+          // Repeated every call because a context reset means index_start's own instructions
+          // are gone from view — without this, a resumed session silently stops describing.
+          const baseInstructions = [
+            'Describe every node in `still_undescribed` (from earlier batches) AND `batch.nodes` (if present, from this call) with ONE add_description call covering both.',
+            'NEVER write or execute external scripts to index files — the server already extracted the structure; you only describe.'
+          ];
+
+          if (pad.phase === 1) {
+            const { repos } = scanRepoFiles(devmindPath);
+            const allFiles = repos.flatMap(r => r.files);
+            const startIdx = pad.last_file_indexed ? allFiles.findIndex(f => f === pad.last_file_indexed) + 1 : 0;
+            const remainingFiles = allFiles.slice(startIdx);
+
+            if (remainingFiles.length > 0) {
+              const batch = extractFilesIntoGraph(db, remainingFiles);
+              pad.files_done += batch.filesExtracted.length;
+              pad.last_file_indexed = batch.cursor;
+              pad.nodes_created += batch.nodesCreated;
+              writeScratchpad(devmindPath, pad);
+
+              return {
+                content: [{
+                  type: 'text',
+                  text: JSON.stringify({
+                    message: 'Resuming extraction.',
+                    scratchpad: pad,
+                    still_undescribed: stillUndescribed,
+                    batch: { files: batch.filesExtracted, nodes: batch.nodes, file_imports: batch.fileImports },
+                    instructions: [...baseInstructions, 'Then call index_continue again. Repeat until it reports no files remain.']
+                  }, null, 2)
+                }]
+              };
+            }
+
+            pad.phase = 2;
+            writeScratchpad(devmindPath, pad);
+          }
 
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
-                message: 'Resume indexing from where you left off.',
+                message: 'All files extracted. Describe any remaining nodes, then call index_complete.',
                 scratchpad: pad,
-                last_file_indexed: pad.last_file_indexed,
-                repos_done: pad.repos_done,
-                remaining_repos: remaining,
-                // Repeated here because a context reset means the original index_start
-                // instructions are gone from view — without this, a resumed session silently
-                // stops writing descriptions on every node from here on.
-                instructions: [
-                  'Continue the STAGE → COMMIT INDEXING PROTOCOL exactly as before, for remaining_repos only.',
-                  'Every stage_change call still needs a `description`: 1-3 sentences of what the entity does and its domain concepts, not a restatement of its name.',
-                  'commit_changes still REFUSES a batch containing a new node with no description — call add_description with the listed node_ids, then retry the commit.',
-                  'Call index_checkpoint every 10 files, commit_changes every ~50 entities, index_complete when done, then recheck_graph.'
-                ]
+                still_undescribed: stillUndescribed,
+                instructions: stillUndescribed.length > 0
+                  ? [...baseInstructions, 'Once every node is described, call index_complete.']
+                  : ['Every node is described — call index_complete.']
               }, null, 2)
             }]
           };
@@ -1545,21 +1550,69 @@ export function createMcpServer(): Server {
 
         case 'index_complete': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const pad = completeScratchpad(devmindPath);
           const db = getDatabase(devmindPath);
+          const pad = readScratchpad(devmindPath);
+          if (!pad) {
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ error: 'No indexing session found. Call index_start first.' }) }]
+            };
+          }
+          if (pad.status === 'complete') {
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ status: 'complete', message: 'Indexing already completed.', scratchpad: pad }, null, 2) }]
+            };
+          }
+          const { total_files } = scanRepoFiles(devmindPath);
+          if (pad.phase === 1 && pad.files_done < total_files) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  error: `${total_files - pad.files_done} file(s) still unextracted — call index_continue first.`,
+                  scratchpad: pad
+                })
+              }]
+            };
+          }
+
+          const edgeResult = resolveEdgesIncrementally(db, devmindPath, pad);
+          if (!edgeResult.done) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  complete: false,
+                  resume: true,
+                  message: `Connection resolution paused at ${edgeResult.nodesDone}/${edgeResult.nodesTotal} nodes — call index_complete again to continue.`,
+                  scratchpad: pad
+                }, null, 2)
+              }]
+            };
+          }
+
+          const finalPad = completeScratchpad(devmindPath);
           db.vacuum();
+          const undescribedCount = db.getAllNodes().filter(n => !n.deprecated && !n.description).length;
+
           return {
             content: [{
               type: 'text',
               text: JSON.stringify({
                 message: '✅ Indexing complete! Full graph is now available.',
                 summary: {
-                  files_indexed: pad.files_done,
-                  nodes_created: pad.nodes_created,
-                  connections_created: pad.connections_created,
-                  started_at: pad.started_at,
-                  completed_at: pad.updated_at
-                }
+                  files_indexed: finalPad.files_done,
+                  nodes_created: finalPad.nodes_created,
+                  connections_created: edgeResult.edgesAdded,
+                  missing_nodes_filled: edgeResult.missingFilled,
+                  started_at: finalPad.started_at,
+                  completed_at: finalPad.updated_at
+                },
+                undescribed_count: undescribedCount,
+                hint: undescribedCount > 0
+                  ? `${undescribedCount} node(s) still have no description — run "devsmind describe" to backfill them, or describe them now with add_description.`
+                  : undefined,
+                next_step: 'recheck_graph — prunes any spurious, built-in, or orphaned nodes.'
               }, null, 2)
             }]
           };
@@ -1751,7 +1804,7 @@ export function createMcpServer(): Server {
               ? 'The file was created, but it declares no function or class, so no graph node was recorded. The whole-file change is staged for the local activity log, so commit_changes will still make it revertable there.'
               : 'This edit did not land inside any function or class (an import, a top-level constant, or similar), so no graph node was recorded. The whole-file change is staged for the local activity log, so commit_changes will still make it revertable there.';
           } else {
-            reminder = `${ext} cannot be parsed for symbols, so this could not be traced into the graph. The whole-file change is staged for the local activity log though, so commit_changes will still make it revertable there — call stage_change yourself only if you also want a graph node for it.`;
+            reminder = `${ext} has no parser support in DevsMind yet (TS/JS only, for now) — this could not be traced into the graph. The whole-file change is staged for the local activity log though, so commit_changes will still make it revertable there.`;
           }
 
           // Two blocks on purpose: a rendered diff for the human watching the session (clients
@@ -1776,83 +1829,6 @@ export function createMcpServer(): Server {
             }, null, 2)
           });
           return { content };
-        }
-
-        case 'stage_change': {
-          const devmindPath = resolveDevmindPath(args.devmind_path);
-          const rawFilePath = requireStr(args, 'file_path', 'stage_change');
-          const ext = path.extname(rawFilePath).toLowerCase();
-          if (!INDEXABLE_EXTENSIONS.has(ext)) {
-            return {
-              isError: true,
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  staged: false,
-                  error: `'${ext || '(no extension)'}' is not a supported node file type — nothing was staged.`,
-                  reason:
-                    'DevsMind models functions, classes, and logic entities in source code. Stylesheets (.css/.scss/.less), markup, JSON/config, docs, and other non-code assets are intentionally out of scope, not oversights — staging them would only bloat the graph with nodes that have no callers/callees to resolve. Do not retry this file.',
-                  supported_extensions: Array.from(INDEXABLE_EXTENSIONS).sort()
-                })
-              }]
-            };
-          }
-          const workspaceRoot = path.dirname(devmindPath);
-          const filePath = path.isAbsolute(rawFilePath) ? path.resolve(rawFilePath) : path.resolve(workspaceRoot, rawFilePath);
-          const stageDb = getDatabase(devmindPath);
-          if (!stageDb.isPathAllowed(filePath)) {
-            return {
-              isError: true,
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  staged: false,
-                  error: `file_path resolves outside the project's configured repos — nothing was staged.`,
-                  reason: 'stage_change only accepts paths inside a repo this project knows about, to prevent staging/reading files outside the project.',
-                  resolved_path: filePath
-                })
-              }]
-            };
-          }
-          const stageNodeId = requireStr(args, 'node_id', 'stage_change');
-          let stageDescription: string | undefined;
-          if (args.description !== undefined) {
-            const check = validateDescription(String(args.description), (args.name ? String(args.name) : stageNodeId));
-            if (!check.ok) {
-              return {
-                isError: true,
-                content: [{ type: 'text', text: JSON.stringify({ staged: false, error: check.error }) }]
-              };
-            }
-            stageDescription = String(args.description);
-          }
-          const entry: StagedEntry = {
-            node_id: stageNodeId,
-            file_path: filePath,
-            code_snapshot: requireStr(args, 'code_snapshot', 'stage_change'),
-            name: args.name ? String(args.name) : undefined,
-            type: args.type ? String(args.type) : undefined,
-            signature: args.signature ? String(args.signature) : undefined,
-            description: stageDescription,
-            session_id: sessionId
-          };
-          stageEntry(devmindPath, entry);
-          // Scoped to THIS session, not the raw buffer length — see partitionStagedForSession.
-          // The shared buffer can also hold another session's unrelated staged work, which must
-          // never be counted as "yours to commit".
-          const scoped = partitionStagedForSession(devmindPath, sessionId);
-          const pendingCount = scoped.entries.length + scoped.fileEdits.length;
-          return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                staged: true,
-                node_id: entry.node_id,
-                pending_count: pendingCount,
-                reminder: 'Call commit_changes once you have staged every touched file, or nothing is written to the graph.'
-              })
-            }]
-          };
         }
 
         case 'add_description': {
@@ -1897,6 +1873,7 @@ export function createMcpServer(): Server {
             const stagedEntry = staged.find(e => matchesNodeId(e) && (!e.session_id || e.session_id === sessionId));
             if (stagedEntry) {
               stagedEntry.description = description;
+              if (item && item.type) stagedEntry.type = String(item.type);
               results.push({ node_id: nodeId, ok: true, target: 'staged' });
               continue;
             }
@@ -1918,7 +1895,7 @@ export function createMcpServer(): Server {
             }
             db.upsertNode({
               id: existing.id,
-              type: existing.type,
+              type: (item && item.type) ? String(item.type) : existing.type,
               name: existing.name,
               file_path: existing.file_path,
               signature: existing.signature,
@@ -2049,8 +2026,8 @@ export function createMcpServer(): Server {
                 text: JSON.stringify({
                   committed: false,
                   message: otherSessionsPending > 0
-                    ? `Nothing staged by this session. ${otherSessionsPending} entr(y/ies) from another session are pending but left untouched — call stage_change/edit_node first.`
-                    : 'Nothing staged. Call stage_change first.'
+                    ? `Nothing staged by this session. ${otherSessionsPending} entr(y/ies) from another session are pending but left untouched — call edit_node first.`
+                    : 'Nothing staged. Call edit_node first.'
                 })
               }]
             };
@@ -2171,9 +2148,10 @@ export function createMcpServer(): Server {
 
           // Local, gitignored activity log — never reaches the shared graph. entries/node_ids are
           // 1:1 in order (commitStagedChanges pushes both from the same loop), so index-matching
-          // recovers each edit's resolved node id. Entries with no code_before (stage_change, which
-          // takes a snapshot with nothing to diff against) contribute nothing here: there is no
-          // "before" to back up, so recording one would make revert restore a guess. Whole-file
+          // recovers each edit's resolved node id. Entries with no code_before (the legacy
+          // update_history path, which takes a snapshot with nothing to diff against) contribute
+          // nothing here: there is no "before" to back up, so recording one would make revert
+          // restore a guess. Whole-file
           // edits (fileEdits — nothing traced into the graph) are folded in alongside them, so
           // every file edit_node touched shows up here, not just the ones that became graph nodes.
           //
@@ -2274,7 +2252,7 @@ export function createMcpServer(): Server {
         }
 
         // ── Deprecated write handlers: NOT advertised in ListTools (superseded by
-        //    stage_change/commit_changes), but retained so any direct/legacy call still works. ──
+        //    edit_node/commit_changes), but retained so any direct/legacy call still works. ──
         case 'add_node': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const rawNodeId = requireStr(args, 'node_id', 'add_node');

@@ -383,6 +383,15 @@ describe('ensureGitignored', () => {
       expect(sessions[0].developer).toBe('Dev');
     });
 
+    it('creates the session row with a null developer when none is supplied', () => {
+      // An agent that binds before start_session has run may not know the developer name yet;
+      // the row still has to exist so the binding is readable.
+      bindSessionWorkflow(dir, 'sess-anon', 'wf_1');
+      const session = readSessions(dir).find(s => s.id === 'sess-anon')!;
+      expect(session.developer).toBeNull();
+      expect(session.workflow_id).toBe('wf_1');
+    });
+
     it('reports no binding for a session that does not exist at all', () => {
       expect(readSessionWorkflow(dir, 'never-seen')).toBeNull();
     });

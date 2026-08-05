@@ -47,8 +47,8 @@ export interface DbHistory {
   reasoning: string;
   /**
    * Per-edit before/after trail, newest last. Lives only in the history JSON, never in SQLite —
-   * same as code_snapshot. Empty for entries written before this existed, and for `stage_change`
-   * entries, which have no before-state to record: both mean "no diff, no revert".
+   * same as code_snapshot. Empty for entries written before this existed, and for legacy
+   * `update_history` / initial index snapshots, which have no before-state to record: both mean "no diff, no revert".
    */
   edits: HistoryEdit[];
 }

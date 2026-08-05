@@ -1,6 +1,6 @@
 {
   "name": "devsmind-mcp",
-  "version": "3.0.1",
+  "version": "4.0.0",
   "description": "DevsMind — Team AI Brain",
   "main": "dist/cli/index.js",
   "bin": {

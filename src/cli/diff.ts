@@ -47,7 +47,7 @@ export async function handleDiff(nodeId: string, opts: { path?: string }): Promi
       console.log(
         `\n${BOLD}${resolvedId}${RESET}\n` +
         `   ${DIM}No diff available — this change was recorded without a before-state.${RESET}\n` +
-        `   ${DIM}Entries predating diff tracking, and stage_change entries (non-TS/JS), have none.${RESET}`
+        `   ${DIM}Entries predating diff tracking, and legacy update_history / initial index snapshots, have none.${RESET}`
       );
       return;
     }

@@ -75,16 +75,19 @@ export interface IdeTarget {
     wrap?: (body: string) => string;
   };
   memory: {
-    /** False when no safe write path exists — manual guidance only, no file is ever touched. */
+    /** `devsmind memory` writes nothing for any tool (see integrations/memory.ts) — this and the
+     *  fields below are read only for their FRAMING value (the tool's own feature name + a short
+     *  caveat), not to decide whether or how to write. `scopes`/`wrap`/`pointerFile` describe a
+     *  write path that no longer exists; kept only as still-accurate research about each tool's
+     *  own store, in case a genuinely safe write target ever becomes available again. */
     supported: boolean;
     /** The tool's own name for this feature — use it verbatim in prompts, not a generic "memory". */
     featureName: string;
     scopes?: MemoryScope[];
     wrap?: (body: string) => string;
-    /** Shown (instead of writing) when supported is false, or as extra context alongside a write. */
+    /** The one-line caveat shown alongside the printed prompt. */
     note: string;
-    /** Claude Code only: also offer to append a one-line pointer into MEMORY.md so an
-     *  unreferenced topic file (loaded only "on demand") is actually discoverable. */
+    /** Unused by `devsmind memory` (see above) — retained only alongside `scopes` as research. */
     pointerFile?: { file: string; style: 'append-section' };
   };
 }
@@ -219,7 +222,7 @@ export const TARGETS: IdeTarget[] = [
     memory: {
       supported: false,
       featureName: 'Memories',
-      note: 'Cursor\'s Memories are stored in an internal, undocumented database and only save after the agent proposes one and you approve it — there is no file DevsMind can safely write to. Ask the agent to remember the DevsMind workflow in conversation (e.g. "remember to always search_nodes before grep, and stage_change + commit_changes after every change") and approve the memory Cursor proposes.',
+      note: 'Cursor\'s Memories are stored in an internal, undocumented database and only save after the agent proposes one and you approve it — there is no file DevsMind can safely write to. Ask the agent to remember the DevsMind workflow in conversation (e.g. "remember to always search_nodes before grep, and edit_node + commit_changes after every change") and approve the memory Cursor proposes.',
     },
   },
   {
@@ -286,7 +289,7 @@ export const TARGETS: IdeTarget[] = [
     memory: {
       supported: false,
       featureName: 'Knowledge / PR-comment learning',
-      note: 'Kiro has no file-based memory: its manual "Knowledge" store uses JSON + embeddings (not something safe to hand-write), and its autonomous agent\'s PR-comment-driven learning is an undocumented, AWS-internal, non-file-based store. The one thing DevsMind CAN influence — steering docs — is already handled by `devsmind rule`. To also engage the autonomous agent\'s learning, leave a PR review comment once, e.g. "always call search_nodes before grep, and stage_change + commit_changes after every change."',
+      note: 'Kiro has no file-based memory: its manual "Knowledge" store uses JSON + embeddings (not something safe to hand-write), and its autonomous agent\'s PR-comment-driven learning is an undocumented, AWS-internal, non-file-based store. The one thing DevsMind CAN influence — steering docs — is already handled by `devsmind rule`. To also engage the autonomous agent\'s learning, leave a PR review comment once, e.g. "always call search_nodes before grep, and edit_node + commit_changes after every change."',
     },
   },
   {
@@ -323,6 +326,11 @@ export const TARGETS: IdeTarget[] = [
     mcp: {
       scopes: [
         { scope: 'project', file: '.mcp.json', format: 'json', serverMapPath: ['mcpServers'] },
+        // User-scope entries live at the TOP LEVEL of ~/.claude.json under `mcpServers` — not
+        // nested under that file's `projects` map (that's "local" scope, which this registry
+        // doesn't model). Same JSON shape as project scope, so the generic merge/write path
+        // handles it unchanged; confirmed against Claude Code's own MCP quickstart docs.
+        { scope: 'global', file: '~/.claude.json', format: 'json', serverMapPath: ['mcpServers'] },
       ],
       transports: ['stdio', 'http'],
       entry: entryTyped,
@@ -341,8 +349,7 @@ export const TARGETS: IdeTarget[] = [
       scopes: [
         { scope: 'global', dir: '~/.claude/projects', format: 'memory-files', needsUserConfirmedDir: true },
       ],
-      note: 'One file per fact, not one big file: MEMORY.md\'s first 200 lines/25KB load every session automatically, while topic files load only "on demand" — ranked by each file\'s own `description` frontmatter. Split that way, an editing task pulls in the edit_node rule without also dragging in indexing and CLI trivia. An index line per topic is appended to MEMORY.md so they get found at all.',
-      pointerFile: { file: 'MEMORY.md', style: 'append-section' },
+      note: 'Auto Memory saves reliably from an EXPLICIT in-chat request ("remember this") — that\'s exactly what the prompt below is. A silently-written file never triggers that path at all, which is why `devsmind memory` no longer writes one.',
     },
   },
   {
