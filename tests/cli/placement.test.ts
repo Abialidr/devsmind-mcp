@@ -504,12 +504,24 @@ describe('registry path resolution', () => {
 describe('MCP server entries', () => {
   const ctx: EntryContext = { devmindDir: 'C:/my project/.devmind', port: 4513 };
 
-  it('bakes the absolute brain path into a stdio entry as its own argv element', () => {
-    const entry = stdioEntry(ctx);
+  it('bakes the absolute brain path into a PROJECT stdio entry as its own argv element', () => {
+    const entry = stdioEntry(ctx, 'project');
 
-    // The IDE spawns this with a cwd we don't control, so the path can't be implied.
-    // A separate argv element means a path with spaces needs no quoting.
+    // The IDE spawns this with a cwd we don't control, so the path can't be implied — but a
+    // project-scoped config file lives inside (and so only ever serves) this one project, so
+    // baking the path in is safe. A separate argv element means a path with spaces needs no
+    // quoting.
     expect(entry.args).toEqual(['start', '--stdio', '--path', 'C:/my project/.devmind']);
+    expect(entry.command).toBe('devsmind');
+  });
+
+  it('omits the path from a GLOBAL stdio entry — one file read by every project', () => {
+    const entry = stdioEntry(ctx, 'global');
+
+    // A global config is shared by every project on the machine. Baking in one project's path
+    // would silently point every OTHER project at this same brain, which is exactly the bug
+    // this scope split exists to prevent — so global relies on the server's own cwd auto-detect.
+    expect(entry.args).toEqual(['start', '--stdio']);
     expect(entry.command).toBe('devsmind');
   });
 
@@ -518,10 +530,10 @@ describe('MCP server entries', () => {
   });
 
   it.each(TARGETS.map(t => [t.id, t] as const))(
-    '%s builds a usable entry for every transport it advertises',
+    '%s builds a usable PROJECT-scoped entry for every transport it advertises',
     (_id, target) => {
       for (const transport of target.mcp.transports) {
-        const entry = target.mcp.entry(transport, ctx);
+        const entry = target.mcp.entry(transport, ctx, 'project');
         expect(Object.keys(entry).length).toBeGreaterThan(0);
         if (transport === 'stdio') {
           expect(entry.command).toBe('devsmind');
@@ -530,6 +542,24 @@ describe('MCP server entries', () => {
           // Tools key the endpoint differently (url / serverUrl / httpUrl) — whichever it is,
           // it must carry the real port, not a placeholder.
           expect(JSON.stringify(entry)).toContain(`localhost:${ctx.port}/mcp`);
+        }
+      }
+    }
+  );
+
+  it.each(TARGETS.map(t => [t.id, t] as const))(
+    '%s builds a usable GLOBAL-scoped entry that never bakes in this one project\'s path',
+    (_id, target) => {
+      for (const transport of target.mcp.transports) {
+        const entry = target.mcp.entry(transport, ctx, 'global');
+        expect(Object.keys(entry).length).toBeGreaterThan(0);
+        if (transport === 'stdio') {
+          expect(entry.command).toBe('devsmind');
+          expect(entry.args).not.toContain(ctx.devmindDir);
+          expect(entry.args).not.toContain('--path');
+        } else {
+          expect(JSON.stringify(entry)).toContain(`localhost:${ctx.port}/mcp`);
+          expect(JSON.stringify(entry)).not.toContain(ctx.devmindDir);
         }
       }
     }
@@ -639,12 +669,22 @@ describe('placing the real rule into every target (integration)', () => {
     for (const scope of target.mcp.scopes) {
       for (const transport of target.mcp.transports) {
         const out = path.join(dir, 'mcp', `${target.id}-${scope.scope}-${transport}.${scope.format}`);
+        const entry = target.mcp.entry(transport, ctx, scope.scope);
         const merged = mergeMcpConfig(
-          out, scope.format, scope.serverMapPath, 'devsmind', target.mcp.entry(transport, ctx)
+          out, scope.format, scope.serverMapPath, 'devsmind', entry
         );
         writeConfigFile(out, merged.content);
 
         const written = fs.readFileSync(out, 'utf-8');
+        if (transport === 'stdio') {
+          // The bug this scope split exists to prevent: a global config must never bake in the
+          // one project's absolute path, since that same file is read by every other project.
+          if (scope.scope === 'global') {
+            expect(written).not.toContain(ctx.devmindDir.replace(/\\/g, '/'));
+          } else {
+            expect(entry.args).toContain(ctx.devmindDir);
+          }
+        }
         if (scope.format === 'json') {
           // Must parse back, and the entry must land exactly where the tool looks for it.
           let node: any = JSON.parse(written);

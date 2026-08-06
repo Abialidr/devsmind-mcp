@@ -5,6 +5,7 @@ import {
   findDevmindDir,
   resolveDevmindDir,
   loadProjectContext,
+  recoverSpaceSplitPath,
   DevMindConfig
 } from '../../src/utils/config';
 
@@ -85,6 +86,62 @@ describe('resolveDevmindDir', () => {
     } finally {
       cwdSpy.mockRestore();
     }
+  });
+});
+
+describe('recoverSpaceSplitPath', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkTempDir(); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  /** Splits a path the way a shell does when argv is concatenated unquoted: on every space. */
+  function splitLikeShell(p: string): { head: string; extras: string[] } {
+    const [head, ...extras] = p.split(' ');
+    return { head, extras };
+  }
+
+  it('rejoins a --path the shell tore apart at a space', () => {
+    const devmindDir = path.join(dir, 'work 2', 'devsmind', '.devmind');
+    fs.mkdirSync(devmindDir, { recursive: true });
+    const { head, extras } = splitLikeShell(devmindDir);
+    expect(head).not.toBe(devmindDir); // the fragment the CLI would otherwise bind to
+    expect(recoverSpaceSplitPath(head, extras)).toBe(devmindDir);
+  });
+
+  it('rejoins across several spaces', () => {
+    const devmindDir = path.join(dir, 'a b c d', '.devmind');
+    fs.mkdirSync(devmindDir, { recursive: true });
+    const { head, extras } = splitLikeShell(devmindDir);
+    expect(extras.length).toBe(3);
+    expect(recoverSpaceSplitPath(head, extras)).toBe(devmindDir);
+  });
+
+  it('prefers the longest existing candidate when a shorter prefix also exists', () => {
+    const shorter = path.join(dir, 'a b');
+    const longer = path.join(dir, 'a b c');
+    fs.mkdirSync(shorter, { recursive: true });
+    fs.mkdirSync(longer, { recursive: true });
+    const { head, extras } = splitLikeShell(longer);
+    expect(recoverSpaceSplitPath(head, extras)).toBe(longer);
+  });
+
+  it('leaves an intact path alone even when unrelated operands follow', () => {
+    const devmindDir = path.join(dir, '.devmind');
+    fs.mkdirSync(devmindDir, { recursive: true });
+    expect(recoverSpaceSplitPath(devmindDir, ['--sync'])).toBe(devmindDir);
+  });
+
+  it('returns a genuinely bad path unchanged, so it still fails loudly', () => {
+    const bogus = path.join(dir, 'nope');
+    expect(recoverSpaceSplitPath(bogus, ['also', 'nope'])).toBe(bogus);
+  });
+
+  it('passes through when there is nothing to rejoin', () => {
+    expect(recoverSpaceSplitPath(undefined, [])).toBeUndefined();
+    expect(recoverSpaceSplitPath(undefined, ['x'])).toBeUndefined();
+    expect(recoverSpaceSplitPath('', ['x'])).toBe('');
+    const only = path.join(dir, 'missing');
+    expect(recoverSpaceSplitPath(only, [])).toBe(only);
   });
 });
 

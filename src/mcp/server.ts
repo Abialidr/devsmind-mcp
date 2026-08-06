@@ -3103,7 +3103,11 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
     if (!contentType) return res.status(404).end();
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'no-store');
-    res.sendFile(path.join(ASSETS_DIR, req.params.file));
+    // `root` + bare basename, never a joined absolute path: with no root, `send` dotfile-checks
+    // every segment of the absolute path and 404s the whole request if any of them starts with a
+    // dot — which is exactly what an nvm install (/home/x/.nvm/versions/node/...) looks like. The
+    // basename is already whitelisted above, so root confinement costs nothing here.
+    res.sendFile(req.params.file, { root: ASSETS_DIR });
   });
 
   // Vendored graph libraries — committed, served locally so the view works with no internet.
@@ -3112,7 +3116,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
     if (!VENDOR_FILES.has(req.params.file)) return res.status(404).end();
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    res.sendFile(path.join(ASSETS_DIR, 'vendor', req.params.file));
+    res.sendFile(req.params.file, { root: path.join(ASSETS_DIR, 'vendor') }); // see /app/:file above
   });
 
   // Graph Data API endpoint
@@ -3536,17 +3540,35 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
  * starts unbound and the legacy per-call `devmind_path` path keeps working, so nothing regresses.
  */
 function bindServerToProject(devmindPath?: string): void {
-  const explicit = devmindPath && String(devmindPath).trim();
+  // DEVSMIND_PATH is the escape hatch for clients that mangle argv: an `env` block in the MCP
+  // config reaches the process untouched by any shell, where a --path with a space in it does not.
+  const explicit = (devmindPath && String(devmindPath).trim()) || (process.env.DEVSMIND_PATH || '').trim();
   if (explicit) {
     // Reuse resolveDevmindPath's own existence checks / slash-normalization by resolving BEFORE
     // binding — but it short-circuits on boundDevmindPath, so bind only after it returns cleanly.
-    const resolved = resolveDevmindPath(explicit);
-    bindDevmindPath(resolved);
+    try {
+      bindDevmindPath(resolveDevmindPath(explicit));
+    } catch (err) {
+      // A truncated-at-the-first-space path is the signature of a shell-spawning MCP client that
+      // concatenated argv without quoting. Say so here — the raw "does not exist" alone sends
+      // people hunting for a missing directory that is in fact sitting right where they left it.
+      const hint = /\s/.test(String(devmindPath ?? ''))
+        ? ''
+        : ` If your project path contains a space, your MCP client split it across argv — set DEVSMIND_PATH in the server's "env" block instead of passing --path.`;
+      throw new Error(`${(err as Error).message}${hint}`);
+    }
+    console.error(`DevsMind: bound via --path/DEVSMIND_PATH → serving ${boundDevmindPath}`);
     return;
   }
   const autoDetected = findDevmindDir(process.cwd());
   if (autoDetected) {
     bindDevmindPath(autoDetected);
+    // The one line that makes auto-detect debuggable: a global (no --path) config relies on the
+    // editor spawning this process from inside the workspace it has open. When that assumption
+    // doesn't hold — a client that spawns from its own install dir, or the user's home — this is
+    // the only signal that tells you WHERE it looked and WHAT it picked. Stderr, never stdout:
+    // stdout is the JSON-RPC pipe in stdio mode.
+    console.error(`DevsMind: started in ${process.cwd()} → serving ${boundDevmindPath}`);
   } else {
     console.error(
       `⚠️  DevsMind: no .devmind directory found from ${process.cwd()} — starting UNBOUND. ` +

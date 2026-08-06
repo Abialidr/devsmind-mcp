@@ -4,6 +4,7 @@ import { DEVSMIND_PORT } from '../../mcp/server';
 import {
   EntryContext,
   McpScope,
+  Scope,
   Transport,
   resolveScopeFile,
   resolveOsPath,
@@ -53,9 +54,10 @@ export async function handleMcp(opts: { path?: string }): Promise<void> {
     const target = await pickTarget();
     const transport = await pickTransport(target);
     const scope = await pickMcpScope(target);
-    const entry = target.mcp.entry(transport, ctx);
+    const entry = target.mcp.entry(transport, ctx, scope.scope);
 
     if (target.mcp.note) console.log(`\nℹ️  ${target.mcp.note}`);
+    printScopeNote(transport, scope.scope);
 
     const mode = await pickMode();
     if (mode === 'manual') {
@@ -101,6 +103,29 @@ export async function handleMcp(opts: { path?: string }): Promise<void> {
       return;
     }
     throw err;
+  }
+}
+
+/**
+ * A `global` MCP config is one file shared by every project, so it can never bake in one project's
+ * absolute path (see `stdioEntry` in registry.ts for why). Callers need to know what that implies
+ * for THEIR setup, since the two transports degrade differently when the assumption it relies on
+ * doesn't hold.
+ */
+function printScopeNote(transport: Transport, scope: Scope): void {
+  if (scope !== 'global') return;
+  if (transport === 'stdio') {
+    console.log(
+      `\nℹ️  Global + stdio: no project path is written. DevsMind finds the right project by` +
+      ` looking at the folder your editor launches it in. If your editor launches from somewhere` +
+      ` else (not the open workspace), use project scope instead.`
+    );
+  } else {
+    console.log(
+      `\nℹ️  Global + HTTP: this still connects to whichever ONE project you started` +
+      ` \`devsmind start\` in — global scope only saves you re-adding the same URL per project,` +
+      ` it does not make one server serve several.`
+    );
   }
 }
 

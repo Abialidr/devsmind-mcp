@@ -75,6 +75,30 @@ export function resolveDevmindDir(explicitPath?: string): string | null {
 }
 
 /**
+ * Rejoins a `--path` value that a shell split on spaces.
+ *
+ * An MCP client that spawns the server with `shell: true` concatenates argv WITHOUT quoting (Node
+ * warns about exactly this — DEP0190), so `--path C:\work 2\devsmind\.devmind` reaches us already
+ * torn apart: `--path` keeps `C:\work` and `2\devsmind\.devmind` lands in the leftover operands.
+ * The server then dies with "devmind_path does not exist" and the IDE just shows a dead MCP server.
+ * Any project whose path contains a space hits this, which is why `--stdio` alone works and
+ * `--stdio --path` does not.
+ *
+ * Rejoining the fragments with the spaces the shell ate recovers the real directory. Longest
+ * candidate first, and only ever returns a path that EXISTS — so a genuinely mistyped `--path`
+ * still fails loudly at the caller instead of being silently "repaired" into something else.
+ */
+export function recoverSpaceSplitPath(explicitPath: string | undefined, extraOperands: string[]): string | undefined {
+  if (!explicitPath || extraOperands.length === 0) return explicitPath;
+  if (fs.existsSync(explicitPath)) return explicitPath;
+  for (let take = extraOperands.length; take > 0; take--) {
+    const candidate = [explicitPath, ...extraOperands.slice(0, take)].join(' ');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return explicitPath;
+}
+
+/**
  * Loads project config.json and .env from the given .devmind directory path.
  */
 export function loadProjectContext(devmindPath: string): ProjectContext {

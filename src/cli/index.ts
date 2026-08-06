@@ -17,6 +17,7 @@ import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { handleDescribe } from './describe';
 import { handleEmbed } from './embed';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
+import { recoverSpaceSplitPath } from '../utils/config';
 import { DEVSMIND_VERSION } from '../utils/version';
 
 const program = new Command();
@@ -51,7 +52,10 @@ program
   .option('--sync', 'Run devsmind sync before starting the server')
   .option('--analyze', 'Run devsmind analyze before starting the server')
   .option('--fix', 'With --analyze, also apply safe automatic fixes')
-  .action(async (opts: { stdio?: boolean; port: string; path?: string; sync?: boolean; analyze?: boolean; fix?: boolean }) => {
+  .action(async (opts: { stdio?: boolean; port: string; path?: string; sync?: boolean; analyze?: boolean; fix?: boolean }, cmd: Command) => {
+    // A shell-spawning MCP client hands us a space-containing --path pre-split across argv; the
+    // tail sits in the leftover operands. Put it back together before anything reads opts.path.
+    opts.path = recoverSpaceSplitPath(opts.path, cmd.args);
     if (opts.sync || opts.analyze) {
       try {
         // Both flags share the same "sync" entrypoint — --analyze without --sync still

@@ -60,8 +60,8 @@ export interface IdeTarget {
     scopes: McpScope[];
     /** Supported transports; first is the preferred default. */
     transports: Transport[];
-    /** The value object placed under serverMap['devsmind'] for a given transport. */
-    entry: (t: Transport, ctx: EntryContext) => Record<string, unknown>;
+    /** The value object placed under serverMap['devsmind'] for a given transport and scope. */
+    entry: (t: Transport, ctx: EntryContext, scope: Scope) => Record<string, unknown>;
     /** Optional CLI one-liner installer (e.g. `claude mcp add ...`). */
     cliInstaller?: (t: Transport, ctx: EntryContext) => string;
     /** Extra guidance printed in manual mode. */
@@ -101,21 +101,31 @@ export interface EntryContext {
 // ─── Shared entry payloads ───────────────────────────────────────────────────
 
 /**
- * Standard stdio entry: the IDE spawns `devsmind start --stdio --path <devmindDir>`.
+ * Standard stdio entry: the IDE spawns `devsmind start --stdio [--path <devmindDir>]`.
  *
- * The explicit `--path` is what makes stdio binding deterministic. Unlike the HTTP server (you run
- * `devsmind start` yourself, from inside the project, so its cwd auto-detect is reliable), a stdio
- * server is spawned BY the IDE with a cwd we don't control — some spawn from the project root, some
- * from the IDE's install dir or the user's home. Baking the absolute brain path in here — which the
- * registration flow already knows (`ctx.devmindDir`) — means the process binds to the right project
- * regardless of where the IDE launched it, instead of leaning on a cwd assumption that silently
- * fails on some tools. Path may contain spaces; it's a separate argv element, so no quoting needed.
+ * `--path` is included for `project` scope only. A project-scoped config file lives inside — and
+ * so only ever serves — the one project it was written for, so baking in the absolute brain path
+ * (which the registration flow already knows via `ctx.devmindDir`) makes binding deterministic
+ * regardless of what cwd the IDE happens to spawn from.
+ *
+ * A `global` config is different: ONE file, read by every project on the machine. Baking a single
+ * project's path into it would silently point every other project at that same brain — the exact
+ * bug this scope split exists to avoid. So a global entry omits `--path` entirely and leans on the
+ * server's own auto-detect (`bindServerToProject` walks up from its cwd looking for `.devmind`),
+ * which works because the IDE spawns the stdio server from whichever workspace is actually open.
+ * If an IDE spawns from somewhere else instead (not the common case), the server starts unbound and
+ * falls back to per-call `devmind_path` — degraded, but never silently wrong.
+ *
+ * Path may contain spaces; it's a separate argv element, so no quoting needed.
  */
-export function stdioEntry(ctx: EntryContext): Record<string, unknown> {
-  return { command: 'devsmind', args: ['start', '--stdio', '--path', ctx.devmindDir] };
+export function stdioEntry(ctx: EntryContext, scope: Scope): Record<string, unknown> {
+  const args = ['start', '--stdio'];
+  if (scope === 'project') args.push('--path', ctx.devmindDir);
+  return { command: 'devsmind', args };
 }
 
-/** Standard HTTP entry: connect to the already-running server. */
+/** Standard HTTP entry: connect to the already-running server. Scope-independent — the URL never
+ *  names a project, since the server itself is single-project no matter which config points at it. */
 export function httpEntry(ctx: EntryContext): Record<string, unknown> {
   return { url: `http://localhost:${ctx.port}/mcp` };
 }
@@ -150,22 +160,22 @@ export function resolveScopeFile(file: OsPath, scope: Scope, workspaceRoot: stri
 const httpUrl = (ctx: EntryContext) => `http://localhost:${ctx.port}/mcp`;
 
 /** Cursor / Kiro: bare `url`, no type. */
-const entryUrl = (t: Transport, ctx: EntryContext) =>
-  t === 'stdio' ? stdioEntry(ctx) : { url: httpUrl(ctx) };
+const entryUrl = (t: Transport, ctx: EntryContext, scope: Scope) =>
+  t === 'stdio' ? stdioEntry(ctx, scope) : { url: httpUrl(ctx) };
 
 /** VS Code / Claude Code: explicit `type` + url. */
-const entryTyped = (t: Transport, ctx: EntryContext) =>
+const entryTyped = (t: Transport, ctx: EntryContext, scope: Scope) =>
   t === 'stdio'
-    ? { type: 'stdio', ...stdioEntry(ctx) }
+    ? { type: 'stdio', ...stdioEntry(ctx, scope) }
     : { type: 'http', url: httpUrl(ctx) };
 
 /** Windsurf / Antigravity: HTTP endpoint keyed as `serverUrl`. */
-const entryServerUrl = (t: Transport, ctx: EntryContext) =>
-  t === 'stdio' ? stdioEntry(ctx) : { serverUrl: httpUrl(ctx) };
+const entryServerUrl = (t: Transport, ctx: EntryContext, scope: Scope) =>
+  t === 'stdio' ? stdioEntry(ctx, scope) : { serverUrl: httpUrl(ctx) };
 
 /** Qwen Code: Streamable-HTTP endpoint keyed as `httpUrl`. */
-const entryHttpUrl = (t: Transport, ctx: EntryContext) =>
-  t === 'stdio' ? stdioEntry(ctx) : { httpUrl: httpUrl(ctx) };
+const entryHttpUrl = (t: Transport, ctx: EntryContext, scope: Scope) =>
+  t === 'stdio' ? stdioEntry(ctx, scope) : { httpUrl: httpUrl(ctx) };
 
 const cursorMdcWrap = (body: string): string =>
   `---\ndescription: DevsMind — Team AI Brain workspace rule\nalwaysApply: true\n---\n\n${body}\n`;
