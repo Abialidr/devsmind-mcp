@@ -797,6 +797,46 @@ Nor is `local/` — your requests, your revert backups, your feedback. That stay
 
 ## Changelog
 
+### 4.0.1 — Global MCP configs stop pinning every project to one brain
+
+A patch release: nothing removed, nothing renamed. Re-run `devsmind mcp` for any tool you registered with **global** scope — the config it wrote before this release has one specific project's path baked into a file every project reads, and needs to be regenerated.
+
+#### A global config named one project, and every project read it
+
+`devsmind mcp` asks where to write an editor's MCP config: **this project only**, or **global (all your projects)**. Before this release it wrote the same stdio entry either way:
+
+```
+devsmind start --stdio --path C:\projectA\.devmind
+```
+
+In a project-scoped file that's correct — the file itself lives inside one project and only that project's editor ever reads it. In a global file it's a mistake with no error to signal it. A global config is ONE file, read by every project on the machine. Baking project A's absolute path into it meant that opening project B or C and asking the AI to record a change wrote into **project A's graph** instead. Nothing failed. Nothing looked wrong in the moment.
+
+It was also uncorrectable by the AI in the room when it happened. A server that already knows which brain it's bound to — via `--path`, or via cwd auto-detect — strips `devmind_path` out of every tool's advertised schema, on purpose: that's the whole point of binding, an AI shouldn't have to discover, remember, or resend a path on every call. But that means an AI working against a mis-pinned global config can't see the parameter it would need to point itself at the right project, even if it somehow suspected something was off.
+
+The fix removes the assumption that a global config needs a path at all. Without `--path`, the server's own `bindServerToProject` walks up from wherever it was started, looking for a `.devmind` directory — the same auto-detect that's always powered the case where you start the HTTP server yourself, standing inside your project. A stdio server is normally launched by the editor with the open workspace as its working directory, so a global entry with no path binds to whichever project is actually open, correctly, every time, from one shared file. `stdioEntry` now takes the chosen scope and only appends `--path` for `project`; the four transport-specific entry builders (`entryUrl`/`entryTyped`/`entryServerUrl`/`entryHttpUrl`) all thread it through unchanged.
+
+That auto-detect has one real assumption behind it: the editor spawns the server from the workspace it has open. Most do. One that doesn't (spawns from its own install directory, or the user's home) leaves the server unbound, falling back to the older per-call `devmind_path` behavior — degraded, but never silently wrong, which is the property that matters. `devsmind mcp` now says this out loud the moment global scope is picked, with separate wording for the two transports: stdio gets the auto-detect explanation above; HTTP gets a reminder that it was never affected by this bug in the first place — a global HTTP entry is just `http://localhost:4513/mcp`, and the one thing that decides which project answers on that port is whichever directory you ran `devsmind start` in, a fact scope can't change. Both notes also appear in the manual (copy-paste snippet) flow, not just the automatic-write one.
+
+The other side of the fix is making the auto-detect debuggable, which it never was. `bindServerToProject` used to log only when it found nothing. It now logs its result either way, to stderr (stdout is the JSON-RPC pipe in stdio mode) — the folder it started in and the brain it bound to. That single line is what turns "why is my AI reading the wrong project" from a support conversation into something visible in the first few lines of output.
+
+#### The view app 404'd on any install path with a dot-directory in it
+
+`devsmind view` serves its JS/CSS assets and vendored graph libraries (`three.min.js`, `force-graph.min.js`) with Express's `res.sendFile`, which was being called with a full absolute path — `path.join(ASSETS_DIR, req.params.file)`. The library underneath, `send`, dotfile-checks *every segment* of an absolute path it's given and refuses the whole request if any segment starts with a dot, as a path-traversal guard. That's a reasonable check on a path a caller constructed from user input. It is nonsense here — `req.params.file` was already whitelisted against a fixed set of filenames a few lines above — but `send` has no way to know that, and an npm global install under `nvm` looks exactly like `/home/x/.nvm/versions/node/v22/lib/node_modules/devsmind-mcp/...`, dot-segment included. Anyone who installed DevsMind under `nvm` — which is most Linux/macOS Node setups — got a blank view app and a `NotFoundError` in the logs, with no code of theirs at fault. The fix is the standard way around this: pass `send`/`sendFile` a `root` option and the bare basename instead of a joined path. `root` confines the lookup to one directory (costing nothing, since the basename was already whitelisted) and the dotfile check has nothing left to trip on, since only the final segment is ever considered.
+
+#### `--stdio --path` silently truncated any project path containing a space
+
+Node itself warns about this one (`DEP0190`): a child process spawned with `shell: true` and an argv array gets that array **concatenated without quoting** before the shell parses it. Several MCP clients spawn stdio servers exactly that way. So a registered entry like
+
+```
+{ command: 'devsmind', args: ['start', '--stdio', '--path', 'C:\\work 2\\devsmind\\.devmind'] }
+```
+
+does not reach `devsmind` as four distinct arguments — it reaches the shell as one concatenated string, which then re-splits on whitespace like any other shell command. `--path` picks up only `C:\work`, and `2\devsmind\.devmind` lands among the leftover positional operands, which nothing was reading. The server then fails with "devmind_path does not exist" for a directory that was never moved — the message just names the wrong problem, so anyone hitting it went looking for a missing folder instead of a parsing bug. `--stdio` alone worked, which is what made this so easy to misattribute to something project-specific rather than universal to any path with a space in it.
+
+The fix is `recoverSpaceSplitPath`, wired in right after Commander parses argv and before anything else reads `opts.path`. It only has commander's own leftover operands to work with — `cmd.args` — so it rejoins them onto the truncated `opts.path` with the spaces the shell ate, trying the longest reconstruction first and falling back to shorter ones. Critically, it only ever returns a candidate that **actually exists on disk**; a `--path` that's wrong for a real reason (typo, deleted folder) still fails loudly instead of being "corrected" into some other existing directory that happens to share a prefix.
+
+A second, more robust fix rides alongside it: `bindServerToProject` now also accepts a `DEVSMIND_PATH` environment variable. An MCP config's `env` block reaches the child process as a real environment variable, never touched by shell re-splitting regardless of how the client spawns the process — so it sidesteps the whole class of bug rather than working around one instance of it. And for whoever still hits the error some other way, the message itself now checks for whitespace in the failed path and, if found, names the actual cause and points at `DEVSMIND_PATH` as the fix, instead of leaving the search for a "missing" directory to the reader.
+
 ### 4.0.0 — One write path, a server-driven indexer, and memory that writes nothing
 
 A breaking release: a tool was removed and the in-chat indexing protocol changed shape. Re-run `devsmind rule` after upgrading — a rule written against an older version still tells your agent to call `stage_change`, which no longer exists.
