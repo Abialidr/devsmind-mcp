@@ -108,7 +108,9 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
         fx.db.resetAll();
 
         const counts = fx.db.getCounts();
-        expect(counts).toEqual({ nodes: 0, connections: 0, history: 0 });
+        // vectors wiped along with nodes/history; workflows is NOT — the one created above
+        // (and asserted still present just below) survives resetAll by design.
+        expect(counts).toEqual({ nodes: 0, connections: 0, history: 0, vectors: 0, workflows: 1 });
         expect(fx.db.getAllNodes()).toEqual([]);
         // The workflow ROW itself, and its files on disk, are untouched — resetAll clears the
         // graph, not the long-lived feature record.
@@ -399,6 +401,36 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
         expect(fs.existsSync(vectorsJsonPath)).toBe(true);
         const vectorsData = JSON.parse(fs.readFileSync(vectorsJsonPath, 'utf-8'));
         expect(Object.keys(vectorsData.vectors)).toContain(nodeId);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
+  describe('getCounts', () => {
+    it('reports vectors and workflows alongside nodes/connections/history, not just the original three', async () => {
+      // `devsmind sync`'s printed summary is only as honest as this — it drives the
+      // Nodes/Connections/History/Vectors/Workflows lines the CLI shows after a sync.
+      const fx = makeFixture();
+      try {
+        const nodeId = '{app}/foo.ts#greet';
+        await stageAndCommit(fx, [
+          {
+            node_id: 'greet',
+            file_path: repoFile(fx, 'foo.ts'),
+            code_snapshot: 'export function greet(name: string): string {\n  return format(name);\n}',
+            name: 'greet',
+            type: 'function',
+            description: 'Greets by name.'
+          }
+        ]);
+        fx.db.upsertNodeVector(nodeId, new Int8Array([1, 2, 3, 4]), hashDescription('Greets by name.'));
+        fx.db.createWorkflow('Count Me', 'exercises getCounts');
+
+        const counts = fx.db.getCounts();
+        expect(counts.nodes).toBeGreaterThan(0);
+        expect(counts.vectors).toBe(1);
+        expect(counts.workflows).toBe(1);
       } finally {
         fx.cleanup();
       }

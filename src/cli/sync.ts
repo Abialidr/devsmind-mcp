@@ -8,8 +8,13 @@ import { printReport } from './analyze';
 import { renderSyncProgress, clearSyncProgressLine } from './sync-progress';
 
 /**
- * `devsmind sync` — force the on-disk graph (`graph/**`) and history
- * (`history/*.json`) into the local `brain.db`.
+ * `devsmind sync` — force the on-disk graph (`graph/**`), history (`history/*.json`),
+ * vectors (`vectors/**`), and workflows (`workflows/‹id›/workflow.json`) into the local
+ * `brain.db` (`syncFromDisk`), then force-writes graph/vectors/workflows back out from
+ * that DB state (`syncToDisk` — history is written immediately elsewhere, not here).
+ * The printed summary reports all five counts (Nodes/Connections/History/Vectors/
+ * Workflows) with their delta from before the run, so it's visible which of them the
+ * sync actually touched, not just nodes.
  *
  * Under `--stdio` (VS Code and other IDE-managed setups) the MCP process is
  * spawned by the editor and never serves the HTTP routes that would otherwise
@@ -39,7 +44,7 @@ export async function handleSync(opts: { path?: string; analyze?: boolean; fix?:
   // Read the pre-sync counts straight from the existing brain.db file (if any),
   // BEFORE DevMindDatabase's constructor runs syncFromDisk(). This lets us show
   // an honest delta of what the sync actually pulled in.
-  let before: { nodes: number; connections: number; history: number };
+  let before: { nodes: number; connections: number; history: number; vectors: number; workflows: number };
   try {
     before = readRawCounts(dbPath);
   } catch (err) {
@@ -62,10 +67,14 @@ export async function handleSync(opts: { path?: string; analyze?: boolean; fix?:
       return d === 0 ? '' : ` (${d > 0 ? '+' : ''}${d})`;
     };
 
+    // All five reported here because all five actually round-trip through sync now — vectors
+    // and workflows included, not just nodes/connections/history — see syncToDisk's own comment.
     console.log(`\n✅ Sync complete.`);
     console.log(`   Nodes       : ${after.nodes}${delta(before.nodes, after.nodes)}`);
     console.log(`   Connections : ${after.connections}${delta(before.connections, after.connections)}`);
-    console.log(`   History     : ${after.history}${delta(before.history, after.history)}\n`);
+    console.log(`   History     : ${after.history}${delta(before.history, after.history)}`);
+    console.log(`   Vectors     : ${after.vectors}${delta(before.vectors, after.vectors)}`);
+    console.log(`   Workflows   : ${after.workflows}${delta(before.workflows, after.workflows)}\n`);
 
     if (opts.analyze) {
       const godEntityThreshold = opts.godEntityThreshold ? parseInt(opts.godEntityThreshold, 10) : undefined;
@@ -85,8 +94,8 @@ export async function handleSync(opts: { path?: string; analyze?: boolean; fix?:
  * delta as if the DB were simply empty, masking real corruption. Per-table read
  * failures (e.g. a table missing on an older schema) still fall back to 0.
  */
-function readRawCounts(dbPath: string): { nodes: number; connections: number; history: number } {
-  const zero = { nodes: 0, connections: 0, history: 0 };
+function readRawCounts(dbPath: string): { nodes: number; connections: number; history: number; vectors: number; workflows: number } {
+  const zero = { nodes: 0, connections: 0, history: 0, vectors: 0, workflows: 0 };
   if (!fs.existsSync(dbPath)) return zero;
   let raw: Database.Database | null = null;
   try {
@@ -112,6 +121,8 @@ function readRawCounts(dbPath: string): { nodes: number; connections: number; hi
       nodes: one('SELECT COUNT(*) AS c FROM nodes WHERE deprecated = 0'),
       connections: one('SELECT COUNT(*) AS c FROM node_connections'),
       history: one('SELECT COUNT(*) AS c FROM history'),
+      vectors: one('SELECT COUNT(*) AS c FROM node_vectors'),
+      workflows: one('SELECT COUNT(*) AS c FROM workflows'),
     };
   } finally {
     raw.close();

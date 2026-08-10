@@ -561,14 +561,14 @@ export class DevMindDatabase {
   }
 
   /** Snapshot of active-node / connection / history row counts (used by `devsmind sync`). */
-  getCounts(): { nodes: number; connections: number; history: number } {
+  getCounts(): { nodes: number; connections: number; history: number; vectors: number; workflows: number } {
     const one = (sql: string): number => {
       try {
         const row = this.db.prepare(sql).get() as { c: number } | undefined;
         /* istanbul ignore next -- every call site here is a `SELECT COUNT(*) AS c FROM ...`,
            which always returns exactly one row; `row` can only be undefined if this helper is
            ever repurposed for a query that can return zero rows. Kept as a real guard, not
-           because today's three call sites can hit it. */
+           because today's call sites can hit it. */
         return row ? row.c : 0;
       } catch {
         return 0;
@@ -578,6 +578,8 @@ export class DevMindDatabase {
       nodes: one('SELECT COUNT(*) AS c FROM nodes WHERE deprecated = 0'),
       connections: one('SELECT COUNT(*) AS c FROM node_connections'),
       history: one('SELECT COUNT(*) AS c FROM history'),
+      vectors: one('SELECT COUNT(*) AS c FROM node_vectors'),
+      workflows: one('SELECT COUNT(*) AS c FROM workflows'),
     };
   }
 

@@ -153,7 +153,7 @@ describe('DevMindDatabase — coverage gaps', () => {
         fx.db.close();
 
         expect(fx.db.getSystemMeta('foo')).toBeNull();
-        expect(fx.db.getCounts()).toEqual({ nodes: 0, connections: 0, history: 0 });
+        expect(fx.db.getCounts()).toEqual({ nodes: 0, connections: 0, history: 0, vectors: 0, workflows: 0 });
         expect(() => fx.db.vacuum()).not.toThrow();
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('VACUUM failed'), expect.anything());
       } finally {
