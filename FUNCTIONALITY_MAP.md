@@ -12,7 +12,7 @@
 
 > The advertised count went **down** in 3.0.0 (42 → 35). Seven `workflow_*` tools collapsed into 8 leaner ones, and `get_node_graph`/`get_node_history` folded into `get_node_code` as parameters. Retired names still dispatch (so an agent on an old rule doesn't hard-fail) but are no longer offered — see Appendix 1.
 
-**Automated coverage:** 52 Jest suites / 1250 tests. The gate holds **100% lines** over the core set in `jest.config.js`. Every area below says which parts are covered by tests versus which still need a human at a terminal — that distinction is the whole point of the checklists.
+**Automated coverage:** 52 Jest suites / 1258 tests. The gate holds **100% lines** over the core set in `jest.config.js`. Every area below says which parts are covered by tests versus which still need a human at a terminal — that distinction is the whole point of the checklists.
 
 **The single most important architectural fact:** SQLite is a **rebuildable cache**. The **source of truth is the on-disk JSON tree** (`graph/`, `history/`, `vectors/`, `workflows/`), which is git-shared. `local/` (activity + feedback) is per-developer and never pushed. Every mutating operation mirrors to disk so `brain.db` can be rebuilt losslessly via `syncFromDisk()`.
 
@@ -393,7 +393,7 @@ flowchart LR
 
 **What it does:** The primary write path — how the AI edits code and records it into the graph.
 
-**MCP tools:** `edit_node`, `stage_change`, `add_description`, `commit_changes` (+ hidden legacy `add_node`, `add_connection`, `update_history`) — `edit_node` is the write path to use for every edit (TS/JS only, per the README). `stage_change` (**removed in 4.0.0, reinstated after with different semantics**) is not a second way to make an edit: it recovers one made WITHOUT `edit_node` — same `file_path`/`old_string`/`new_string` shape, but `new_string` is located on disk rather than written, since the caller's own edit/write tool already put it there. Both feed the same `findTouchedSymbols` → staging → `commit_changes` path. **`commit_changes` never touches git** — no shell-out, no git command anywhere in `commitStagedChanges`/the MCP handler — it writes only into `.devmind/`'s own graph/database and activity log; a real `git commit` is a fully separate, human-initiated step (see CHANGELOG 4.1.0 for the instruction-clarity fix after an agent was observed running one unprompted).
+**MCP tools:** `edit_node`, `stage_change`, `add_description`, `commit_changes` (+ hidden legacy `add_node`, `add_connection`, `update_history`) — `edit_node` is the write path to use for every edit (TS/JS only, per the README). `stage_change` (**removed in 4.0.0, reinstated after with different semantics**) is not a second way to make an edit: it recovers one made WITHOUT `edit_node` — same `file_path`/`old_string`/`new_string` shape, but `new_string` is located on disk rather than written, since the caller's own edit/write tool already put it there. Both feed the same `findTouchedSymbols` → staging → `commit_changes` path. **`commit_changes` never touches git** — no shell-out, no git command anywhere in `commitStagedChanges`/the MCP handler — it writes only into `.devmind/`'s own graph/database and activity log; a real `git commit` is a fully separate, human-initiated step (see CHANGELOG 4.1.1 for the instruction-clarity fix after an agent was observed running one unprompted).
 **Files:** `db/staging.ts`, `db/database.ts`, `utils/edit.ts`, `utils/ast.ts` (`findTouchedSymbols`), `db/activity.ts`, `db/feedback.ts`
 
 **Detailed flow:**
