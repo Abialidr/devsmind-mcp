@@ -141,8 +141,8 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
   {
     name: 'devsmind-commit-changes-contract',
     title: 'commit_changes contract',
-    description: 'commit_changes requires message + reasoning + feedback (all three) and refuses any batch containing an undescribed new node.',
-    hook: 'message + reasoning + feedback all required; new nodes need a description.',
+    description: 'commit_changes requires message + reasoning + feedback (all three), refuses any batch containing an undescribed new node, and is NOT git — never run git add/commit/push because this succeeded.',
+    hook: 'message + reasoning + feedback all required; new nodes need a description; NOT git.',
     type: 'feedback',
     body: [
       '`commit_changes` fails unless all THREE are present:',
@@ -153,7 +153,9 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
       '',
       'It also REFUSES any batch containing a brand-NEW node with no `description` (1-3 sentences of what it does and its domain concepts, in words a teammate might search by — never a restatement of the name). Nothing staged is lost: describe it via `add_description` and retry the same call.',
       '',
-      '**Why:** `edit_node` only stages; nothing reaches the graph or the activity log until commit. `feedback` is the only channel that improves DevsMind over time — it routes to a local graph-fix queue and a product log ([[devsmind-graph-feedback-queue]]).',
+      '**`commit_changes` is NOT git**, despite sharing the word. It never runs `git add`/`git commit`/`git push` or any other git command, and never touches the actual git history — it writes only into DevsMind\'s own local graph/database. Calling it successfully is not a signal to now run a real git commit yourself: never `git add`/`git commit`/`git push` on your own initiative just because `commit_changes` succeeded or a task feels done. A real git commit is the developer\'s decision, made separately, only when explicitly asked for — same as any other git action.',
+      '',
+      '**Why:** `edit_node`/`stage_change` only stage; nothing reaches the graph or the activity log until commit. `feedback` is the only channel that improves DevsMind over time — it routes to a local graph-fix queue and a product log ([[devsmind-graph-feedback-queue]]). The git distinction matters because the shared word "commit" is an easy thing to conflate — one is a local DevsMind write, the other is your actual version control, and mixing them up means either an unwanted autonomous git commit, or code that never actually gets git-committed because it looked "already committed".',
       '',
       '**How to apply:** commit at natural checkpoints during a long task, and always before ending a turn with staged work. Pass `description` inline on [[devsmind-edit-node-always]] when the edit created exactly one new symbol. Noticed something worth reporting but are not committing right now? `add_feedback` takes the same 5 categories ON DEMAND — any one or more, nothing required, no commit needed (see [[devsmind-graph-feedback-queue]]).',
     ].join('\n'),

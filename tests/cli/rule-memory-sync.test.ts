@@ -97,6 +97,23 @@ describe('generated rule + memory stay in sync with the MCP server', () => {
     }
   });
 
+  it('tells the AI commit_changes is NOT git, everywhere the contract lives', async () => {
+    // Regression guard for a real incident: an agent ran an actual `git add`/`git commit` right
+    // after calling commit_changes, unprompted — nothing in the contract ever said the two
+    // "commit"s are unrelated, and commit_changes' required `message` param reads exactly like a
+    // git commit message. Checked on the live tool schema too (not just the generated docs),
+    // since an agent that only reads tool descriptions, never the rule, still needs to see this.
+    for (const surface of [RULE_AUTOMATIC, RULE_MANUAL, DEVSMIND_INSTRUCTIONS]) {
+      expect(surface.toLowerCase()).toContain('not git');
+    }
+    const commitTopic = MEMORY_TOPICS.find(t => t.name === 'devsmind-commit-changes-contract')!;
+    expect(commitTopic.body.toLowerCase()).toContain('not git');
+
+    const { tools } = await harness.client.listTools();
+    const commitChangesTool = tools.find(t => t.name === 'commit_changes')!;
+    expect((commitChangesTool.description || '').toLowerCase()).toContain('not git');
+  });
+
   describe.each(RULE_VARIANTS)('rule (%s)', (_style, rule) => {
     it("states every param commit_changes rejects a call for", () => {
       // The breakage this guards: the rule listed only message + reasoning after `feedback`

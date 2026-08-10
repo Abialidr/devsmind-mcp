@@ -809,13 +809,15 @@ You commit `.devmind/config.json` plus the JSON trees — `graph/`, `history/`, 
 
 Nor is `local/` — your requests, your revert backups, your feedback. That stays on your machine by design.
 
+`commit_changes` (the AI's step below) and a real `git commit` (yours) are two different, separate things that happen to share the word "commit" — the AI's call writes only into `.devmind/`'s local graph/database, never git; the actual `git commit -am`/`git push` step is **you**, the developer, deciding to commit and share, same as on any project without DevsMind:
+
 ```
        Developer A                                         Developer B
    ───────────────────                                 ───────────────────
    Adds expired-coupon validation                      Pulls latest code
-   AI updates applyPromoCode history                   AI inspects applyPromoCode
-   `git commit -am "add validator"`                    Instantly sees validation logic,
-   `git push`  ───────► [Shared Remote Git] ────────►  why it was added, and ticket ID!
+   AI records it via commit_changes                    AI inspects applyPromoCode
+   YOU run `git commit -am "add validator"`             Instantly sees validation logic,
+   YOU run `git push`  ───► [Shared Remote Git] ──────► why it was added, and ticket ID!
 ```
 
 ---
@@ -845,6 +847,12 @@ Research across all 9 integrated tools that shaped the original print-only desig
 `stage_change` fills exactly that gap, with a shape that looks identical to `edit_node` at a glance but means something different underneath. Same parameters — `file_path`, `old_string`, `new_string`, `replace_all`, `description` — but `old_string`/`new_string` swap roles: `new_string` is what must already be found on disk (it gets *located*, never written), and `old_string` is what the code looked like before, supplied only to reconstruct history and a diff. `locateAppliedEdit()` (`utils/edit.ts`) is the new read-only mirror of `replaceTextInFile()` that makes this possible — same EOL-tolerant matching, same single-occurrence-unless-`replace_all` rule, same "was not found" and "matches more than one place" errors, just searching for what the edit left behind instead of what it's about to remove. Its result feeds the exact same `findTouchedSymbols` → `stageEntry` → `commit_changes` path `edit_node` already uses, so there was no second staging pipeline to build — only a different way of arriving at the `ranges`/`before` pair that pipeline needs. If `new_string` isn't found, it fails clearly and says so (`stage_change records an edit that has ALREADY landed on disk`) rather than staging nothing silently or, worse, staging the wrong span.
 
 The workspace rule, the memory prompt, and the skill file all mention it now, framed consistently as recovery rather than an alternative: `edit_node` stays the one tool to reach for while making an edit; `stage_change` is what to call afterward, only when a file already changed some other way.
+
+#### Fix: nothing ever told the AI that `commit_changes` isn't git
+
+A teammate reported an agent running an actual `git add`/`git commit` immediately after calling `commit_changes` — unprompted, without being asked to touch git at all. The implementation was never in question: `commit_changes` has no shell-out, no git command anywhere in it, and only ever writes into `.devmind/`'s own local graph/database and activity log. The gap was entirely in what the AI was ever told. `commit_changes` takes a required `message` param described as "the user's original request, verbatim" — which reads exactly like a commit message would — and nowhere in `DEVSMIND_INSTRUCTIONS`, the generated rule, or the memory topics was there ever a sentence saying the two "commit"s are unrelated. An agent that treats the tool name at face value, or that has its own habitual "wrap up with a git commit" behavior, has every reason to either run a real git commit right after (what got reported) or, just as bad the other way, assume `commit_changes` already covered the real git commit and skip one that should have happened.
+
+Fixed by saying it explicitly, everywhere the contract lives: a new numbered point in `DEVSMIND_INSTRUCTIONS` (`commit_changes is NOT git and never touches it... never run git add/git commit/git push on your own initiative just because commit_changes succeeded`), the same language appended to the `commit_changes` tool's own schema description (so it's visible even to an agent that only ever reads tool schemas, not the rule), a new point in `devsmind rule` for both Automatic and Manual workflow styles, and an expanded `devsmind-commit-changes-contract` memory topic. The Git Collaboration Workflow diagram just above (a human-facing doc, not part of what the AI reads) had the same ambiguity in a smaller way — `git commit -am`/`git push` sat unlabeled right after "AI updates history," with nothing marking whose step that actually is — now both lines read **YOU**.
 
 ### 4.0.1 — Global MCP configs stop pinning every project to one brain
 
