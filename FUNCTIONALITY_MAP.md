@@ -488,6 +488,8 @@ flowchart TD
 
 **Detectors (all local SQLite/FS/git):** god entities (degree ≥15), circular dependencies (DFS), orphaned nodes, dangling edges, duplicate/case-collision IDs, history missing developer attribution, empty code snapshots, spurious/built-in-named nodes, nodes with missing files, git-detected renames, git-tracked files with zero nodes.
 
+`findSpuriousAndMissingFileNodes`'s "missing files" check is `fs.statSync(p).isFile()` (was `fs.existsSync(p)`) — **fixed** after a production node was found with `file_path` pointing at a whole repo/workspace DIRECTORY rather than a real file: `existsSync` alone said that path "exists", so the node sailed through every analyze run indefinitely, and only ever surfaced as an EISDIR crash much later, when `writeGraphToDisk`/`writeVectorsToDisk` tried to write a JSON *file* at that same path during `devsmind sync` (see area O). `statSync().isFile()` catches "doesn't exist" and "exists but isn't a file" in the same check — `--fix` deprecates either the same way.
+
 `--fix` applies **only safe/reversible** fixes: deprecate dead nodes, delete dangling edges, migrate renames. `recheck_graph` prunes spurious nodes with zero history. `prune` is an interactive manual reviewer.
 
 ```mermaid
@@ -728,7 +730,10 @@ flowchart TD
 **CLI:** `sync`, `sync --analyze`
 **Files:** `db/database.ts` (`syncFromDisk`, `syncToDisk`), `utils/ast.ts`, `utils/scanner.ts`, `db/schema.ts`, `cli/sync.ts`, `cli/sync-progress.ts`
 
-**Sync detail:** `sync` forces committed on-disk `graph/**` + `history/*.json` (+ `vectors/`, `workflows/`) into `brain.db` — **critical under `--stdio`** where the editor-spawned process never auto-syncs after `git pull`. `syncFromDisk` runs in the DB constructor (heals legacy relative paths, rebuilds nodes/edges/history/vectors/workflows under `foreign_keys=OFF`, orphan-sweeps vectors). SQLite = cache; JSON = source of truth. `node_tokens` (BM25) is the only non-synced, freely-rebuildable table.
+**Sync detail:** `devsmind sync` runs BOTH directions in one call — `syncFromDisk` (disk → `brain.db`: reads `graph/**` + `history/*.json` + `vectors/*.json` + `workflows/`, heals legacy relative paths, rebuilds nodes/edges/history/vectors/workflows under `foreign_keys=OFF`, orphan-sweeps vectors) **then** `syncToDisk` (`brain.db` → disk: force-writes `graph/`/`vectors/`/`workflows/` JSON from current DB state). `syncFromDisk` is **critical under `--stdio`**, where the editor-spawned process never auto-syncs after `git pull`. SQLite = cache; JSON = source of truth. `node_tokens` (BM25) is the only non-synced, freely-rebuildable table.
+
+- **Fix: `syncToDisk` never wrote `vectors/`, only `graph/` and `workflows/`** — an asymmetry with `syncFromDisk`, which reads all three. Normal operation didn't depend on it (`writeVectorsToDisk` runs immediately alongside every embedding write, same as `writeGraphToDisk` does for graph JSON), but it meant `devsmind sync` — the tool that exists specifically to force a resync after `vectors/*.json` got deleted, corrupted, or silently failed to write — couldn't actually repair `vectors/`. Fixed: `syncToDisk` now calls `writeVectorsToDisk` alongside `writeGraphToDisk` for every node's file_path.
+- **Fix: EISDIR crash on `devsmind sync`.** A production brain had a node whose `file_path` was literally a directory (a repo root, or the workspace root) rather than a real file — `toRepoRelativePath` collapses to `''`/`'{repo}/'`/`'..'` for those, which made `writeGraphToDisk`/`writeVectorsToDisk` try to write a JSON *file* at the `graph/`/`vectors/` directory itself (or an ancestor of it), throwing `EISDIR: illegal operation on a directory` — repeatedly, once per distinct malformed `file_path` string in the `Set` `syncToDisk` iterates. New `isDegenerateDiskJsonPath` guard (three checks: empty/trailing-slash `diskRelPath`, a `path.relative` that resolves to `''`/starts with `..`, and an existsSync+isDirectory catch-all) refuses the write and prints one clear warning instead, pointing at `devsmind analyze --fix` — which now actually cleans up the offending node (see area I).
 
 **AST core (`ast.ts`) — the crown jewel:**
 - **TypeScript-compiler-based** (no tree-sitter). Full parse/edges/editing for `.ts .tsx .js .jsx .mjs .cjs .vue .svelte` (SFCs masked to script blocks preserving offsets). The **12 other languages** (py/go/java/cs/rb/php/rs/swift/kt/dart) get **regex identifiers only — no spans, no edges, no in-place editing.**
@@ -739,9 +744,9 @@ flowchart TD
 ```mermaid
 flowchart TD
   subgraph Sync
-    PULL[git pull] --> SF[sync → syncFromDisk]
+    PULL[git pull] --> SF["sync → syncFromDisk (reads graph/history/vectors/workflows)"]
     SF --> DB[(brain.db rebuilt)]
-    DB -->|syncToDisk| JSON[graph/history/vectors/workflows JSON]
+    DB -->|syncToDisk| JSON["graph/vectors/workflows JSON (history/ is written immediately on each edit, not here)"]
   end
   subgraph AST["ast.ts core"]
     F[File] --> PARSE{JS/TS family?}
@@ -764,6 +769,9 @@ flowchart TD
 - [ ] RTK Query: caller→endpoint edge exists via the generated `useXQuery` hook alias.
 - [ ] `vectors/` sync round-trips (base64), deprecated nodes excluded, wrong-model vectors swept.
 - [ ] Windows path case-folding: no duplicate/case-collision node issues.
+- [x] `syncToDisk` force-rewrites `vectors/*.json` from `node_vectors`, same as it already did for `graph/`/`workflows/` (`tests/db/sync.test.ts`).
+- [x] A node whose `file_path` resolves to a directory (workspace root, repo root, or a `..`-collapsing parent) is skipped with one clear warning by `writeGraphToDisk`/`writeVectorsToDisk`, never an EISDIR crash — and never silently creates a file where `graph/`/`vectors/` should be a directory (`tests/db/database.gaps.test.ts`).
+- [x] `findSpuriousAndMissingFileNodes` flags a directory-typed `file_path` as missing, and `analyze --fix` deprecates it (`tests/db/analyze.test.ts`).
 
 ---
 

@@ -3138,9 +3138,20 @@ export class DevMindDatabase {
       if (node.file_path) {
         const paths = node.file_path.split(',').map(p => p.trim()).filter(Boolean);
         if (paths.length > 0) {
+          // "Missing" also covers a file_path that resolves to a DIRECTORY rather than a real
+          // file — plain fs.existsSync() alone says a directory "exists", so a node corrupted
+          // this way (its file_path IS a repo or workspace root, from some earlier bug) sailed
+          // through this check indefinitely; it only ever surfaced as an EISDIR crash when
+          // writeGraphToDisk/writeVectorsToDisk later tried to write a JSON file at that same
+          // path. statSync().isFile() catches both "doesn't exist" and "exists but isn't a file"
+          // in one check — a node deprecated for either reason has no real source to hold anyway.
           const allMissing = paths.every(p => {
             const resolvedPath = path.isAbsolute(p) ? p : path.resolve(workspaceRoot, p);
-            return !fs.existsSync(resolvedPath);
+            try {
+              return !fs.statSync(resolvedPath).isFile();
+            } catch {
+              return true;
+            }
           });
           if (allMissing) missingFile.push(node);
         }
@@ -3750,6 +3761,33 @@ export class DevMindDatabase {
     return s.replace(/[\\%_]/g, ch => '\\' + ch);
   }
 
+  /**
+   * True when `targetPath` (a computed `graph/`/`vectors/` JSON path) does NOT land strictly
+   * inside `containerDir` as a real file — i.e. writing there would be writing to a directory,
+   * not a file inside one. Guards `writeGraphToDisk`/`writeVectorsToDisk` against a malformed
+   * node whose `file_path` IS a directory (the workspace root, or a repo root itself): observed
+   * in production as an EISDIR crash on `devsmind sync`, because `toRepoRelativePath` collapses
+   * to `''` (workspace root) or `'{repo}/'` (a repo root) for those, which `diskRelPath` then
+   * turns into `''`/a trailing-slash string/`'..'` depending on which branch collapsed — every
+   * one of which makes `path.join(containerDir, diskRelPath)` resolve to `containerDir` itself
+   * or some directory already inside it, never a fresh `.json` file. Multiple checks on purpose:
+   * the empty/trailing-slash/`..`-relative cases catch it structurally (works even on a brand
+   * new brain where nothing exists on disk yet, where an EISDIR would instead be a silent
+   * file-where-directory-belongs corruption); the existsSync+isDirectory check is a catch-all
+   * for any other collapse shape not foreseen above (existsSync is checked first specifically so
+   * a normal not-yet-written target — the common case — never reaches statSync at all). Callers
+   * already wrap their whole body in a try/catch that logs and returns, so nothing extra is
+   * needed here for a statSync that throws for some other reason (a permission error, a race).
+   * `devsmind analyze --fix` deprecates the node actually causing this; this only ever refuses
+   * the write, never touches the node.
+   */
+  private isDegenerateDiskJsonPath(containerDir: string, diskRelPath: string, targetPath: string): boolean {
+    if (!diskRelPath || diskRelPath.endsWith('/') || diskRelPath.endsWith('\\')) return true;
+    const relToContainer = path.relative(containerDir, targetPath);
+    if (relToContainer === '' || relToContainer.startsWith('..')) return true;
+    return fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
+  }
+
   writeGraphToDisk(filePath: string) {
     try {
       if (!filePath) return;
@@ -3760,7 +3798,12 @@ export class DevMindDatabase {
 
       // E.g., "{harrir-web}/app/page.tsx" -> "graph/harrir-web/app/page.json"
       const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
-      const graphJsonPath = path.join(workspaceRoot, 'graph', diskRelPath);
+      const graphDir = path.join(workspaceRoot, 'graph');
+      const graphJsonPath = path.join(graphDir, diskRelPath);
+      if (this.isDegenerateDiskJsonPath(graphDir, diskRelPath, graphJsonPath)) {
+        console.warn(`⚠️ Skipped writing graph JSON: a node's file_path resolves to a directory, not a file (${absPath}) — run \`devsmind analyze --fix\` to clean it up.`);
+        return;
+      }
 
       // Get all nodes in this file (active AND deprecated). A node's file_path is either
       // exactly this absolute path, or (for the rare node spanning multiple files) a ", "-joined
@@ -3851,7 +3894,14 @@ export class DevMindDatabase {
       const absPath = canonicalizePath(filePath);
       const repoRelPath = this.toRepoRelativePath(absPath);
       const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
-      const vectorsJsonPath = path.join(workspaceRoot, 'vectors', diskRelPath);
+      const vectorsDir = path.join(workspaceRoot, 'vectors');
+      const vectorsJsonPath = path.join(vectorsDir, diskRelPath);
+      // Same guard as writeGraphToDisk — see isDegenerateDiskJsonPath's comment for why this
+      // happens and what it means.
+      if (this.isDegenerateDiskJsonPath(vectorsDir, diskRelPath, vectorsJsonPath)) {
+        console.warn(`⚠️ Skipped writing vectors JSON: a node's file_path resolves to a directory, not a file (${absPath}) — run \`devsmind analyze --fix\` to clean it up.`);
+        return;
+      }
 
       const absLower = absPath.toLowerCase();
       const absEscLower = this.likeEscape(absPath).toLowerCase();
@@ -3888,7 +3938,17 @@ export class DevMindDatabase {
     }
   }
 
-  /** Force-syncs all database nodes and workflows to disk JSON files. */
+  /**
+   * Force-syncs all database nodes, vectors, and workflows to disk JSON files. This is the
+   * write-back half of `devsmind sync` (paired with `syncFromDisk`, which reads `vectors/*.json`
+   * into `node_vectors` — see its comment). Vectors are re-written here for the same reason
+   * graph JSON is: normal operation already keeps `vectors/` current (`writeVectorsToDisk` runs
+   * immediately alongside every embedding write), but `sync` exists precisely for the abnormal
+   * case — recovering a `.devmind` after `vectors/*.json` was deleted/corrupted independently of
+   * the DB, or after a past write silently failed (e.g. the directory-typed file_path bug
+   * `isDegenerateDiskJsonPath` now catches) — so leaving vectors out of the force-resync
+   * defeated half the point of running it.
+   */
   syncToDisk(): void {
     try {
       const rows = this.db.prepare('SELECT DISTINCT file_path FROM nodes').all() as { file_path: string }[];
@@ -3903,6 +3963,7 @@ export class DevMindDatabase {
 
       for (const filePath of filePaths) {
         this.writeGraphToDisk(filePath);
+        this.writeVectorsToDisk(filePath);
       }
 
       const workflowRows = this.db.prepare('SELECT id FROM workflows').all() as { id: string }[];

@@ -342,6 +342,27 @@ describe('runAnalysis (src/db/analyze.ts)', () => {
         fx.cleanup();
       }
     });
+
+    it('flags a node whose file_path resolves to a DIRECTORY, not a file — fs.existsSync alone would say it "exists"', () => {
+      // Regression test: a real production brain had a node whose file_path was literally its
+      // repo root directory (not a source file) — plain existsSync() said "exists" so it never
+      // surfaced as missing_files, and only crashed much later, when writeGraphToDisk tried to
+      // write a JSON *file* at that same path and hit EISDIR (the directory was already there).
+      const fx = makeFixture();
+      try {
+        const corruptId = '{app}/#corrupt';
+        fx.db.upsertNode({ id: corruptId, type: 'function', name: 'corrupt', file_path: fx.repoDir });
+
+        const { missingFile } = fx.db.findSpuriousAndMissingFileNodes(fx.root);
+        expect(missingFile.map(m => m.id)).toContain(corruptId);
+
+        const report = runAnalysis(fx.db, fx.root, { fix: true });
+        expect(report.missing_files.map(m => m.id)).toContain(corruptId);
+        expect(fx.db.getNode(corruptId)?.deprecated).toBe(1);
+      } finally {
+        fx.cleanup();
+      }
+    });
   });
 
   describe('--fix behavior', () => {

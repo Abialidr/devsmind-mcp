@@ -2129,6 +2129,90 @@ describe('DevMindDatabase — coverage gaps', () => {
     });
   });
 
+  describe('writeGraphToDisk / writeVectorsToDisk — directory-typed file_path guard', () => {
+    // Regression test for a real EISDIR crash: a node whose file_path is a DIRECTORY makes
+    // toRepoRelativePath collapse the relative part to something degenerate — '' when file_path
+    // IS `workspaceRoot` (== path.dirname(dbPath), i.e. the `.devmind` directory itself, the
+    // value these functions actually use, NOT the project root one level up), '{repo}/' when
+    // file_path is a configured repo root, or '..' when file_path is the project root (one level
+    // ABOVE `.devmind`, so relative-to-`.devmind` is a parent traversal). Every one of those
+    // makes `path.join(graph/vectors dir, diskRelPath)` resolve to that directory itself or an
+    // ancestor of it, never a fresh `.json` file inside it — throwing EISDIR when the target
+    // already exists (the common case on a synced brain) or silently creating a file where a
+    // directory belongs otherwise. `isDegenerateDiskJsonPath` catches all three shapes.
+
+    it('writeGraphToDisk warns and skips, without touching the graph/ directory, when file_path IS the .devmind directory', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/#corrupt', type: 'function', name: 'corrupt', file_path: fx.devmindPath });
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          expect(() => fx.db.writeGraphToDisk(fx.devmindPath)).not.toThrow();
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('resolves to a directory'));
+        } finally {
+          warnSpy.mockRestore();
+        }
+        // graph/ must still be a real directory afterward — never overwritten as a file.
+        const graphPath = path.join(fx.devmindPath, 'graph');
+        expect(fs.existsSync(graphPath) ? fs.statSync(graphPath).isDirectory() : true).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('writeGraphToDisk warns and skips when file_path is a configured repo root', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/#corrupt2', type: 'function', name: 'corrupt2', file_path: fx.repoDir });
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          expect(() => fx.db.writeGraphToDisk(fx.repoDir)).not.toThrow();
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('resolves to a directory'));
+        } finally {
+          warnSpy.mockRestore();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('writeGraphToDisk warns and skips when file_path is the project root, one level above .devmind (the "../" collapse)', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/#corrupt3', type: 'function', name: 'corrupt3', file_path: fx.root });
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          expect(() => fx.db.writeGraphToDisk(fx.root)).not.toThrow();
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('resolves to a directory'));
+        } finally {
+          warnSpy.mockRestore();
+        }
+        const devmindPath = fx.devmindPath;
+        expect(fs.existsSync(devmindPath) ? fs.statSync(devmindPath).isDirectory() : true).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('writeVectorsToDisk warns and skips when file_path resolves to a directory', () => {
+      const fx = makeFixture();
+      try {
+        const id = '{app}/#corrupt4';
+        fx.db.upsertNode({ id, type: 'function', name: 'corrupt4', file_path: fx.devmindPath });
+        fx.db.upsertNodeVector(id, new Int8Array([1, 2, 3, 4]), hashDescription('x'));
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          expect(() => fx.db.writeVectorsToDisk(fx.devmindPath)).not.toThrow();
+          expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('resolves to a directory'));
+        } finally {
+          warnSpy.mockRestore();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('parseReasoningBlocksTimed (pure function)', () => {
     const CREATED_AT = '2026-01-01T00:00:00.000Z';
 

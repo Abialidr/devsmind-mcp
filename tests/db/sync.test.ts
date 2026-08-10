@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import BetterSqlite3 from 'better-sqlite3';
 import { DevMindDatabase } from '../../src/db/database';
-import { EMBEDDING_MODEL_ID, EMBEDDING_DIM } from '../../src/db/embedder';
+import { EMBEDDING_MODEL_ID, EMBEDDING_DIM, hashDescription } from '../../src/db/embedder';
 import { makeFixture, stageAndCommit, repoFile } from '../helpers/fixture';
 
 describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
@@ -363,6 +363,42 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
         expect(fs.existsSync(workflowJsonPath)).toBe(true);
         const graphData = JSON.parse(fs.readFileSync(graphJsonPath, 'utf-8'));
         expect(graphData.nodes.map((n: any) => n.id)).toContain('{app}/foo.ts#greet');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('also force-writes every node\'s vectors JSON from current DB state, not just graph/workflows', async () => {
+      // Regression test: syncToDisk used to only call writeGraphToDisk/writeWorkflowToDisk,
+      // silently leaving vectors/*.json stale on a force-resync even though syncFromDisk (the
+      // read half) does load vectors/*.json into node_vectors — an asymmetry that defeated half
+      // the point of `devsmind sync` as a recovery tool for exactly this kind of on-disk drift.
+      const fx = makeFixture();
+      try {
+        const nodeId = '{app}/foo.ts#greet';
+        await stageAndCommit(fx, [
+          {
+            node_id: 'greet',
+            file_path: repoFile(fx, 'foo.ts'),
+            code_snapshot: 'export function greet(name: string): string {\n  return format(name);\n}',
+            name: 'greet',
+            type: 'function',
+            description: 'Greets by name.'
+          }
+        ]);
+        fx.db.upsertNodeVector(nodeId, new Int8Array([1, 2, 3, 4]), hashDescription('Greets by name.'));
+
+        const vectorsJsonPath = path.join(fx.devmindPath, 'vectors', 'app', 'foo.json');
+        expect(fs.existsSync(vectorsJsonPath)).toBe(true);
+
+        fs.rmSync(vectorsJsonPath, { force: true });
+        expect(fs.existsSync(vectorsJsonPath)).toBe(false);
+
+        fx.db.syncToDisk();
+
+        expect(fs.existsSync(vectorsJsonPath)).toBe(true);
+        const vectorsData = JSON.parse(fs.readFileSync(vectorsJsonPath, 'utf-8'));
+        expect(Object.keys(vectorsData.vectors)).toContain(nodeId);
       } finally {
         fx.cleanup();
       }
