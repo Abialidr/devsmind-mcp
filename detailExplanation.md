@@ -104,13 +104,14 @@ npm install -g devsmind-mcp
 > ```bash
 > npm install -g devsmind-mcp@latest   # pull the latest CLI
 > devsmind rule                        # re-paste — the generated rule changes between releases
-> devsmind memory                      # re-seed — it carries the same contract and goes stale the same way
+> devsmind memory                      # re-print — it carries the same contract and goes stale the same way
+> devsmind skill                       # re-write — same contract again, a third surface for it
 > ```
-> **Run both, not just the rule.** They put the same contract in two different places, so refreshing one and not the other leaves your agent working from two versions of the truth.
+> **Run all three you use, not just the rule.** They put the same contract in different places, so refreshing one and not the others leaves your agent working from multiple versions of the truth.
 >
 > **3.0.0 makes this more important than any release before it**, because it *removed* tools rather than adding them. A rule or memory file written against 2.x points your agent at `workflow_pause`, `get_node_graph`, `search_decisions`, and `search_nodes`' `keywords` — none of which exist now. Nothing fails loudly; the agent just burns turns calling tools that aren't there. Check the [Changelog](#changelog) after each upgrade — some releases need this, some don't.
 
-The MCP connection, the workspace rule, and the seeded memory are all **per-developer, per-tool** — they live in your IDE/CLI's own config files on your machine and are **not** committed to git. So every teammate runs `devsmind mcp`, `devsmind rule` and `devsmind memory` once on their own machine, even when the brain itself is already set up.
+The MCP connection, the workspace rule, the memory prompt, and the skill file are all **per-developer, per-tool** — they live in your IDE/CLI's own config files on your machine and are **not** committed to git. So every teammate runs `devsmind mcp`, `devsmind rule`, and whichever of `devsmind memory`/`devsmind skill` their tool supports, once on their own machine, even when the brain itself is already set up.
 
 ### 🆕 A) Starting a new brain (first person on the project)
 
@@ -134,15 +135,23 @@ devsmind rule
 
 # 4. (Optional) Print a "remember this" prompt to paste into your AI chat — a
 #    different lever from the rule file above (see why below). Writes nothing
-#    to disk. Safe to skip; the rule alone is enough.
+#    to disk. Safe to skip; the rule alone is enough. Skipped automatically
+#    (with an explanation) for a tool with no real background-memory feature.
 devsmind memory
 
-# 5. Start the MCP server. Run from the folder containing .devmind (or pass
+# 5. (Optional) Write the workflow contract as an explicitly-invokable skill
+#    file (.agents/skills/devsmind/SKILL.md) — a single file, `/devsmind` (or
+#    `$devsmind` for Codex) to re-assert the contract mid-conversation. Worth
+#    running especially for the tools step 4 skipped, since this works
+#    regardless of whether a tool has a background-memory feature at all.
+devsmind skill
+
+# 6. Start the MCP server. Run from the folder containing .devmind (or pass
 #    --path <devmind_path>). Skip this if you connected via stdio in step 2 —
 #    then your IDE launches the server itself.
 devsmind start
 
-# 6. (Optional, recommended) Index your codebase so the graph actually has
+# 7. (Optional, recommended) Index your codebase so the graph actually has
 #    content to look up. This is the one step unique to a NEW project. It's
 #    skippable — you can instead let the graph "grow as you go" as your agent
 #    records changes — but until the code is indexed (or enough organic usage
@@ -151,7 +160,7 @@ devsmind index --run --provider gemini --key YOUR_GEMINI_KEY
 #    (see the `index` / `reindex` reference below for providers, flags, and the
 #     zero-setup grow-as-you-go alternative)
 
-# 7. Commit .devmind/ so your team shares the same brain.
+# 8. Commit .devmind/ so your team shares the same brain.
 git add .devmind && git commit -m "Add DevsMind brain"
 ```
 
@@ -179,27 +188,32 @@ devsmind rule
 #    Nothing to sync here — it never wrote anything in the first place.
 devsmind memory
 
-# 6. Sync the committed graph/ + history/ JSONs into your local brain.db.
+# 6. (Optional) Re-run the skill file too — same reasoning as the memory
+#    step above. Idempotent: regenerates the same content every time.
+devsmind skill
+
+# 7. Sync the committed graph/ + history/ JSONs into your local brain.db.
 #    Especially important for stdio setups (VS Code and most CLI tools): the
 #    editor spawns the server itself and only loads the graph once per process,
 #    so after every `git pull` run this to pick up teammates' changes.
 devsmind sync
 
-# 7. Start the server (skip if you connected via stdio — the IDE runs it).
+# 8. Start the server (skip if you connected via stdio — the IDE runs it).
 devsmind start
 ```
 
-That's the whole loop. For what each step actually does under the hood — `init`'s full prompt flow, `mcp`/`rule`/`sync`/`memory` in depth, every `index`/`reindex` flag, provider setup, and benchmarks — see the sections below.
+That's the whole loop. For what each step actually does under the hood — `init`'s full prompt flow, `mcp`/`rule`/`sync`/`memory`/`skill` in depth, every `index`/`reindex` flag, provider setup, and benchmarks — see the sections below.
 
 ---
 
-## 🔌 Adding DevsMind to your IDE / CLI: `devsmind mcp`, `devsmind rule` & `devsmind memory`
+## 🔌 Adding DevsMind to your IDE / CLI: `devsmind mcp`, `devsmind rule`, `devsmind memory` & `devsmind skill`
 
-These three commands solve three genuinely different problems, and it helps to understand *why* there are three instead of one:
+These four commands solve four genuinely different problems, and it helps to understand *why* there are four instead of one:
 
-1. **`devsmind mcp` — can your agent even reach the tools?** Connecting the MCP server is what makes `search_nodes`, `get_node_code`, `edit_node`, and every other DevsMind tool *exist* from your agent's point of view. Skip this and DevsMind is just files sitting on disk — nothing in your IDE or CLI knows they're there to query at all. This is pure capability, wired up per tool since every one of them expects the server in a different config file, key, and shape.
+1. **`devsmind mcp` — can your agent even reach the tools?** Connecting the MCP server is what makes `search_nodes`, `get_node_code`, `edit_node`, and every other DevsMind tool *exist* from your agent's point of view. Skip this and DevsMind is just files sitting on disk — nothing in your IDE or CLI knows they're there to query at all. This is pure capability, wired up per tool since every one of them expects the server in a different config file, key, and shape. As of this release, connecting also gets you a second, related surface for free: the server declares the MCP `prompts` capability and answers `prompts/list`/`prompts/get` with one static prompt, `devsmind-workflow`, carrying the exact same contract text sent automatically at connect. Any client that supports the capability (Claude Code, Cursor, Windsurf, Kiro, Qwen so far) can invoke it explicitly mid-conversation, the same way a slash command would — no extra setup, no CLI flag, it's just there once `devsmind mcp` is done.
 2. **`devsmind rule` — does your agent know it should use them?** Being *connectable* isn't the same as being *used*. Without the workspace rule, an agent with DevsMind fully wired up will often still default to grep and raw file reads out of habit, because nothing told it DevsMind exists or why it matters more than what it already knows how to do. The rule is what actually changes behavior — it's where DevsMind explains the team-brain framing, the consequence of skipping `commit_changes`, and exactly which tool to reach for and when. As of **3.0.0** it also asks which **workflow style** you want: **Automatic** (the original default — stages, commits, and tracks every edit without being asked) or **Manual** (search/read tools like `search_nodes`/`get_node_code` stay always-on, since that part is never optional, but the agent never stages or commits on its own — only when you explicitly ask it to). You're the owner of this project's graph; which style fits depends on whether you want DevsMind quietly building the team's shared context as you go, or only when you say so. `session_id` and `message` stay required either way — that's the MCP protocol layer, not a style choice, so Manual mode doesn't make those optional, it just changes whether the agent *decides on its own* to reach for `commit_changes`. Every run also prints a short **session kickoff prompt** — a separate block meant to be pasted at the start of a fresh chat (not baked into the rule file itself) so a new conversation commits to the rule immediately instead of drifting into it over the first few turns.
-3. **`devsmind memory` — want the reminder to persist without re-pasting the rule?** As of **4.0.0** this writes nothing to disk. Research across every tool DevsMind integrates with found the same thing independently, several tools saying so in their own docs: background/agent-written memory is discretionary by design, while an EXPLICIT in-chat "remember this" is what actually gets saved reliably. So instead of hand-writing into 9 different internal stores (several undocumented, some genuinely unsafe to touch), this prints ONE natural-language block framed as that explicit ask, and you paste it into your AI chat yourself. `--tool <id>` only changes which feature name gets called out in the framing line — the prompt is identical either way.
+3. **`devsmind memory` — want the reminder to persist in a tool's own memory, without re-pasting the rule?** As of **4.0.0** this writes nothing to disk — it prints ONE natural-language block framed as an explicit "remember this" ask, and you paste it into your AI chat yourself. That's because research across every tool DevsMind integrates with found the same thing independently, several tools saying so in their own docs: background/agent-written memory is discretionary by design, while an EXPLICIT in-chat request is what actually gets saved reliably. Not every tool has a background-memory concept to ask anything of in the first place, though — Antigravity (IDE + CLI), Codex, and Kiro don't, so for those four `devsmind memory` skips the prompt entirely and prints a short explanation pointing at `devsmind skill` instead. For the five that do (Claude Code, Cursor, VS Code, Windsurf, Qwen), `--tool <id>` changes both the framing line (which feature name to call out) and a short tool-specific hint on how that tool's memory actually gets saved (e.g. Cursor's only saves once the agent explicitly proposes it and you approve) — the full contract underneath never varies.
+4. **`devsmind skill` — want one file that works the same way regardless of whether a tool has memory at all?** New this release. Writes a single file, `.agents/skills/devsmind/SKILL.md`, holding the same contract as an explicitly-invokable command (`/devsmind`, or `$devsmind` for Codex) instead of something a tool decides on its own whether to recall. One file, one location — no per-tool variants. Confirmed discoverable today by Antigravity, Antigravity CLI, and Codex; Claude Code and Cursor are documented to read the same `.agents/skills/` convention and may pick it up too. Complementary to `devsmind memory`, not a replacement for it — worth running for the four tools memory skips, and harmless to also run for the other five.
 
 `mcp` and `rule` are both **guided and per-tool**: they ask what you're working in (Cursor, VS Code, Windsurf, Kiro, Antigravity, Claude Code, Codex CLI, Qwen Code CLI, …), then either **print the exact snippet to copy-paste (manual)** or **create/merge the config file for you (automatic)** — with a preview and confirmation, never clobbering your existing servers.
 
@@ -233,25 +247,32 @@ devsmind start --sync --analyze --fix    # ...and apply safe fixes too
 ```
 Neither flag is on by default — plain `devsmind start` behaves exactly as before.
 
-**`devsmind memory`** — beyond the rule file, some IDEs/CLIs have their own persistent, agent-managed memory or "skills" store — a place the agent itself writes a lesson to once and reads back automatically in every future session, no re-pasting required. This is a *different* mechanism per tool, under genuinely different names (Claude Code's "Auto Memory," Antigravity's "Skills" / `/learn`, Cursor's "Memories," Windsurf's "Cascade Memories," …), and not every one of them is safe to write into — some are backed by an undocumented database, gated behind manual approval, or explicitly documented as internal, regenerated state that a manual edit would just get overwritten. Writing to the wrong one is worse than doing nothing: it looks like it worked and either silently does nothing or gets clobbered by the tool's own background process. So `devsmind memory` only writes where research specifically confirmed the tool reads back a file it didn't create itself — everywhere else, it explains why not and what to do instead:
+**`devsmind memory`** — beyond the rule file, some IDEs/CLIs have their own persistent, agent-managed memory store — a place the agent itself writes a lesson to once and reads back automatically in every future session, no re-pasting required. This is a *different* mechanism per tool, under genuinely different names (Claude Code's "Auto Memory," Cursor's "Memories," Windsurf's "Cascade Memories," Qwen's "Auto-Memory," …), and DevsMind never writes into any of them directly — some are backed by an undocumented database, gated behind manual approval, or explicitly documented as internal, regenerated state a manual edit would just get overwritten by. Instead `devsmind memory` prints ONE natural-language block, framed as an explicit "remember this" ask, and you paste it into your AI chat yourself — research across every tool found the same thing independently: background/agent-written memory is discretionary by design, while an EXPLICIT in-chat request is what actually gets saved reliably.
+
+Not every tool has a background-memory concept to ask anything of in the first place, though. `devsmind memory` checks that first (`registry.ts`'s `hasRealMechanism`) and only prints the ask where there's something for it to attach to:
 
 ```bash
 devsmind memory
 ```
 
-| Tool | Feature | Seeded automatically? |
+| Tool | Feature | `devsmind memory --tool <id>` |
 |---|---|---|
-| Google Antigravity (IDE + CLI) | Skills / `/learn` | ✅ — confirmed by Google's own codelab plus a firsthand test that a manually-placed `SKILL.md` is discovered the same as an agent-created one |
-| Claude Code | Auto Memory | ✅ — writes a `devsmind.md` topic file plus a one-line pointer appended into `MEMORY.md` (topic files only load "on demand," so the pointer is what makes it get found) |
-| Qwen Code CLI | `QWEN.md` | Already handled — it's the same file `devsmind rule` writes to |
-| Codex CLI | Skills | ✅ — writes the same `.agents/skills/devsmind/SKILL.md` Antigravity reads, so seeding once covers both. Codex's *other* store, `~/.codex/memories/`, stays untouched: its own docs warn those files are "generated state" a background job regenerates, so a manual write would just get overwritten |
-| Qwen Code CLI | background auto-memory dir | ❌ manual guidance only — same undocumented, auto-generated pattern as Codex's `memories/`, no source confirms a manual file survives |
-| Cursor | Memories | ❌ manual guidance only — internal database, requires the agent to propose and you to approve, nothing to write a file to |
-| Windsurf | Cascade Memories | ❌ manual guidance only — no source confirms whether a manually-placed file is ever discovered |
-| Kiro | Knowledge / PR-comment learning | ❌ manual guidance only — not file-based (JSON+embeddings or AWS-internal, opaque) |
-| VS Code (Copilot) | Copilot Memory | ❌ manual guidance only — no documented write API, format has changed repeatedly through 2026 |
+| Claude Code | Auto Memory | Tailored "remember this" prompt — Auto Memory saves reliably from exactly this kind of explicit in-chat request |
+| Cursor | Memories | Tailored prompt, with a hint that the agent must explicitly *propose* the memory — Cursor only saves once you approve what it proposes |
+| VS Code (Copilot) | Copilot Memory | Tailored prompt — Copilot Memory builds up from repeated real usage rather than one instant save, so this is the first strong signal, not a guarantee |
+| Windsurf (Cascade) | Cascade Memories | Tailored prompt, with a hint that the agent should explicitly state it's *creating* a Cascade Memory, not just acknowledging the request |
+| Qwen Code CLI | Auto-Memory | Tailored prompt, with a hint that Qwen's own docs call auto-memory best-effort (`QWEN.md`, already handled by `devsmind rule`, is the guaranteed fallback) |
+| Google Antigravity (IDE + CLI) | Skills (`/learn`) | No real background-memory mechanism — its only persistence is Skills. Prints a short explanation and points at `devsmind skill` |
+| Codex CLI | Skills | Same — its human-authored surface is Skills, not memory. Its *other* store, `~/.codex/memories/`, is generated state its own docs warn against hand-editing, and stays untouched either way. Points at `devsmind skill` |
+| Kiro | Knowledge / PR-comment learning | No real background-memory mechanism — Knowledge is explicit-command-only (JSON + embeddings, not file-based) and steering is static. Points at `devsmind skill` |
 
-For everything in the ❌ rows, `devsmind memory` prints the tool's own name for the feature and exactly why it isn't safe to write to, plus what to do instead — never a silent no-op.
+For the last three rows, `devsmind memory` never prints a dead-end prompt that would just get acknowledged and dropped — it explains why there's nothing to ask and points at the alternative that works for any of them regardless of memory support:
+
+```bash
+devsmind skill
+```
+
+Writes ONE file, `.agents/skills/devsmind/SKILL.md`, holding the same contract as an explicitly-invokable command instead of something a tool decides on its own whether to recall — `/devsmind`, or `$devsmind` for Codex. Confirmed discoverable today by Antigravity, Antigravity CLI, and Codex; Claude Code and Cursor are documented to read the same `.agents/skills/` convention too. `-p/--path` and `--print` work the same as `rule`/`mcp`.
 
 ### 🧪 How much of this table is actually verified
 
@@ -266,7 +287,7 @@ The gap between those rows is the interesting one. A test can prove we produced 
 
 **If you work in one of the "config verified" tools, a report is worth more than a bug report** — there is currently no data at all. Useful to know: did the server connect? Does the agent search before grepping, and does it keep doing so late in a long session? Does it commit on its own, or only when asked? Benchmarks against a raw agent on the same task are especially welcome. [Open an issue](https://github.com/Abialidr/devsmind-mcp/issues) with your tool and version — including "it just worked", which is also a result.
 
-**`devsmind memory --print [--tool <id>]`** prints the files it would write instead of placing them, the same escape hatch `devsmind rule --print` has — for reading the seeded contract, diffing it against a store you already have, or piping it somewhere from a script. It's also what a non-TTY run does automatically, so `devsmind memory > memory.md` works rather than erroring. `--tool` takes `claude-code` (one file per fact, plus the `MEMORY.md` index block that makes them findable), `antigravity`, or `antigravity-cli` (one combined document). Without `--tool` it prints the Claude Code shape and says that's what it defaulted to.
+**`devsmind memory --print [--tool <id>]`** skips the interactive tool picker and prints immediately — for reading the prompt (or the skip message) without the picker, diffing it against something you already pasted, or piping it from a script. It's also what a non-TTY run does automatically, so `devsmind memory > memory.md` works rather than erroring. `--tool` takes any of the 9 registered ids; without it, it defaults to `claude-code`'s framing and says so rather than picking silently. `devsmind skill --print` is the same escape hatch for the skill file — prints the resolved path and contents instead of writing.
 
 ---
 
@@ -490,6 +511,7 @@ Nothing detects drift onto a different topic — asking an AI to notice "this is
 ## 🖥️ Other CLI Commands
 
 *   **`devsmind start [--stdio] [-p, --port <number>]`** — starts the MCP server. Default: HTTP on port `4513`, reachable at `http://localhost:4513/mcp`. Pass `--stdio` for IDEs that manage the server process directly instead of connecting over HTTP.
+*   **`devsmind skill [-p, --path <devmind_path>] [--print]`** — writes the workflow contract as an explicitly-invokable skill file, `.agents/skills/devsmind/SKILL.md` (`/devsmind`, or `$devsmind` for Codex). One file, one location, regardless of tool — no picker. `--print` (or a non-TTY run) prints the resolved path and contents instead of writing. Idempotent: content is regenerated fresh each run from the same source as `devsmind memory`'s prompt, so it never drifts from it.
 *   **`devsmind view [-p, --path <devmind_path>] [-P, --port <number>]`** — opens the `devsmind view` app in your browser (see the **devsmind view** section below): Chat (your work as a timeline, per-request) and Graph, one app, no CDN dependencies.
 *   **`devsmind describe [--provider <p>] [--model <name>] [--key <k>] [--url <u>] [--rpm <n>] [--batch-size <n>] [--dry-run]`** — backfills a natural-language `description` onto every node that has none. This is the field `search_nodes` weights in its BM25 ranking *and* embeds for the semantic layer, so a node without one is only reachable by identifier, path, or grep — a plain-English query will never find it. The work queue is literally "nodes where `description IS NULL`", which makes the command idempotent: re-running it is a no-op once the backlog is clear. `--dry-run` lists what's pending and needs no credentials at all. **Only for a backlog** — nodes created from here on get described at commit time, because `commit_changes` refuses a brand-new node without one. Same engine (`describePendingNodes`) that `devsmind index --run`'s Phase 3 calls, so results are identical either way; only the credential source differs.
 *   **`devsmind embed [-p, --path <devmind_path>] [--batch-size <n>] [--force] [--dry-run]`** — turns those descriptions into vectors for semantic search. **Fully local**: on-device ONNX (`all-MiniLM-L6-v2`, int8), no API key, no network, nothing leaves the machine. Queue is "described nodes with a missing, stale, or wrong-model vector", so it too is safe to re-run; `--force` re-embeds everything, which is what you want after a model upgrade. If `onnxruntime-node` isn't installed it says so plainly rather than degrading silently — and search still works, just without the semantic layer.
@@ -698,6 +720,8 @@ DevsMind tools are designed with **layered granularity**. The AI only pulls the 
 
 DevsMind exposes **34 tools** to the AI agent, grouped below by what they're for.
 
+> The server also declares the MCP **`prompts`** capability, a separate surface from tools — `prompts/list` returns one static prompt, `devsmind-workflow`, and `prompts/get` returns the exact same contract text sent automatically at connect (`DEVSMIND_INSTRUCTIONS`). It takes no arguments; a client that supports the capability can invoke it any time to re-assert the contract mid-conversation, the same way a slash command would. Not every client speaks `prompts` — where it isn't supported, `devsmind rule`/`devsmind memory`/`devsmind skill` remain the way to get the contract in front of the agent.
+
 ### 🚦 Category 0: Session (3.0.0)
 *   `start_session`: **Call once, before your first WRITE of the conversation** (`edit_node`/`commit_changes` and the other mutating tools). Mints a `session_id` and records it locally (optionally with a `label`, shown on the Activity page). Every WRITE call REQUIRES that exact `session_id` — it ties a request's edits together on the local Activity log and makes them revertable as a unit — and every tool response echoes it back in a plain sentence so it stays in front of the agent even across a long conversation or a context compaction. Read-only tools (`search_nodes`, `get_node_code`, `list_nodes`, and the other getters) do NOT need it — search and read freely from the very first call. There is no auto-mint fallback and no server-tracked "active session" — DevsMind is stateless by design (two agents working the same project never collide over a shared "current" id), so the session token lives entirely in the conversation and must be carried explicitly. Resuming a conversation that already called `start_session` earlier should reuse that same id rather than minting a new one.
 
@@ -725,7 +749,8 @@ DevsMind exposes **34 tools** to the AI agent, grouped below by what they're for
 The AI's only job anywhere in this flow is writing descriptions, via `add_description` — one call per batch. No code is ever sent back to the server; it already has it.
 
 ### ✍️ Category 4: Writes & Mutations
-*   `edit_node`: **The ONE write path — use this, not the IDE's own edit/write tool, for every edit and every new file.** One call — `file_path` + `old_string` + `new_string`, exactly like an ordinary edit tool — never refuses a file type, and never rejects for being the wrong extension. Under the hood it works out WHERE the text landed and which function/class that spot belongs to (by position, not by name — so it survives the symbol being renamed by the very edit that touched it, and correctly identifies code that didn't exist until this write). No `node_id` to look up, no `code_snapshot` to send back, for any TS/JS/JSX/TSX/Vue/Svelte file. It also hands back every CALLER of what you just changed (i.e. what you may have just broken) and the reasoning previously recorded against it. To create a file that doesn't exist yet, pass `old_string: ""` and the whole file as `new_string` — every symbol in it gets traced the same way. Writes landing outside any function (markup, config, an import line, a stylesheet) get no graph node — a normal, expected outcome, not a failure, since the graph only models code — but the whole-file before/after is still staged for the local activity log, so `commit_changes` makes even a CSS/JSON/XML/etc change individually revertable in `devsmind view` → Chat, the same as a traced code edit. Nothing reaches the graph — or the activity log — until `commit_changes`, which is also where you give the one `reasoning` covering everything staged since the last commit. **4.0.0 removed the second write tool (`stage_change`)** — `edit_node` already covered everything DevsMind supports (TS/JS, per the README), so there was no capability left for it to carry.
+*   `edit_node`: **The write path to use — not the IDE's own edit/write tool — for every edit and every new file.** One call — `file_path` + `old_string` + `new_string`, exactly like an ordinary edit tool — never refuses a file type, and never rejects for being the wrong extension. Under the hood it works out WHERE the text landed and which function/class that spot belongs to (by position, not by name — so it survives the symbol being renamed by the very edit that touched it, and correctly identifies code that didn't exist until this write). No `node_id` to look up, no `code_snapshot` to send back, for any TS/JS/JSX/TSX/Vue/Svelte file. It also hands back every CALLER of what you just changed (i.e. what you may have just broken) and the reasoning previously recorded against it. To create a file that doesn't exist yet, pass `old_string: ""` and the whole file as `new_string` — every symbol in it gets traced the same way. Writes landing outside any function (markup, config, an import line, a stylesheet) get no graph node — a normal, expected outcome, not a failure, since the graph only models code — but the whole-file before/after is still staged for the local activity log, so `commit_changes` makes even a CSS/JSON/XML/etc change individually revertable in `devsmind view` → Chat, the same as a traced code edit. Nothing reaches the graph — or the activity log — until `commit_changes`, which is also where you give the one `reasoning` covering everything staged since the last commit.
+*   `stage_change`: **Catches up when a file already got edited WITHOUT `edit_node`** — your own editor's edit/write tool got used by mistake, or you're recording work from before this session. Same shape as `edit_node` — `file_path` + `old_string` + `new_string` (+ `replace_all`/`description`) — but it never writes to the file: `new_string` is expected to already be sitting on disk, and `old_string` (what the code looked like BEFORE) is used only to reconstruct history and a diff, the exact reverse of what `edit_node` searches for. It traces and stages exactly like `edit_node` would have, had it been called at the time — same caller/callee info back, same `commit_changes` step needed afterward. Fails clearly (`new_string` not found) if the edit never actually happened, so it can't silently record the wrong span. **Removed in 4.0.0, reinstated after** — the old shape (hand-fed `node_id`/`code_snapshot`) really was fully covered by `edit_node`'s tracing, and that removal stands; this is a different tool solving a different problem: `edit_node` can't retroactively record a write it didn't make. Prefer `edit_node` for every edit going forward — `stage_change` exists only to recover one it missed, never as a second way to make one.
 *   `commit_changes`: Flushes the whole staged buffer in one pass — creates/updates every node, writes every history snapshot with the ONE `reasoning` given on this call, then resolves all connections between them (and into the existing graph) via local AST, auto-creating any referenced-but-missing target nodes. Because all nodes exist before edges are resolved, calls between the changed files link correctly regardless of staging order. If this session is bound to a workflow, this also auto-records one step on its timeline from that reasoning, carrying the `node_ids` it touched and the `session_id` that recorded it — see `workflow_add_step` below. **Must be called at least once per staged batch**, or nothing is written to the graph. `edit_node` only stages — it needs `commit_changes` too. `message` AND `reasoning` are **REQUIRED** — validated before any write happens, so a call rejected for a missing field leaves the staged batch untouched and the AI can just retry with it. `message` is the user's original request, verbatim, feeding the local Activity log (`devsmind view` → Chat, see below) together with the conversation's `session_id` (from `start_session`, carried automatically) — grouping consecutive commits for the same request into one entry, never reaching the shared graph. `reasoning` (`what_changed`/`why`/`goal`, plus optional `requirement`/`previous_state`/`decision`/`developer`/`model`) is the one object recorded against EVERY node this commit touches — a commit is one logical change, so it gets one why, not one per `edit_node` call.
 *   `rename_node`: Re-keys a node identifier and updates all associated records (connections and history) seamlessly.
 *   `deprecate_node`: Marks a code node as deprecated, removing its connection mappings while retaining its coding snapshots and reasoning logs in the database.
@@ -796,6 +821,30 @@ Nor is `local/` — your requests, your revert backups, your feedback. That stay
 ---
 
 ## Changelog
+
+### 4.1.0 — MCP Prompts, one skill file, memory that skips what can't remember, and stage_change is back
+
+No breaking changes — nothing removed, nothing renamed except a dead, never-read registry field. Worth re-running `devsmind memory` if you use Antigravity, Antigravity CLI, Codex, or Kiro: it now tells you plainly there's nothing to ask those tools to remember, instead of printing a prompt that would just get acknowledged and dropped. Worth re-running `devsmind rule`/`devsmind memory`/`devsmind skill` either way, to pick up `stage_change`.
+
+#### The server never declared the MCP `prompts` capability, even though it's been sitting there fully supported
+
+Three ways to get DevsMind's workflow contract in front of an agent existed before this release: the workspace rule (`devsmind rule`, always loaded), the memory prompt (`devsmind memory`, pasted once), and the connect-time `instructions` string every MCP client already receives on handshake. What was missing was a way to re-assert that same contract *explicitly*, mid-conversation, the way a slash command does — without re-pasting anything. The installed SDK (`1.29.0`, newer than `package.json`'s declared `^1.0.1`) already ships the full `prompts` capability — `ListPromptsRequestSchema`/`GetPromptRequestSchema`, `prompts/list`/`prompts/get` — DevsMind's server just never declared it. It does now: `capabilities: { tools: {}, prompts: {} }`, with one static prompt, `devsmind-workflow`, whose `prompts/get` response is the exact same `DEVSMIND_INSTRUCTIONS` string already sent at connect and reused by `devsmind memory`'s prompt — a fourth consumer of one already-single-source-of-truth constant, not a new one to keep in sync. No arguments, no registry change, no CLI change — it's live the moment a client that supports the capability connects via the existing `devsmind mcp`. Claude Code, Cursor, Windsurf, Kiro, and Qwen are the tools researched to implement `prompts` well; a client that doesn't simply never calls `prompts/list` and nothing changes for it.
+
+#### `devsmind memory` printed the same prompt for a tool with nothing to attach it to
+
+Research across all 9 integrated tools that shaped the original print-only design in 4.0.0 also turned up a fact that design didn't yet act on: Antigravity (IDE + CLI), Codex, and Kiro don't have a genuine background-memory concept at all — their only real persistence mechanisms are Rules and Skills. Printing the same "remember this" ask for them anyway meant it just got acknowledged in the conversation and dropped, with nothing actually saved anywhere — indistinguishable from success until someone checked. `registry.ts` already had a dead field for this distinction, `memory.supported`, computed and never read by anything live. It's now `memory.hasRealMechanism`, and `handleMemory` branches on it: `false` (those three tools, four ids counting Antigravity's two surfaces) skips straight to a short explanation and a pointer at `devsmind skill`; `true` (the other five — Claude Code, Cursor, VS Code, Windsurf, Qwen) prints the prompt as before, now with a new `askHint` field — a short, AI-voiced line inserted directly into the pasted prompt describing how *that specific tool's* memory actually gets saved (Cursor's, for instance, needs the agent to explicitly propose the memory before it can be approved — silently "remembering" it saves nothing). The full contract underneath, `DEVSMIND_INSTRUCTIONS`, is unchanged either way; only the lead-in varies.
+
+#### A dead skill-file writer got revived as its own command
+
+`registry.ts` already defined exactly where a shared skill file should live — `AGENTS_SKILL_SCOPE`/`skillMdWrap`, pointing at `.agents/skills/devsmind/SKILL.md` — left over from before `devsmind memory` went print-only in 4.0.0, when it was still one of several write targets. `memory-topics.ts`'s `renderCombined()` already produced exactly the content such a file would need — the same 15 topics flattened into one document, also unused since that switch. Rather than leaving both dead, `devsmind skill` is a new, standalone command that reuses them as-is: one file, one location, no per-tool variants, no picker. It gives every tool an explicitly-invokable command (`/devsmind`, or `$devsmind` for Codex) as a lever independent of whether that tool has any memory concept to lean on — confirmed discoverable today by Antigravity, Antigravity CLI, and Codex, and Claude Code/Cursor are documented to read the same `.agents/skills/` convention and may pick it up too. `-p/--path` and `--print` mirror `rule`/`mcp`'s existing conventions; `mergeRuleFile`'s existing `standalone` write path handles the actual write, so this needed no new write primitive anywhere.
+
+#### `stage_change` is back — recovering a write `edit_node` never saw, not a second way to make one
+
+4.0.0 removed `stage_change` because its old shape — a hand-fed `node_id`/`code_snapshot`/`type` the AI had to work out and supply itself — was fully subsumed by `edit_node`'s automatic tracing. That reasoning still holds; nothing about it changed. What surfaced afterward is a gap neither tool ever covered: an AI's own editor sometimes makes an edit through its native edit/write tool instead of `edit_node` — a habit slip, a tool picked automatically by the IDE, a change made before DevsMind was even connected — and once that happens there was no way to get it into the graph at all. The code was on disk; DevsMind had no record of it, and no path to acquire one. `edit_node` can't help retroactively, since it performs a write itself.
+
+`stage_change` fills exactly that gap, with a shape that looks identical to `edit_node` at a glance but means something different underneath. Same parameters — `file_path`, `old_string`, `new_string`, `replace_all`, `description` — but `old_string`/`new_string` swap roles: `new_string` is what must already be found on disk (it gets *located*, never written), and `old_string` is what the code looked like before, supplied only to reconstruct history and a diff. `locateAppliedEdit()` (`utils/edit.ts`) is the new read-only mirror of `replaceTextInFile()` that makes this possible — same EOL-tolerant matching, same single-occurrence-unless-`replace_all` rule, same "was not found" and "matches more than one place" errors, just searching for what the edit left behind instead of what it's about to remove. Its result feeds the exact same `findTouchedSymbols` → `stageEntry` → `commit_changes` path `edit_node` already uses, so there was no second staging pipeline to build — only a different way of arriving at the `ranges`/`before` pair that pipeline needs. If `new_string` isn't found, it fails clearly and says so (`stage_change records an edit that has ALREADY landed on disk`) rather than staging nothing silently or, worse, staging the wrong span.
+
+The workspace rule, the memory prompt, and the skill file all mention it now, framed consistently as recovery rather than an alternative: `edit_node` stays the one tool to reach for while making an edit; `stage_change` is what to call afterward, only when a file already changed some other way.
 
 ### 4.0.1 — Global MCP configs stop pinning every project to one brain
 

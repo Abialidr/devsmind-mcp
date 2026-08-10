@@ -8,11 +8,11 @@
 
 ## 0. System at a glance
 
-**Surface totals:** 19 CLI commands · **34 advertised MCP tools** (+10 unadvertised-but-dispatchable handlers = 44 total) · 16 web-view HTTP routes · SQLite `brain.db` (9 tables) mirrored to git-syncable JSON.
+**Surface totals:** 20 CLI commands · **35 advertised MCP tools** (+10 unadvertised-but-dispatchable handlers = 45 total) · plus the MCP **`prompts`** capability (1 static prompt, `devsmind-workflow` — a separate surface from tools, not counted in the 35) · 16 web-view HTTP routes · SQLite `brain.db` (9 tables) mirrored to git-syncable JSON.
 
 > The advertised count went **down** in 3.0.0 (42 → 35). Seven `workflow_*` tools collapsed into 8 leaner ones, and `get_node_graph`/`get_node_history` folded into `get_node_code` as parameters. Retired names still dispatch (so an agent on an old rule doesn't hard-fail) but are no longer offered — see Appendix 1.
 
-**Automated coverage:** 46 Jest suites / 1127 tests. The gate holds **100% lines** over the core set in `jest.config.js`. Every area below says which parts are covered by tests versus which still need a human at a terminal — that distinction is the whole point of the checklists.
+**Automated coverage:** 52 Jest suites / 1250 tests. The gate holds **100% lines** over the core set in `jest.config.js`. Every area below says which parts are covered by tests versus which still need a human at a terminal — that distinction is the whole point of the checklists.
 
 **The single most important architectural fact:** SQLite is a **rebuildable cache**. The **source of truth is the on-disk JSON tree** (`graph/`, `history/`, `vectors/`, `workflows/`), which is git-shared. `local/` (activity + feedback) is per-developer and never pushed. Every mutating operation mirrors to disk so `brain.db` can be rebuilt losslessly via `syncFromDisk()`.
 
@@ -68,19 +68,22 @@ flowchart LR
 
 ## A. Setup & Onboarding
 
-**What it does:** Bootstraps a `.devmind` brain, registers repos, wires the AI tool (rule + MCP server + memory).
+**What it does:** Bootstraps a `.devmind` brain, registers repos, wires the AI tool (rule + MCP server + memory + skill file).
 
-**CLI:** `init`, `rule`, `mcp`, `memory`
-**Files:** `cli/init.ts`, `cli/rule.ts`, `cli/integrations/{mcp,memory,prompt,registry}.ts`, `utils/config.ts`
+**CLI:** `init`, `rule`, `mcp`, `memory`, `skill`
+**Files:** `cli/init.ts`, `cli/rule.ts`, `cli/integrations/{mcp,memory,memory-topics,skill,prompt,registry}.ts`, `utils/config.ts`, `mcp/server.ts` (the `prompts` capability)
 
 **Detailed flow:**
 1. **`init`** (TTY-required). Detects git identity (`git config user.name/email`), tech stack (tsconfig→TS, package.json deps→frameworks). Chooses **embedded** (brain lives inside project, repo via `relative_path`) or **standalone** (own folder, repos via `.env` `REPO_<NAME>` keys). Interactive file include/exclude browser; offers to import the repo's `.gitignore`, but only **literal path-segment lines** (`isLiteralIgnorePattern`) — glob/negation lines (`*.log`, `!keep.log`) are skipped with a printed count, since the scan-time matcher (`scanner.ts`) has no glob engine and would otherwise silently no-op on them. Writes `config.json` (committable), `.env` (gitignored), `.gitignore`, creates `graph/` + `history/` with `.gitkeep`, initializes `brain.db`. `handleExistingInit` repairs an existing brain (developer info, repo paths, and the gitignore).
    - **`ensureDevmindGitignore`** (exported, 15 tests) creates `.devmind/.gitignore` or tops up a stale one with `.env`, `brain.db` + `-journal`/`-wal`/`-shm`, both scratchpads, and `local/`. Two 3.0.0 fixes: entries are compared by **what git reads them as** (`local`, `/local`, `local/`, `/local/` are one entry — raw string equality used to append a duplicate on every re-init), and the file is **appended to, never rewritten** (it used to drop every blank line, silently reflowing a gitignore someone had grouped and commented). `activity.ts`'s `ensureGitignored` self-heal — the backstop for a brain nobody ever re-inits — shares the same `normalizeIgnoreEntry`, so the two can't disagree about whether something is already covered.
 2. **`rule`** builds a markdown workspace rule (tool-trigger table + protocol) and merges it into the target tool's rule file (Cursor `.cursor/rules/devsmind.mdc`, Copilot `.github/copilot-instructions.md`, Claude `CLAUDE.md`, Codex `AGENTS.md`, etc.). Two styles: **automatic** (AI stages/commits unasked) vs **manual**. `--print` / non-TTY prints instead of placing. `tests/cli/rule-memory-sync.test.ts` reads the live tool list off a real in-process MCP server and **fails on drift**, which is what keeps the rule from advertising a tool that no longer exists.
 3. **`mcp`** merges an MCP server entry (stdio `{command:'devsmind', args:['start','--stdio', ...]}` or HTTP `http://localhost:4513/mcp`) into the tool's config (JSON, or TOML for Codex), non-clobbering. The stdio entry's `--path` is scope-conditional as of **4.0.1**: a **project**-scoped config bakes in the **absolute `--path`**, since that file lives inside — and only ever serves — the one project it was written for. A **global** config omits `--path` entirely, because it's ONE file shared by every project on the machine; baking one project's path into it used to silently point every other project at that same brain. Global instead relies on `bindServerToProject`'s own cwd auto-detect (walks up from wherever the process was launched looking for `.devmind`) — correct as long as the IDE spawns the server from the open workspace, which is the common case. `devsmind mcp` prints what this implies right after global is picked, and the server itself now logs where it looked and what it bound to (stderr, so it's safe under stdio) — see CHANGELOG 4.0.1.
-4. **`memory`** writes nothing, for any tool — **new in 4.0.0.** It prints ONE natural-language block (`renderMemoryPrompt`, `integrations/memory-topics.ts`) framed as an explicit "remember this" request, meant to be pasted into any AI chat. `--tool <id>` only changes the one-line framing (which feature name to call out — Claude Code's "Auto Memory", Cursor's "Memories", …); the prompt content is identical for every tool. This replaced writing per-tool memory/skills files: research across all 9 integrated tools found background/automatic memory to be discretionary by design almost everywhere (several tools say so in their own docs), while an explicit in-chat request is what actually gets saved reliably.
+4. **`memory`** writes nothing, for any tool — **print-only since 4.0.0**, now **conditional as of this release.** `registry.ts`'s `IdeTarget.memory.hasRealMechanism` (a rename of the previously-dead `memory.supported`) splits the 9 targets: **5** (claude-code, cursor, vscode, windsurf, qwen) have a genuine background-memory concept, so `handleMemory` calls `renderMemoryPrompt(target)` — ONE natural-language block framed as an explicit "remember this" request, meant to be pasted into any AI chat, with `DEVSMIND_INSTRUCTIONS` appended verbatim and a tool-specific `askHint` line spliced into the lead-in (e.g. Cursor's tells the agent to explicitly *propose* the memory, since it only saves after human approval). **4** (antigravity, antigravity-cli, codex, kiro) have no real background-memory mechanism at all, so `handleMemory` skips the prompt entirely and prints a short explanation pointing at `devsmind skill` instead — asking those to "remember" has nothing to attach to. This replaced writing per-tool memory/skills files: research across all 9 integrated tools found background/automatic memory to be discretionary by design almost everywhere (several tools say so in their own docs), while an explicit in-chat request is what actually gets saved reliably.
+5. **`skill`** — **new this release.** Writes ONE file, `.agents/skills/devsmind/SKILL.md`, holding the full workflow contract (`renderCombined`, `integrations/memory-topics.ts` — same renderer, same content as topic 4's contract) as an explicitly-invokable command (`/devsmind`, or `$devsmind` for Codex) rather than something a tool decides on its own whether to recall. Revives `AGENTS_SKILL_SCOPE`/`skillMdWrap` (`registry.ts`) and `mergeRuleFile`'s `standalone` write path (`prompt.ts`), both previously dead since `memory` went print-only. One file, one location — no per-tool variants, no picker. Confirmed discoverable today by Antigravity, Antigravity CLI, and Codex; Claude Code/Cursor are documented to read the same `.agents/skills/` convention and may pick it up too.
 
-**Placement machinery (shared by 2–4), `integrations/prompt.ts` + `registry.ts`:** `pickTarget`/`pickTransport`/`pick*Scope`/`pickMode` drive the menus; `pickDirectory` is the navigator that turns a menu into an absolute path; `mergeRuleFile`/`mergeMcpConfig` compute new file contents; `writeConfigFile` writes them. This is the code that edits files the **developer** owns, where a bug doesn't fail — it mangles a config and looks like success. It had **no tests at all** before 3.0.0 and one such bug had shipped (see the TOML note below). Both files are now in the coverage gate at 100% lines and branches.
+**Also new this release, no CLI surface at all:** the MCP server now declares the **`prompts`** capability (`mcp/server.ts`) — `prompts/list`/`prompts/get` answer with one static prompt, `devsmind-workflow`, whose text is the same `DEVSMIND_INSTRUCTIONS` sent automatically at connect. Live for free the moment a client that supports it (Claude Code, Cursor, Windsurf, Kiro, Qwen so far) connects via the existing `mcp` command — no registry entry, no new file.
+
+**Placement machinery (shared by 2, 3, 5 — `mcp`/`rule`/`skill`), `integrations/prompt.ts` + `registry.ts`:** `pickTarget`/`pickTransport`/`pick*Scope`/`pickMode` drive the menus; `pickDirectory` is the navigator that turns a menu into an absolute path; `mergeRuleFile`/`mergeMcpConfig` compute new file contents; `writeConfigFile` writes them. `skill.ts` reuses `mergeRuleFile`'s `standalone` branch directly — no new write primitive. This is the code that edits files the **developer** owns, where a bug doesn't fail — it mangles a config and looks like success. It had **no tests at all** before 3.0.0 and one such bug had shipped (see the TOML note below). Both files are now in the coverage gate at 100% lines and branches.
 
 ```mermaid
 flowchart TD
@@ -91,8 +94,12 @@ flowchart TD
   D --> E
   E --> F[devsmind rule → place AI workspace rule per IDE]
   E --> G[devsmind mcp → register MCP server per IDE]
-  E --> H[devsmind memory → print "remember this" prompt]
-  F & G & H --> I[AI tool now wired to DevsMind]
+  E --> H{devsmind memory → hasRealMechanism?}
+  H -->|true: 5 tools| H1[print tailored remember-this prompt]
+  H -->|false: 4 tools| H2[print skip message, points at devsmind skill]
+  E --> J[devsmind skill → write .agents/skills/devsmind/SKILL.md]
+  F & G & H1 & H2 & J --> I[AI tool now wired to DevsMind]
+  G --> K[MCP prompts capability: devsmind-workflow, live once connected]
 ```
 
 **✅ Verify during testing** — the wizard itself is the one part of this area with no automated coverage, so it needs a human:
@@ -103,7 +110,7 @@ flowchart TD
 - [ ] Ignoring a folder like `out`/`dist`/a custom name does **not** also swallow a same-prefixed sibling (`outbound`, `distributors`, `legacy-utils`) — `shouldIgnorePath` matches full path segments only (regression-tested in `tests/utils/scanner.test.ts`).
 - [ ] A `.gitignore` with wildcard/negation lines (`*.log`, `!keep.log`) prints how many were skipped instead of silently importing dead patterns.
 - [ ] A leading-slash `.gitignore` entry (`/dist`, `/build`) is honored — it used to match nothing at all, in both the search walk and the indexer.
-- [ ] Non-TTY `init` fails with a clear message (it can't prompt); non-TTY `rule` **prints** rather than fail; `memory` always prints regardless of TTY, since there is never anything to place.
+- [ ] Non-TTY `init` fails with a clear message (it can't prompt); non-TTY `rule`/`skill` **print** rather than fail; `memory` always prints (a tailored prompt or a skip message) regardless of TTY, since there is never anything to place.
 
 *Covered by tests — re-verify only if something looks wrong:*
 - [x] `.devmind/.gitignore` created fresh, topped up when stale, no-op on re-run, no duplicates across slash variants, user's comments/blank lines preserved (`tests/cli/init.gitignore.test.ts`, 15 tests).
@@ -112,7 +119,9 @@ flowchart TD
 - [x] `rule` places correctly for **all 9** targets, and a `wrap` (Cursor `.mdc`, Antigravity Skills) produces valid frontmatter (`placement.test.ts` integration pass).
 - [x] `mcp` stdio and HTTP both merge for all 9 targets × every scope, without clobbering other servers, in JSON **and** Codex TOML.
 - [x] Malformed JSON config → clear error, original left untouched. Corrupt DevsMind rule block → refuses to write rather than stacking a second block.
-- [x] `memory --print` prints the same prompt for every tool (including the 5 with no writable store of their own); unknown `--tool` explains what is valid (`memory-print.test.ts`).
+- [x] `memory --print` prints a tailored "remember this" prompt for the 5 tools with a real memory mechanism (claude-code, cursor, vscode, windsurf, qwen — same contract, different `askHint` lead-in) and a skip message pointing at `devsmind skill` for the 4 without one (antigravity, antigravity-cli, codex, kiro); unknown `--tool` explains what is valid (`memory-print.test.ts`).
+- [x] `skill --print` prints the resolved path (`.agents/skills/devsmind/SKILL.md`) and the same content `renderCombined()` produces, without writing; interactive mode previews then confirms before writing (`skill.test.ts`).
+- [x] MCP `prompts/list` returns exactly one `devsmind-workflow` prompt; `prompts/get` returns it as a `user`-role message whose text equals the live `DEVSMIND_INSTRUCTIONS`; an unknown prompt name rejects (`tests/mcp/prompts.test.ts`).
 - [x] The pickers, including `pickDirectory` — typed paths, `~` expansion, a mistyped path being *refused*, the filesystem root, unreadable folders, anti-hang guards (`prompts.test.ts`, 41 tests).
 
 **⚠️ Fixed in 3.0.0 — worth a manual re-check on your own Codex config:** `devsmind mcp` could corrupt an existing `~/.codex/config.toml`. Whether our table already existed was decided by a substring test over the whole file, then located by an exact line match — two different questions. A config merely *mentioning* `[mcp_servers.devsmind]` in a comment or a string passed the first and failed the second, so the index stayed `-1`, the file's last line was dropped, and every table after the mention was emitted **twice**. Duplicate tables are a TOML parse error, so the merge returned a config Codex could no longer read — while printing success.
@@ -123,7 +132,7 @@ flowchart TD
 
 **What it does:** Extracts every code entity into nodes and resolves connections. Two paths: **agent-driven** (MCP tools) and **local-LLM background** (CLI).
 
-**MCP tools:** `index_start`, `index_checkpoint`, `index_continue`, `index_complete` — **rebuilt in 4.0.0**: the server extracts structure itself, locally and deterministically (`db/index-build.ts`, reusing `enumerateFileCandidates`); the AI's only job is writing descriptions via the existing `add_description` tool. No code crosses back to the server, no `stage_change` (removed), nothing goes through the staging buffer — nodes are written directly, same as the CLI path below.
+**MCP tools:** `index_start`, `index_checkpoint`, `index_continue`, `index_complete` — **rebuilt in 4.0.0**: the server extracts structure itself, locally and deterministically (`db/index-build.ts`, reusing `enumerateFileCandidates`); the AI's only job is writing descriptions via the existing `add_description` tool. No code crosses back to the server, and this flow doesn't touch `stage_change`/`edit_node` or the staging buffer at all — nodes are written directly, same as the CLI path below.
 **CLI:** `index` / `index --run` / `index --run --describe`
 **Files:** `cli/runner.ts`, `cli/extract-agent.ts`, `cli/llm-client.ts`, `cli/describe.ts` (`describePendingNodes`), `db/indexer.ts`, `db/staging.ts`, `db/edges.ts`, `utils/ast.ts`, `utils/scanner.ts`
 
@@ -384,16 +393,19 @@ flowchart LR
 
 **What it does:** The primary write path — how the AI edits code and records it into the graph.
 
-**MCP tools:** `edit_node`, `add_description`, `commit_changes` (+ hidden legacy `add_node`, `add_connection`, `update_history`) — **`stage_change` removed in 4.0.0**; `edit_node` is now the ONE write path, full stop. It already covered everything DevsMind supports (TS/JS only, per the README), so there was no capability left for a second write tool to carry.
+**MCP tools:** `edit_node`, `stage_change`, `add_description`, `commit_changes` (+ hidden legacy `add_node`, `add_connection`, `update_history`) — `edit_node` is the write path to use for every edit (TS/JS only, per the README). `stage_change` (**removed in 4.0.0, reinstated after with different semantics**) is not a second way to make an edit: it recovers one made WITHOUT `edit_node` — same `file_path`/`old_string`/`new_string` shape, but `new_string` is located on disk rather than written, since the caller's own edit/write tool already put it there. Both feed the same `findTouchedSymbols` → staging → `commit_changes` path.
 **Files:** `db/staging.ts`, `db/database.ts`, `utils/edit.ts`, `utils/ast.ts` (`findTouchedSymbols`), `db/activity.ts`, `db/feedback.ts`
 
 **Detailed flow:**
-1. **`edit_node`** — the one write path for **any** file. Path-guarded (`isPathAllowed`). `old_string:""` creates a new file; else exact-match `replaceTextInFile` (CRLF/LF tolerant, `replace_all` supported). **Writes source to disk immediately.** Then traces which symbols the write touched (`findTouchedSymbols`, by span not name) and stages each with `code_before`/`code_snapshot`. If no symbol traced (CSS/JSON/import line), stages a **whole-file edit** for the activity log. Returns a unified diff + callers/callees.
+1. **`edit_node`** — the write path to use for **any** file. Path-guarded (`isPathAllowed`). `old_string:""` creates a new file; else exact-match `replaceTextInFile` (CRLF/LF tolerant, `replace_all` supported). **Writes source to disk immediately.** Then traces which symbols the write touched (`findTouchedSymbols`, by span not name) and stages each with `code_before`/`code_snapshot`. If no symbol traced (CSS/JSON/import line), stages a **whole-file edit** for the activity log. Returns a unified diff + callers/callees.
+1b. **`stage_change`** — recovers an edit made WITHOUT `edit_node` (the AI's own editor tool, or work from before this session). Same params, roles reversed: `new_string` must already be found on disk (`locateAppliedEdit`, the read-only mirror of `replaceTextInFile`) — **nothing is written**, `old_string` only reconstructs the pre-edit content for history/diffing. From there it's identical to `edit_node`: same `findTouchedSymbols`, same staging, same whole-file fallback, same diff + callers/callees response shape.
 2. **`commit_changes`** — atomically flushes the buffer: upsert nodes + write history (shared reasoning) + batch-embed descriptions + resolve edges (clear-then-resolve). **Gates:** requires `message`, `reasoning` (what/why/goal), `feedback` (5 fields, "none" ok), and **refuses any new node without a description.** Side effects: records a workflow step if active, writes an activity-log message, routes feedback to graph/product logs.
 
 ```mermaid
 flowchart TD
   E[edit_node] -->|isPathAllowed| W[Write source to disk atomically]
+  SC[stage_change] -->|isPathAllowed| L[locateAppliedEdit - find new_string already on disk, no write]
+  L --> T
   W --> T[findTouchedSymbols by span]
   T -->|symbols found| ST[stageEntry per symbol - code_before/after]
   T -->|no symbol| FE[stageFileEdit - whole-file for activity]
@@ -416,6 +428,11 @@ flowchart TD
 - [x] `edit_node` outside configured repos is **rejected** (`isPathAllowed`).
 - [x] CRLF vs LF file: exact-match still succeeds (EOL-tolerant).
 - [x] `replace_all` replaces every occurrence; single-match required otherwise.
+- [x] `stage_change` traces + stages an edit already on disk without writing to the file (`tests/mcp/tools.test.ts`, `tests/utils/edit.test.ts`).
+- [x] `stage_change` on `old_string:""` stages an already-created file as new, without writing it.
+- [x] `stage_change` errors when the file doesn't exist yet, or when `new_string` isn't found on disk — points at `edit_node` for the first case.
+- [x] `stage_change` rejects a path outside configured repos and requires `session_id`, same as `edit_node`.
+- [x] A `stage_change`-staged entry commits through `commit_changes` exactly like an `edit_node`-staged one.
 - [x] `commit_changes` **rejects** when a new node lacks a description.
 - [x] `commit_changes` rejects missing message/reasoning/feedback.
 - [x] After commit: edges resolved, activity message written, workflow step recorded (if active).
@@ -752,7 +769,7 @@ flowchart TD
 
 ## Appendix 1 — Unadvertised but dispatchable handlers (10)
 
-34 advertised, 44 dispatchable. Everything below still answers if called by name but is no longer offered in `ListTools`, so an agent working from a rule written before 3.0.0 degrades instead of hard-failing — **except `stage_change`, which is not in this table**: its `case` was deleted outright in 4.0.0, so a direct/legacy call now errors (`Tool not found`), the same as any other unknown tool name. It is a genuine removal, not a soft landing.
+35 advertised, 45 dispatchable. Everything below still answers if called by name but is no longer offered in `ListTools`, so an agent working from a rule written before 3.0.0 degrades instead of hard-failing. `stage_change` is **not** in this table — it was fully removed in 4.0.0 (the `case` was deleted outright) and is back as of this release, but as an **advertised, live tool again** with different semantics (see area G above), not as a retired/legacy handler.
 
 | Handler | Status | Superseded by |
 |---|---|---|
@@ -767,9 +784,9 @@ flowchart TD
 | `add_connection` | legacy | commit edge resolution / `link_nodes` |
 | `search_code` | legacy | folded into `search_nodes` |
 
-Fully removed — the `case` is gone too, so calling these errors: `stage_change` (**removed 4.0.0** — folded into `edit_node`, which already covered everything DevsMind supports), `workflow_search`, `workflow_get_steps`, `workflow_add_artifact`, `workflow_read_artifact`, `workflow_sync_retroactive`, `get_recent_changes`, `get_developer_activity`, `get_changes_by_requirement`.
+Fully removed — the `case` is gone too, so calling these errors: `workflow_search`, `workflow_get_steps`, `workflow_add_artifact`, `workflow_read_artifact`, `workflow_sync_retroactive`, `get_recent_changes`, `get_developer_activity`, `get_changes_by_requirement`.
 
-**✅ Verify:** decide whether the 4 pre-3.0 `legacy` rows earn their keep. The 6 `retired 3.0.0` rows should stay for at least one release — they are the soft landing for anyone who hasn't re-run `devsmind rule`. A test asserts the retired names are absent from `listTools()`, and a separate test asserts `stage_change` now errors rather than succeeding.
+**✅ Verify:** decide whether the 4 pre-3.0 `legacy` rows earn their keep. The 6 `retired 3.0.0` rows should stay for at least one release — they are the soft landing for anyone who hasn't re-run `devsmind rule`. A test asserts the retired names are absent from `listTools()`; a separate test asserts `stage_change` IS advertised and traces/stages an already-applied edit without writing to the file (`tests/mcp/tools.test.ts`).
 
 ---
 

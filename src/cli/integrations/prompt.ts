@@ -96,7 +96,9 @@ export async function pickRuleScope(target: IdeTarget): Promise<RuleScope> {
   return pickScopeGeneric(scopes, s => s.scope);
 }
 
-/** Assumes `target.memory.supported` and `scopes` are already checked by the caller. */
+/** Currently unused — `devsmind memory` writes nothing, so there's no scope left to pick. Kept
+ *  only alongside `memory.scopes` as still-accurate research; assumes `target.memory.scopes` is
+ *  already checked non-empty by the caller if this is ever wired back up. */
 export async function pickMemoryScope(target: IdeTarget): Promise<MemoryScope> {
   const scopes = target.memory.scopes ?? [];
   if (scopes.length === 1) return scopes[0];

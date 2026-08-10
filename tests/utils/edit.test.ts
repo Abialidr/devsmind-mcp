@@ -4,7 +4,8 @@ import * as path from 'path';
 import {
   writeFileAtomic,
   createFileWithContent,
-  replaceTextInFile
+  replaceTextInFile,
+  locateAppliedEdit
 } from '../../src/utils/edit';
 
 // `import * as fs` (under esModuleInterop) produces a non-configurable namespace wrapper that
@@ -281,5 +282,131 @@ describe('replaceTextInFile', () => {
     } finally {
       renameSpy.mockRestore();
     }
+  });
+});
+
+describe('locateAppliedEdit', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkTempDir(); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('errors when old_string and new_string are identical', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'same text');
+    const result = locateAppliedEdit(target, 'same text', 'same text');
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('identical');
+  });
+
+  it('errors when the file cannot be read', () => {
+    const target = path.join(dir, 'missing.txt');
+    const result = locateAppliedEdit(target, 'foo', 'bar');
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('could not read');
+  });
+
+  it('falls back to the thrown value itself when a read failure has no .message', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'hello world');
+    const readSpy = jest.spyOn(fsReal, 'readFileSync').mockImplementation(() => { throw 'read exploded'; });
+    try {
+      const result = locateAppliedEdit(target, 'foo', 'bar');
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe('could not read ' + target + ': read exploded');
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('treats an empty old_string as "this file was just created" — whole file, no before', () => {
+    const target = path.join(dir, 'new.txt');
+    fs.writeFileSync(target, 'export function f() { return 1; }\n');
+    const result = locateAppliedEdit(target, '', 'export function f() { return 1; }\n');
+    expect(result.ok).toBe(true);
+    expect(result.replacements).toBe(1);
+    expect(result.before).toBe('');
+    expect(result.ranges).toEqual([{ start: 0, end: 'export function f() { return 1; }\n'.length }]);
+  });
+
+  it('locates new_string already on disk and reconstructs the pre-edit content', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'hello there');
+    const result = locateAppliedEdit(target, 'world', 'there');
+    expect(result.ok).toBe(true);
+    expect(result.replacements).toBe(1);
+    expect(result.ranges).toEqual([{ start: 6, end: 11 }]);
+    expect(result.before).toBe('hello world');
+    // Never writes — the file is exactly what the caller's own tool already left it as.
+    expect(fs.readFileSync(target, 'utf-8')).toBe('hello there');
+  });
+
+  it('never writes to disk, unlike replaceTextInFile', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'hello there');
+    const writeSpy = jest.spyOn(fsReal, 'writeFileSync');
+    const renameSpy = jest.spyOn(fsReal, 'renameSync');
+    try {
+      locateAppliedEdit(target, 'world', 'there');
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(renameSpy).not.toHaveBeenCalled();
+    } finally {
+      writeSpy.mockRestore();
+      renameSpy.mockRestore();
+    }
+  });
+
+  it('errors when new_string is not found on disk', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'hello there');
+    const result = locateAppliedEdit(target, 'world', 'nope');
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('was not found');
+    expect(result.error).toContain('edit_node');
+  });
+
+  it('errors when new_string matches more than once and replace_all is false', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'qux bar qux baz qux');
+    const result = locateAppliedEdit(target, 'foo', 'qux');
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('more than one place');
+  });
+
+  it('replaceAll locates every occurrence and reconstructs before for all of them', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'qux bar qux baz qux');
+    const result = locateAppliedEdit(target, 'foo', 'qux', true);
+    expect(result.ok).toBe(true);
+    expect(result.replacements).toBe(3);
+    expect(result.before).toBe('foo bar foo baz foo');
+    const current = fs.readFileSync(target, 'utf-8');
+    for (const r of result.ranges!) {
+      expect(current.slice(r.start, r.end)).toBe('qux');
+    }
+  });
+
+  it('correctly reconstructs before when old_string and new_string differ in length', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'aYYYbYYYc');
+    const result = locateAppliedEdit(target, 'X', 'YYY', true);
+    expect(result.ok).toBe(true);
+    expect(result.ranges).toEqual([{ start: 1, end: 4 }, { start: 5, end: 8 }]);
+    expect(result.before).toBe('aXbXc');
+  });
+
+  it('tolerates CRLF on disk when new_string uses LF, re-expressing old_string to match', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'lineA\r\nlineB\r\nline3');
+    const result = locateAppliedEdit(target, 'line1\nline2', 'lineA\nlineB');
+    expect(result.ok).toBe(true);
+    expect(result.before).toBe('line1\r\nline2\r\nline3');
+  });
+
+  it('treats regex special characters in new_string literally', () => {
+    const target = path.join(dir, 'f.txt');
+    fs.writeFileSync(target, 'value = a.b(d) + 1;');
+    const result = locateAppliedEdit(target, 'a.b(c)', 'a.b(d)');
+    expect(result.ok).toBe(true);
+    expect(result.before).toBe('value = a.b(c) + 1;');
   });
 });

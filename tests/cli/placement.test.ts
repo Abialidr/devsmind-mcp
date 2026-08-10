@@ -580,11 +580,13 @@ describe('TARGETS registry integrity', () => {
     expect(t.mcp.scopes.length).toBeGreaterThan(0);
     expect(t.mcp.transports.length).toBeGreaterThan(0);
     expect(t.rules.scopes.length).toBeGreaterThan(0);
-    // Every target must explain its memory story either way — a write path, or why not.
+    // Every target must explain its memory story either way — a real mechanism or why not.
     expect(t.memory.featureName).toBeTruthy();
     expect(t.memory.note).toBeTruthy();
-    if (t.memory.supported) {
-      expect(t.memory.scopes?.length).toBeGreaterThan(0);
+    // scopes/wrap are dead research (nothing is written to them — see registry.ts's memory doc
+    // comment), independent of hasRealMechanism now; when present they must still be non-empty.
+    if (t.memory.scopes) {
+      expect(t.memory.scopes.length).toBeGreaterThan(0);
     }
   });
 

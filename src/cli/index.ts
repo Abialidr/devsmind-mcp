@@ -13,6 +13,7 @@ import { handleFeedback } from './feedback';
 import { handleWorkflow, handleWorkflowImport } from './workflow';
 import { handleMcp } from './integrations/mcp';
 import { handleMemory } from './integrations/memory';
+import { handleSkill } from './integrations/skill';
 import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { handleDescribe } from './describe';
 import { handleEmbed } from './embed';
@@ -128,14 +129,28 @@ program
 
 program
   .command('memory')
-  .description('Print one paste-able prompt asking your AI to remember the DevsMind workflow — writes nothing to disk')
+  .description('Print one paste-able prompt asking your AI to remember the DevsMind workflow — writes nothing to disk. Skips tools with no real memory feature (points at `devsmind skill` instead).')
   .option('--print', 'Skip the interactive tool picker and print immediately (non-interactive use)')
-  .option('--tool <id>', 'Which tool\'s framing line to print (claude-code, cursor, antigravity, ...). The prompt itself is the same either way. Only used with --print/non-interactive; the interactive flow asks.')
+  .option('--tool <id>', 'Which tool to print for (claude-code, cursor, antigravity, ...) — changes the framing AND, for tools with a real memory mechanism, a tool-specific hint on how it actually saves. Only used with --print/non-interactive; the interactive flow asks.')
   .action(async (opts: { print?: boolean; tool?: string }) => {
     try {
       await handleMemory(opts);
     } catch (err) {
       console.error(`❌ Memory setup failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('skill')
+  .description('Write the DevsMind workflow contract as an explicitly-invokable skill file (.agents/skills/devsmind/SKILL.md)')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('--print', 'Just print the file contents to stdout (no interactive write)')
+  .action(async (opts: { path?: string; print?: boolean }) => {
+    try {
+      await handleSkill(opts);
+    } catch (err) {
+      console.error(`❌ Skill write failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });

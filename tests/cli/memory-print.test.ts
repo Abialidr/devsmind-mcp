@@ -2,12 +2,15 @@ import { handleMemory } from '../../src/cli/integrations/memory';
 import { DEVSMIND_INSTRUCTIONS } from '../../src/mcp/server';
 
 /**
- * `devsmind memory` writes nothing to disk — it prints ONE natural-language block, framed as an
- * explicit "remember this" request, meant to be pasted into any AI chat. See memory.ts's own doc
- * comment for why: background/automatic memory across every tool DevsMind integrates with turned
- * out to be discretionary by design, while an explicit in-chat ask is what actually lands. `--tool`
- * only changes the one-line framing (which feature name to call out) — the prompt itself, from
- * `renderMemoryPrompt`, is identical for every tool, so there's no per-tool file shape left to test.
+ * `devsmind memory` writes nothing to disk. For the 5 tools with a real memory mechanism
+ * (claude-code, cursor, vscode, windsurf, qwen), it prints ONE natural-language block, framed as
+ * an explicit "remember this" request, meant to be pasted into any AI chat — `--tool` changes the
+ * framing line AND a short tool-specific hint on how that tool's memory actually saves, but the
+ * full contract underneath (from `DEVSMIND_INSTRUCTIONS`) never varies. For the 4 tools with no
+ * real memory mechanism at all (antigravity, antigravity-cli, codex, kiro — confirmed by direct
+ * testing and research, see registry.ts's `hasRealMechanism` doc comment), it skips the prompt
+ * entirely and points at `devsmind skill` instead, since asking those to "remember" has nothing
+ * to attach to.
  */
 describe('devsmind memory --print', () => {
   let out: string;
@@ -49,21 +52,23 @@ describe('devsmind memory --print', () => {
     expect(dedented).toContain(DEVSMIND_INSTRUCTIONS);
   });
 
-  it('names the tool\'s own memory feature in the framing line, but the prompt itself is identical across tools', async () => {
+  it('names the tool\'s own memory feature in the framing line, and tailors the ask-hint per tool — but the full contract stays identical', async () => {
     await handleMemory({ print: true, tool: 'claude-code' });
     const claudeOut = out;
     expect(claudeOut).toContain('Auto Memory');
+    expect(claudeOut).toContain('saves reliably from');
 
     out = '';
     await handleMemory({ print: true, tool: 'cursor' });
     const cursorOut = out;
     expect(cursorOut).toContain('Memories');
+    expect(cursorOut).toContain('PROPOSE it as a Cursor Memory');
 
-    // Different framing line, but the pasted block itself — from "Please remember" onward — is
-    // byte-identical, since nothing about the prompt content is tool-specific.
-    const claudePrompt = claudeOut.slice(claudeOut.indexOf('Please remember'));
-    const cursorPrompt = cursorOut.slice(cursorOut.indexOf('Please remember'));
-    expect(claudePrompt).toBe(cursorPrompt);
+    // The tool-specific hint differs, so the pasted block itself now differs too — but both
+    // still carry the SAME full contract from "The full contract, so nothing gets missed:" on.
+    const claudeContract = claudeOut.slice(claudeOut.indexOf('The full contract'));
+    const cursorContract = cursorOut.slice(cursorOut.indexOf('The full contract'));
+    expect(claudeContract).toBe(cursorContract);
   });
 
   it('defaults to claude-code framing and says so, rather than picking one silently', async () => {
@@ -82,14 +87,26 @@ describe('devsmind memory --print', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it('prints for every registered tool, including the 5 with no writable memory store of their own', async () => {
-    // Cursor/VS Code/Windsurf/Kiro/Qwen have no safe write target — that used to mean
-    // `devsmind memory` refused them outright. Nothing is written now, so there's nothing to
-    // refuse: every tool gets the same prompt.
-    for (const tool of ['cursor', 'vscode', 'windsurf', 'kiro', 'qwen']) {
+  it('prints the pasteable prompt for the 5 tools with a real memory mechanism', async () => {
+    for (const tool of ['claude-code', 'cursor', 'vscode', 'windsurf', 'qwen']) {
       out = '';
       await handleMemory({ print: true, tool });
       expect(out).toContain('Please remember');
+      expect(exitSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('skips straight to a "nothing to ask" message and points at devsmind skill for the 4 tools with no real memory mechanism', async () => {
+    // Antigravity (IDE + CLI), Codex, and Kiro have no genuine background-memory concept at
+    // all — confirmed by direct testing and research (see registry.ts's hasRealMechanism doc
+    // comment). Printing the same "remember this" prompt there would just get acknowledged and
+    // dropped with nothing actually saved.
+    for (const tool of ['antigravity', 'antigravity-cli', 'codex', 'kiro']) {
+      out = '';
+      await handleMemory({ print: true, tool });
+      expect(out).not.toContain('Please remember');
+      expect(out).toContain('has no real background-memory mechanism');
+      expect(out).toContain('devsmind skill');
       expect(exitSpy).not.toHaveBeenCalled();
     }
   });

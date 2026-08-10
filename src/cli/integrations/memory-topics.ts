@@ -1,4 +1,5 @@
 import { DEVSMIND_INSTRUCTIONS } from '../../mcp/server';
+import { IdeTarget } from './registry';
 
 /**
  * The DevsMind workflow contract, split into one fact per topic.
@@ -44,15 +45,15 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
   {
     name: 'devsmind-edit-node-always',
     title: 'Always write with edit_node',
-    description: 'Write every file with DevsMind edit_node — never the built-in Edit/Write tools.',
-    hook: 'every file, every extension; never the built-in Edit/Write.',
+    description: 'Write every file with DevsMind edit_node — never the built-in Edit/Write tools. If one already got used by mistake, stage_change recovers it.',
+    hook: 'every file, every extension; never the built-in Edit/Write. stage_change recovers a miss.',
     type: 'feedback',
     body: [
       '`edit_node` is the write path for **every** file — `.ts`, `.vue`, `.css`, `.json`, `.xml`, `.md`, `.py`, anything. Never reach for your own edit/write tool. Params are the ordinary ones: `file_path` + `old_string` + `new_string`; to create a new file pass `old_string: ""` and the whole file as `new_string`. If the edit creates exactly ONE new function/class, pass `description` in the same call to skip a later round trip ([[devsmind-commit-changes-contract]] would otherwise refuse the batch).',
       '',
       "**Why:** it traces where the text landed to the actual function/class changed, stages it, and answers with that node's callers — a plain edit tool records nothing. Writes that land outside any function (markup, config, an import line) get no graph node; that is expected, not a failure, and the whole-file change is still staged for the local activity log.",
       '',
-      "**How to apply:** `edit_node` is the write path for every file — there is no second write tool to reach for instead.",
+      "**How to apply:** `edit_node` is the write path for every file, going forward. If one already got edited WITHOUT it — the built-in tool got used by mistake, or you're catching up on earlier work — call `stage_change` instead of redoing the edit: same `old_string`/`new_string` shape, but it never rewrites the file, it just traces and stages the change that's already on disk. It fails clearly if `new_string` isn't found, so it can't silently record the wrong thing. `stage_change` recovers a missed write; it is never a second way to make one.",
     ].join('\n'),
   },
   {
@@ -328,16 +329,21 @@ export function renderCombined(header: string): string {
 }
 
 /**
- * The ONE thing `devsmind memory` prints — a single block meant to be pasted directly into any
- * AI chat and framed as an explicit "remember this" request, not written to a file on the user's
- * behalf. Leads with the two rules that matter most (edit_node is the only write path; prefer
- * search_nodes/get_node_code over grepping or opening files) so they survive even a skim, then
- * carries the full live contract below — the SAME `DEVSMIND_INSTRUCTIONS` text the MCP handshake
- * and `devsmind rule` both use, so this can never quietly drift from what the server enforces.
+ * The ONE thing `devsmind memory` prints for a tool with a real memory mechanism — a single
+ * block meant to be pasted directly into any AI chat and framed as an explicit "remember this"
+ * request, not written to a file on the user's behalf. Leads with the two rules that matter most
+ * (edit_node is the only write path; prefer search_nodes/get_node_code over grepping or opening
+ * files) so they survive even a skim, then carries the full live contract below — the SAME
+ * `DEVSMIND_INSTRUCTIONS` text the MCP handshake and `devsmind rule` both use, so this can never
+ * quietly drift from what the server enforces. `target.memory.askHint`, when present, inserts a
+ * short AI-voiced paragraph on how THIS tool's memory actually gets saved (e.g. Cursor needs the
+ * agent to explicitly propose it, not just read the request) — distinct from `target.memory.note`,
+ * which is human-facing and printed separately by `handleMemory`, never pasted into the prompt.
  */
-export function renderMemoryPrompt(): string {
+export function renderMemoryPrompt(target: IdeTarget): string {
   return [
-    "Please remember the following about working in this codebase — it's the DevsMind MCP workflow, and it applies every time we work in a project with a DevsMind server:",
+    "Please remember the following about working in this codebase — it's the DevsMind MCP workflow, and it applies every time we work in a project with a DevsMind server.",
+    ...(target.memory.askHint ? ['', target.memory.askHint] : []),
     '',
     '1. Always write files with the `edit_node` tool — never your own built-in edit/write tool, whatever the file type.',
     '2. Prefer `search_nodes` and `get_node_code` over grepping or opening files directly — they already know this codebase\'s structure and history.',

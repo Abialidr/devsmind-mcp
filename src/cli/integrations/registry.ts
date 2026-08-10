@@ -29,11 +29,10 @@ export interface RuleScope {
 }
 
 /**
- * Where to seed a tool's own persistent agent-memory/skills store — distinct
- * from `rules`, which is a static file a human maintains. Only populated for
- * tools where research confirmed the tool actually reads back a file it didn't
- * create itself (see `memory.supported` below); everything else gets manual
- * guidance instead of a write that might silently do nothing or get clobbered.
+ * Where a tool's own persistent agent-memory/skills store WOULD live — distinct from `rules`,
+ * which is a static file a human maintains. `devsmind memory` no longer writes here (see
+ * `IdeTarget.memory`'s doc comment) — kept as research, populated only for tools where it was
+ * once confirmed the tool actually read back a file it didn't create itself.
  */
 export interface MemoryScope {
   scope: Scope;
@@ -75,19 +74,34 @@ export interface IdeTarget {
     wrap?: (body: string) => string;
   };
   memory: {
-    /** `devsmind memory` writes nothing for any tool (see integrations/memory.ts) — this and the
-     *  fields below are read only for their FRAMING value (the tool's own feature name + a short
-     *  caveat), not to decide whether or how to write. `scopes`/`wrap`/`pointerFile` describe a
-     *  write path that no longer exists; kept only as still-accurate research about each tool's
-     *  own store, in case a genuinely safe write target ever becomes available again. */
-    supported: boolean;
+    /** Whether this tool has a genuine background/persistent memory concept AT ALL — independent
+     *  of whether DevsMind could ever write to it (it doesn't try, see integrations/memory.ts).
+     *  `false` means asking the tool to "remember this" has nothing to attach to: no store exists,
+     *  so `devsmind memory` skips straight to pointing at `devsmind skill` instead of printing a
+     *  prompt that would just get acknowledged and dropped. Confirmed `false` for Antigravity
+     *  (IDE + CLI — its only persistence is Skills), Codex (no documented explicit-ask trigger for
+     *  its opaque `~/.codex/memories/`), and Kiro (steering is static; its Knowledge store is
+     *  explicit-command-only, not autonomous). `true` for the other five, even where the
+     *  mechanism itself is shaky (Cursor requires manual approval; still real enough to ask). */
+    hasRealMechanism: boolean;
     /** The tool's own name for this feature — use it verbatim in prompts, not a generic "memory". */
     featureName: string;
+    /** AI-voiced, one or two sentences — how THIS tool's memory actually gets saved, inserted
+     *  directly into the pasted prompt itself (unlike `note` below, which is human-facing and
+     *  printed separately in the terminal, never pasted). Only meaningful when
+     *  `hasRealMechanism` is true; the substance mirrors `note` but rephrased for the AI reading
+     *  it as part of the request rather than for the developer deciding whether to run the
+     *  command. E.g. Cursor's memory only saves once the human approves what the agent proposes,
+     *  so the agent needs to be told to propose it, not just silently "remember" it. */
+    askHint?: string;
     scopes?: MemoryScope[];
     wrap?: (body: string) => string;
-    /** The one-line caveat shown alongside the printed prompt. */
+    /** The one-line caveat shown alongside the printed prompt (or, when `hasRealMechanism` is
+     *  false, alongside the skip message explaining why there's nothing to ask). Human-facing —
+     *  printed separately in the terminal, never part of the pasted prompt itself (see `askHint`). */
     note: string;
-    /** Unused by `devsmind memory` (see above) — retained only alongside `scopes` as research. */
+    /** Unused by `devsmind memory` — retained only alongside `scopes` as research, in case a
+     *  genuinely safe write target ever becomes available again. */
     pointerFile?: { file: string; style: 'append-section' };
   };
 }
@@ -188,11 +202,12 @@ const cursorMdcWrap = (body: string): string =>
  * whole-file (`standalone`), so per-tool frontmatter would mean whichever command ran last
  * silently rewrote the others' file. Identical bytes make that collision a no-op instead.
  */
-const skillMdWrap = (body: string): string =>
+export const skillMdWrap = (body: string): string =>
   `---\nname: devsmind\ndescription: DevsMind team code-graph MCP server — when and how to use it\n---\n\n${body}\n`;
 
-/** The one skill location all `.agents/skills/` readers share. See {@link skillMdWrap}. */
-const AGENTS_SKILL_SCOPE: MemoryScope = {
+/** The one skill location all `.agents/skills/` readers share. See {@link skillMdWrap}.
+ *  Also the write target for `devsmind skill` (src/cli/integrations/skill.ts). */
+export const AGENTS_SKILL_SCOPE: MemoryScope = {
   scope: 'project',
   dir: '.agents/skills/devsmind',
   file: 'SKILL.md',
@@ -230,7 +245,8 @@ export const TARGETS: IdeTarget[] = [
       wrap: cursorMdcWrap,
     },
     memory: {
-      supported: false,
+      hasRealMechanism: true,
+      askHint: "You won't save this just by reading it — after this message, explicitly PROPOSE it as a Cursor Memory yourself, so the developer sees it and can approve it. Cursor only saves a memory once approved, even for an explicit request like this one.",
       featureName: 'Memories',
       note: 'Cursor\'s Memories are stored in an internal, undocumented database and only save after the agent proposes one and you approve it — there is no file DevsMind can safely write to. Ask the agent to remember the DevsMind workflow in conversation (e.g. "remember to always search_nodes before grep, and edit_node + commit_changes after every change") and approve the memory Cursor proposes.',
     },
@@ -253,7 +269,8 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: false,
+      hasRealMechanism: true,
+      askHint: "Copilot Memory builds up from real usage over several sessions rather than saving instantly from one request — treat this less as a single save and more as the first strong signal. The developer can check what's actually landed with the \"Chat: Show Memory Files\" command.",
       featureName: 'Copilot Memory',
       note: 'Copilot Memory has no documented write API and its file format has changed shape multiple times through 2026 — writing into it directly risks corrupting it. It should pick up the DevsMind workflow itself after a few real sessions using the tools; check what it has learned with the "Chat: Show Memory Files" command.',
     },
@@ -275,7 +292,8 @@ export const TARGETS: IdeTarget[] = [
       style: 'standalone',
     },
     memory: {
-      supported: false,
+      hasRealMechanism: true,
+      askHint: "Don't just acknowledge this — actually create a Cascade Memory of it now (e.g. by explicitly stating you're creating one), since that's the only way it persists past this conversation.",
       featureName: 'Cascade Memories',
       note: 'Cascade Memories are stored at ~/.codeium/windsurf/memories/, keyed per-workspace by a mechanism Windsurf doesn\'t document — there\'s no confirmed evidence a manually-placed file there is ever discovered. Ask Cascade directly to "create a memory of the DevsMind workflow" and it will generate one through its own supported path.',
     },
@@ -297,7 +315,7 @@ export const TARGETS: IdeTarget[] = [
       style: 'standalone',
     },
     memory: {
-      supported: false,
+      hasRealMechanism: false,
       featureName: 'Knowledge / PR-comment learning',
       note: 'Kiro has no file-based memory: its manual "Knowledge" store uses JSON + embeddings (not something safe to hand-write), and its autonomous agent\'s PR-comment-driven learning is an undocumented, AWS-internal, non-file-based store. The one thing DevsMind CAN influence — steering docs — is already handled by `devsmind rule`. To also engage the autonomous agent\'s learning, leave a PR review comment once, e.g. "always call search_nodes before grep, and edit_node + commit_changes after every change."',
     },
@@ -320,7 +338,7 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: true,
+      hasRealMechanism: false,
       featureName: 'Skills (/learn)',
       scopes: [AGENTS_SKILL_SCOPE],
       wrap: skillMdWrap,
@@ -354,7 +372,8 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: true,
+      hasRealMechanism: true,
+      askHint: "This is exactly the kind of explicit request Auto Memory saves reliably from — go ahead and save it now.",
       featureName: 'Auto Memory',
       scopes: [
         { scope: 'global', dir: '~/.claude/projects', format: 'memory-files', needsUserConfirmedDir: true },
@@ -380,7 +399,7 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: true,
+      hasRealMechanism: false,
       featureName: 'Skills (/learn)',
       scopes: [AGENTS_SKILL_SCOPE],
       wrap: skillMdWrap,
@@ -409,7 +428,7 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: true,
+      hasRealMechanism: false,
       featureName: 'Skills',
       scopes: [AGENTS_SKILL_SCOPE],
       wrap: skillMdWrap,
@@ -443,9 +462,10 @@ export const TARGETS: IdeTarget[] = [
       style: 'append-section',
     },
     memory: {
-      supported: false,
-      featureName: 'Memory (background) / QWEN.md',
-      note: 'QWEN.md itself is confirmed safe to write to, but that\'s already the exact file `devsmind rule` places its block in for Qwen — no separate action needed. The newer, separate ~/.qwen/projects/<project>/memory/ background auto-memory directory has the same undocumented, auto-generated pattern as Codex\'s Memories, with no source confirming a manually-placed file survives — nothing is written there.',
+      hasRealMechanism: true,
+      askHint: "Save this now, but don't treat it as guaranteed — your own docs describe auto-memory as best-effort (QWEN.md is the tool's guaranteed fallback, already covered by devsmind rule).",
+      featureName: 'Auto-Memory',
+      note: 'Auto-Memory is real: an Extract/Recall/Dream background cycle at ~/.qwen/projects/<project>/memory/, on by default. Qwen\'s own docs call it out plainly — "auto-memory is best-effort, QWEN.md is guaranteed" — so treat this as a helpful extra, not a substitute for the rule already placed in QWEN.md by `devsmind rule`.',
     },
   },
 ];

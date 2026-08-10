@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import * as http from 'http';
@@ -31,7 +31,7 @@ import {
 import { extractFilesIntoGraph, pendingDescriptionNodes, resolveEdgesIncrementally } from '../db/index-build';
 import { scanRepoFiles, INDEXABLE_EXTENSIONS } from '../utils/scanner';
 import { parseNodeId, isAstParseable, findTouchedSymbols, invalidateParsedFile, extractNodeFromFile, listFileImports, outlineFile } from '../utils/ast';
-import { replaceTextInFile, createFileWithContent } from '../utils/edit';
+import { replaceTextInFile, createFileWithContent, locateAppliedEdit } from '../utils/edit';
 import { validateDescription } from '../utils/tokenize';
 import { DEVSMIND_VERSION } from '../utils/version';
 import { stageEntry, readStaged, clearStaged, commitStagedChanges, summarizeEntriesForWorkflow, StagedEntry, stageFileEdit, readStagedFileEdits, overwriteStaged, resolveEntryId, partitionStagedForSession, clearStagedForSession } from '../db/staging';
@@ -56,6 +56,9 @@ export const DEVSMIND_PORT = 4513;
  * `description` (resent every call), this is easy for a long session to lose
  * track of too, so it should carry only what's genuinely cross-cutting.
  */
+/** MCP prompts/list name for the workflow-contract prompt below — see createMcpServer's prompts handlers. */
+export const DEVSMIND_PROMPT_NAME = 'devsmind-workflow';
+
 export const DEVSMIND_INSTRUCTIONS = `DevsMind is this team's persistent shared code memory — not a personal tool you reach for only when asked to search something. Every teammate's AI agent, in every session, reads from the SAME graph you are about to write to. There is no "your copy."
 
 If you skip recording a change, you are not skipping a formality. You are leaving the whole team's graph stale for every other AI agent that queries this code later — tomorrow, on a different task, in a different session. And the reasoning behind your change (why it was made, what ticket drove it, what was broken before, what you tried and rejected) exists ONLY in this conversation, right now. It is not in the diff. It is not in the commit message. If it isn't captured at commit_changes this turn, it is gone forever — no reindex, no log, no git blame can recover it later.
@@ -66,12 +69,13 @@ Non-negotiable workflow:
 3. To read one function/class: call get_node_code instead of opening the file, and do not follow it with a file read for context — this is the ONE node-read call, not a lean summary. It already includes the file's imports, the node's own name/type/signature/description, up to 20 named callers AND callees per direction (with exact uses/used_by counts even when the lists are capped), and up to 40 other declarations from the same file (file_outline — this is how you tell "was this renamed?" or "what else lives here" without opening the file). Reach further in the SAME call instead of a second tool: graph_depth + graph_direction walks the transitive graph past the direct neighbors already included (add graph_code:true for a whole call flow's source in one round trip — if some nodes' code doesn't fit the budget they are named in graph.code_omitted_node_ids, so fetch exactly those rather than re-running blind), and history:"full" returns every revision with diffable edits, pageable with history_limit/history_offset. Every capped section is honest about it (*_truncated, *_hint) — a hint means more is reachable in this same call, not a dead end.
 4. Before touching any function's signature: get_node_code already includes its direct callers by name (used_by_nodes) — for the FULL transitive blast radius, pass graph_direction:"in" with a graph_depth of 2-3 in that same call. Git shows you what changed; it never shows you what depends on it. Find out before you break something, not after.
 5. Before refactoring: get_node_code already includes the last 3 changes' reasoning by default — for the full revision trail with diffable before/after edits, pass history:"full" in that same call. Git blame tells you who and when; it never tells you why. The actual decision context only exists here.
-6. Write EVERY file with edit_node — .ts, .vue, .css, .json, .xml, .md, anything — and never your editor's own edit/write tools. There is no second write tool: edit_node is the only one. It takes file_path + old_string + new_string exactly like an ordinary edit tool and never refuses a file type; to create a file that doesn't exist yet, pass old_string: "" and the whole file as new_string. Because it knows where your text landed, it works out which function/class you changed automatically: no node_id to look up, no code_snapshot to send back. It answers with every caller of what you changed. The graph only ever holds source code (functions/classes/logic) though — writes landing outside any function (markup, config, an import) get no graph node, normal and expected, not a failure — but the whole-file change is still staged for the local activity log, so commit_changes makes it revertable there like any other edit.
-7. commit_changes REQUIRES a message AND a reasoning — the call fails without either. message is the user's request, verbatim, that led to this commit; it builds a local, private, never-pushed activity log (devsmind view → Activity) grouping your work by request and letting the user revert a request as a whole. Pass the exact same text again on a later commit that's still answering the same request — that merges them into one entry instead of splitting it. reasoning (what_changed/why/goal) is ONE object covering everything staged since the last commit — a commit is one logical change, so it gets one why, recorded against every node it touches, not one per edit_node call.
-8. commit_changes also REFUSES any batch containing a brand-NEW node with no description — a description is what makes that node findable later by a natural-language search_nodes query instead of only by its exact identifier. If edit_node just created a node, call add_description with it (1-3 sentences of what it does and the domain concepts involved — never a restatement of the name) before commit_changes will accept it. Nothing staged is lost by the refusal; retry the same commit_changes call once it's described. Existing nodes are never gated by this — only ones new this commit.
-9. A workflow is a named log of how ONE piece of functionality grew, across many sessions — read it to learn how the code got this way. start_session tells you if there is a recent one worth continuing; otherwise, when starting work that might belong to an existing multi-session feature, call workflow_list. If a description matches, ask the user before continuing it, then workflow_bind to attach THIS session. Binding is local to you: it never moves, pauses, or steals anyone else's workflow, and two sessions can work different ones at the same time.
-10. Once bound, commit_changes logs a step for you automatically — you do NOT need workflow_add_step for ordinary code work. Call it for the thing a commit cannot express: a DECISION OR RESEARCH FINDING THAT CHANGED NO CODE ("evaluated X, rejected it because Y"), attaching the docs behind it via doc_paths. That is the one kind of knowledge nothing else keeps — git has the diff, history has the per-node reasoning, but neither records what was considered and rejected. If you did work while unbound, or on the wrong workflow, workflow_sync attaches it afterwards from your local activity log: it previews first and only writes when you pass confirm:true, so nothing has to be got right in the moment.
-11. commit_changes also REQUIRES a feedback object (5 fields) — this is the only channel that improves DevsMind over time, so answer it for real, not as a formality. Before writing "none" on any field, actually check: did anything in THIS task take an extra tool call, a guess, a re-read, or a wrong turn? There almost always is something, even on an easy task — a specific one-line answer with evidence (file:line) is far more useful than a reflexive "none". "none" is correct only when you genuinely paid attention and nothing applies. Noticed something worth reporting but aren't committing right now (or don't want to wait until you are)? Call add_feedback directly — same 5 categories, but any one or more, nothing required, no commit needed. Passing evidence (file + snippet) on a graph_problem/edge_problem gets it verified fresh at call time and marked confirmed instead of suspected.`;
+6. Write EVERY file with edit_node — .ts, .vue, .css, .json, .xml, .md, anything — and never your editor's own edit/write tools. It takes file_path + old_string + new_string exactly like an ordinary edit tool and never refuses a file type; to create a file that doesn't exist yet, pass old_string: "" and the whole file as new_string. Because it knows where your text landed, it works out which function/class you changed automatically: no node_id to look up, no code_snapshot to send back. It answers with every caller of what you changed. The graph only ever holds source code (functions/classes/logic) though — writes landing outside any function (markup, config, an import) get no graph node, normal and expected, not a failure — but the whole-file change is still staged for the local activity log, so commit_changes makes it revertable there like any other edit.
+7. If a file already got edited WITHOUT going through edit_node — your own editor's edit/write tool got used by mistake, or you're catching up on work from before this session — call stage_change to recover it: same file_path/old_string/new_string/replace_all/description shape as edit_node, but it traces and stages the change without touching the file, since new_string is already sitting on disk. It fails clearly (new_string not found) if the edit never actually happened, so it can't silently record the wrong thing. Always prefer edit_node going forward; stage_change exists only to catch up after the fact, not as a second way to make an edit.
+8. commit_changes REQUIRES a message AND a reasoning — the call fails without either. message is the user's request, verbatim, that led to this commit; it builds a local, private, never-pushed activity log (devsmind view → Activity) grouping your work by request and letting the user revert a request as a whole. Pass the exact same text again on a later commit that's still answering the same request — that merges them into one entry instead of splitting it. reasoning (what_changed/why/goal) is ONE object covering everything staged since the last commit — a commit is one logical change, so it gets one why, recorded against every node it touches, not one per edit_node/stage_change call.
+9. commit_changes also REFUSES any batch containing a brand-NEW node with no description — a description is what makes that node findable later by a natural-language search_nodes query instead of only by its exact identifier. If edit_node or stage_change just created a node, call add_description with it (1-3 sentences of what it does and the domain concepts involved — never a restatement of the name) before commit_changes will accept it. Nothing staged is lost by the refusal; retry the same commit_changes call once it's described. Existing nodes are never gated by this — only ones new this commit.
+10. A workflow is a named log of how ONE piece of functionality grew, across many sessions — read it to learn how the code got this way. start_session tells you if there is a recent one worth continuing; otherwise, when starting work that might belong to an existing multi-session feature, call workflow_list. If a description matches, ask the user before continuing it, then workflow_bind to attach THIS session. Binding is local to you: it never moves, pauses, or steals anyone else's workflow, and two sessions can work different ones at the same time.
+11. Once bound, commit_changes logs a step for you automatically — you do NOT need workflow_add_step for ordinary code work. Call it for the thing a commit cannot express: a DECISION OR RESEARCH FINDING THAT CHANGED NO CODE ("evaluated X, rejected it because Y"), attaching the docs behind it via doc_paths. That is the one kind of knowledge nothing else keeps — git has the diff, history has the per-node reasoning, but neither records what was considered and rejected. If you did work while unbound, or on the wrong workflow, workflow_sync attaches it afterwards from your local activity log: it previews first and only writes when you pass confirm:true, so nothing has to be got right in the moment.
+12. commit_changes also REQUIRES a feedback object (5 fields) — this is the only channel that improves DevsMind over time, so answer it for real, not as a formality. Before writing "none" on any field, actually check: did anything in THIS task take an extra tool call, a guess, a re-read, or a wrong turn? There almost always is something, even on an easy task — a specific one-line answer with evidence (file:line) is far more useful than a reflexive "none". "none" is correct only when you genuinely paid attention and nothing applies. Noticed something worth reporting but aren't committing right now (or don't want to wait until you are)? Call add_feedback directly — same 5 categories, but any one or more, nothing required, no commit needed. Passing evidence (file + snippet) on a graph_problem/edge_problem gets it verified fresh at call time and marked confirmed instead of suspected.`;
 
 // Shared node-type taxonomy description, reused by update_history and add_description.
 const NODE_TYPE_DESCRIPTION =
@@ -105,7 +109,7 @@ const NODE_TYPE_DESCRIPTION =
   'TESTS: test_suite | test_case | test_helper | mock | fixture\n' +
   'UTILITY: util_function | helper | transformer | validator | formatter';
 
-// Shared `description` field schema, reused by edit_node and add_description. This is what
+// Shared `description` field schema, reused by edit_node, stage_change, and add_description. This is what
 // makes search_nodes findable by natural language — an identifier alone is a handful of words;
 // this is where the domain vocabulary (login/auth/sign-in, cart/basket, ...) actually lives.
 const DESCRIPTION_FIELD_SCHEMA = {
@@ -373,7 +377,7 @@ export function createMcpServer(): Server {
   const server = new Server(
     { name: 'devsmind-server', version: DEVSMIND_VERSION },
     {
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, prompts: {} },
       instructions: DEVSMIND_INSTRUCTIONS
     }
   );
@@ -523,6 +527,28 @@ export function createMcpServer(): Server {
               old_string: { type: 'string', description: 'The exact text to replace, matched byte-for-byte including indentation. Must appear exactly once in the file unless replace_all is true. Pass "" to CREATE a file that does not exist yet.' },
               new_string: { type: 'string', description: 'The text to put in its place — or, when creating a file, its entire contents. Pass an empty string to delete the matched text.' },
               replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring a unique match (default false). Every occurrence is traced, so an edit hitting three functions records all three.' },
+              description: {
+                ...DESCRIPTION_FIELD_SCHEMA,
+                description: DESCRIPTION_FIELD_SCHEMA.description + ' Only applies when this edit touches exactly one function/class — ignored otherwise, since it would be ambiguous which touched symbol it describes.'
+              }
+            },
+            required: ['devmind_path', 'file_path', 'old_string', 'new_string']
+          }
+        },
+        {
+          name: 'stage_change',
+          description:
+            "Catch up on a file that got edited WITHOUT going through edit_node — your editor's own edit/write tool got used by mistake, a shell command touched it, or you're recording work from earlier that never got staged. Same shape as edit_node — `file_path` + `old_string` + `new_string` (+ optional `replace_all`/`description`) — but it NEVER writes to the file: `new_string` is expected to already be sitting on disk, and it just traces and stages the change into the graph exactly like edit_node would have, had it been called at the time.\n\n" +
+            "`old_string` here is what the code looked like BEFORE the edit (used to reconstruct history and diffs), and `new_string` is what it looks like NOW, on disk — the exact opposite of what edit_node searches for. If `new_string` isn't found, nothing is staged and you're told plainly: either the edit hasn't actually happened yet (call edit_node instead) or the text doesn't match exactly.\n\n" +
+            "Prefer edit_node for every edit going forward — this exists only to recover a change edit_node didn't make, not as a second way to make one. Same rules apply once staged: nothing reaches the graph until commit_changes, and a brand-new node still needs a description before commit_changes will accept it (pass it here, or use add_description after).",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              file_path: { type: 'string', description: 'The file that was already edited. Must exist.' },
+              old_string: { type: 'string', description: 'The exact text the file had BEFORE the edit (for history/diffing) — the opposite of edit_node, this is NOT searched for on disk. Pass "" if the file itself did not exist before this edit (i.e. it was newly created).' },
+              new_string: { type: 'string', description: 'The exact text the file has NOW. Must be found on disk exactly once unless replace_all is true — this is what gets located and traced.' },
+              replace_all: { type: 'boolean', description: 'Trace every occurrence of new_string instead of requiring a unique match (default false).' },
               description: {
                 ...DESCRIPTION_FIELD_SCHEMA,
                 description: DESCRIPTION_FIELD_SCHEMA.description + ' Only applies when this edit touches exactly one function/class — ignored otherwise, since it would be ambiguous which touched symbol it describes.'
@@ -1831,6 +1857,192 @@ export function createMcpServer(): Server {
           return { content };
         }
 
+        case 'stage_change': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const stageDb = getDatabase(devmindPath);
+          const workspaceRoot = path.dirname(devmindPath);
+
+          if (!args.file_path || args.old_string === undefined || args.new_string === undefined) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  staged: false,
+                  error: 'stage_change needs file_path, old_string (the code BEFORE the edit) and new_string (the code as it is NOW, already on disk).'
+                })
+              }]
+            };
+          }
+          const rawPath = String(args.file_path);
+          const filePath = path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(workspaceRoot, rawPath);
+          if (!stageDb.isPathAllowed(filePath)) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  staged: false,
+                  error: "file_path resolves outside the project's configured repos — nothing was staged.",
+                  resolved_path: filePath
+                })
+              }]
+            };
+          }
+
+          const oldString = String(args.old_string);
+          if (!fs.existsSync(filePath)) {
+            return {
+              isError: true,
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  staged: false,
+                  file_path: filePath,
+                  error: `${path.basename(filePath)} does not exist. stage_change records an edit that has ALREADY landed on disk — if this file hasn't been created yet, call edit_node instead.`
+                })
+              }]
+            };
+          }
+
+          const result = locateAppliedEdit(filePath, oldString, String(args.new_string), args.replace_all === true);
+          if (!result.ok) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ staged: false, file_path: filePath, error: result.error }) }]
+            };
+          }
+          invalidateParsedFile(filePath);
+
+          // Same tracing as edit_node from here on — the file already has new_string on disk,
+          // so this just works out which function/class that already-applied edit landed in.
+          const knownHere = stageDb.getNodesByFilePath(filePath).map(n => {
+            const parsed = parseNodeId(n.id);
+            return { id: n.id, symbolName: parsed ? parsed.symbolName : (n.id.split('#').pop() || n.name) };
+          });
+          const touched = findTouchedSymbols(filePath, result.ranges || [], knownHere, result.before);
+
+          let singleSymbolDescription: string | undefined;
+          let descriptionNote: string | undefined;
+          if (args.description !== undefined) {
+            if (touched.length !== 1) {
+              descriptionNote = touched.length === 0
+                ? 'description was ignored: this edit touched no function/class, so there was nothing to describe.'
+                : `description was ignored: this edit touched ${touched.length} symbols, which one it describes is ambiguous — use add_description for each after this call.`;
+            } else {
+              const check = validateDescription(String(args.description), touched[0].name);
+              if (check.ok) {
+                singleSymbolDescription = String(args.description);
+              } else {
+                descriptionNote = `description was rejected and ignored: ${check.error}`;
+              }
+            }
+          }
+
+          const staged: any[] = [];
+          const diffBlocks: string[] = [];
+          for (const t of touched) {
+            const nodeId = t.node_id || `${stageDb.toRepoRelativePath(filePath)}#${t.symbolName}`;
+            stageEntry(devmindPath, {
+              node_id: nodeId,
+              file_path: filePath,
+              code_snapshot: t.codeSnapshot,
+              code_before: t.codeBefore,
+              name: t.name,
+              type: t.type,
+              signature: t.signature || undefined,
+              description: singleSymbolDescription,
+              session_id: sessionId
+            });
+
+            const conns = t.node_id ? stageDb.getConnections(t.node_id) : { uses: [], usedBy: [] };
+            const priorHistory = (t.node_id ? stageDb.getFullHistory(t.node_id) : [])
+              .flatMap(h => parseReasoningBlocks(h.reasoning).map(r => ({ updated_at: h.updated_at, r })))
+              .slice(0, 2)
+              .map(({ updated_at, r }) => ({ updated_at, developer: r.developer, what_changed: r.what_changed, why: r.why }));
+
+            staged.push({
+              node_id: nodeId,
+              name: t.name,
+              type: t.type,
+              lines: `${t.startLine}-${t.endLine}`,
+              is_new_to_graph: t.isNew,
+              described: singleSymbolDescription !== undefined,
+              callers: conns.usedBy.slice(0, 10).map(n => ({ id: n.id, name: n.name, file_path: n.file_path })),
+              callers_total: conns.usedBy.length,
+              calls_out: conns.uses.slice(0, 10).map(n => ({ id: n.id, name: n.name })),
+              prior_history: priorHistory
+            });
+
+            diffBlocks.push(`### ${t.name}  \`${path.basename(filePath)}:${t.startLine}-${t.endLine}\`\n\`\`\`diff\n${renderUnifiedDiff(t.codeBefore ?? '', t.codeSnapshot)}\n\`\`\``);
+          }
+
+          // Same as edit_node: nothing traced into the graph doesn't mean nothing worth keeping —
+          // a non-code file, or an edit landing outside any function, still gets its whole-file
+          // before/after staged for the LOCAL activity log so it's revertable in devsmind view too.
+          let fileEditStaged = false;
+          if (touched.length === 0) {
+            const afterContent = fs.readFileSync(filePath, 'utf-8');
+            stageFileEdit(devmindPath, {
+              file_path: filePath,
+              before: result.before ?? '',
+              after: afterContent,
+              session_id: sessionId
+            });
+            fileEditStaged = true;
+          }
+
+          const { entries: myPendingEntries, fileEdits: myPendingFileEdits } = partitionStagedForSession(devmindPath, sessionId);
+          const pending = myPendingEntries.length + myPendingFileEdits.length;
+
+          const ext = path.extname(filePath).toLowerCase();
+          const callerCount = staged.reduce((sum, s) => sum + s.callers_total, 0);
+          const newUndescribedCount = staged.filter(s => s.is_new_to_graph && !s.described).length;
+          const newDescribedCount = staged.filter(s => s.is_new_to_graph && s.described).length;
+          let reminder: string;
+          if (staged.length) {
+            reminder = callerCount
+              ? `Recorded ${staged.length} node(s). ${callerCount} node(s) call what you changed — if you altered a signature or contract, check them before moving on. Nothing reaches the graph until commit_changes.`
+              : `Recorded ${staged.length} node(s). Nothing reaches the graph until commit_changes.`;
+            if (newUndescribedCount > 0) {
+              reminder += ` ${newUndescribedCount} of these are NEW and undescribed — commit_changes will refuse the batch without a description for each (call add_description before you commit, while this code is still fresh in context, or pass description directly to stage_change next time when it's a single new symbol).`;
+            }
+            if (newDescribedCount > 0) {
+              reminder += ` ${newDescribedCount} new node(s) already described via this call — no add_description round trip needed for those.`;
+            }
+            if (descriptionNote) {
+              reminder += ` ${descriptionNote}`;
+            }
+          } else if (!INDEXABLE_EXTENSIONS.has(ext)) {
+            reminder = `${ext || 'This file type'} is intentionally out of scope for the code graph — no node was recorded. The whole-file change is staged for the local activity log though, so commit_changes will still make it revertable there.`;
+          } else if (isAstParseable(filePath)) {
+            reminder = oldString === ''
+              ? 'The file exists but declares no function or class, so no graph node was recorded. The whole-file change is staged for the local activity log, so commit_changes will still make it revertable there.'
+              : 'This edit did not land inside any function or class (an import, a top-level constant, or similar), so no graph node was recorded. The whole-file change is staged for the local activity log, so commit_changes will still make it revertable there.';
+          } else {
+            reminder = `${ext} has no parser support in DevsMind yet (TS/JS only, for now) — this could not be traced into the graph. The whole-file change is staged for the local activity log though, so commit_changes will still make it revertable there.`;
+          }
+
+          const content: { type: 'text'; text: string }[] = [];
+          if (diffBlocks.length) {
+            content.push({ type: 'text', text: `Recorded ${path.basename(filePath)}\n\n${diffBlocks.join('\n\n')}` });
+          }
+          content.push({
+            type: 'text',
+            text: JSON.stringify({
+              staged: true,
+              file_path: filePath,
+              matched: result.replacements,
+              recorded: staged.length,
+              pending_count: pending,
+              touched: staged,
+              file_edit_staged: fileEditStaged,
+              reminder
+            }, null, 2)
+          });
+          return { content };
+        }
+
         case 'add_description': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
@@ -2998,6 +3210,29 @@ export function createMcpServer(): Server {
           ? [{ type: 'text', text: `devsmind_session_id: ${sessionId}  (required on every DevsMind write call for the rest of this conversation — reuse this exact value)` }]
           : [])
       ]
+    };
+  });
+
+  // Prompts (MCP's own explicit-invocation capability) — separate from the tools above:
+  // prompts are spec-mandated user-controlled, so a client surfaces them for a human to
+  // explicitly pick (often as a slash command), never invokes one autonomously. This is the
+  // same DEVSMIND_INSTRUCTIONS text already sent once at connect (`instructions:` above) and
+  // reused by `devsmind memory`'s printed prompt — exposing it here too costs nothing extra
+  // and gives clients with real prompts support (Claude Code, Cursor, Windsurf, Kiro, Qwen) a
+  // way to re-assert it mid-conversation without the user re-pasting anything.
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: [{
+      name: DEVSMIND_PROMPT_NAME,
+      description: 'The DevsMind workflow contract — start_session, search_nodes over grep, edit_node for every write, commit_changes at checkpoints. Same text sent automatically at connect; invoke this any time to re-assert it mid-conversation.'
+    }]
+  }));
+
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    if (request.params.name !== DEVSMIND_PROMPT_NAME) {
+      throw new Error(`Prompt not found: ${request.params.name}`);
+    }
+    return {
+      messages: [{ role: 'user', content: { type: 'text', text: DEVSMIND_INSTRUCTIONS } }]
     };
   });
 

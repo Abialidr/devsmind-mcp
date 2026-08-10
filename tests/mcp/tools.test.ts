@@ -167,24 +167,173 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
   });
 
-  describe('stage_change — removed, not retired (unlike the block above)', () => {
-    it('is absent from listTools() and a direct/legacy call now errors — the handler itself was deleted, not just unadvertised', async () => {
-      const { tools } = await harness.client.listTools();
-      expect(tools.map(t => t.name)).not.toContain('stage_change');
+  describe('stage_change — catch up on an edit made outside edit_node', () => {
+    let sessionId: string;
 
-      const { parsed: session } = await callToolJson(harness.client, 'start_session', {
+    beforeEach(async () => {
+      const { parsed } = await callToolJson(harness.client, 'start_session', {
         devmind_path: fx.devmindPath
       }) as { parsed: { session_id: string } };
+      sessionId = parsed.session_id;
+    });
 
+    /** Same shape as edit_node's own JSON block: a human-readable diff leads it. */
+    async function callStageChangeJson(args: Record<string, unknown>) {
+      const { isError, textBlocks } = await callTool(harness.client, 'stage_change', args);
+      const jsonBlock = textBlocks.find(b => b.trim().startsWith('{'));
+      return { isError, parsed: jsonBlock ? JSON.parse(jsonBlock) : undefined, textBlocks };
+    }
+
+    it('is advertised, unlike the truly retired tools above', async () => {
+      const { tools } = await harness.client.listTools();
+      expect(tools.map(t => t.name)).toContain('stage_change');
+    });
+
+    it('traces and stages an edit already sitting on disk, without touching the file', async () => {
+      const filePath = repoFile(fx, 'bar.ts');
+      const before = fs.readFileSync(filePath, 'utf-8');
+      // Simulate the AI's own edit tool having already made this change.
+      const after = before.replace('return "hi " + s;', 'return "hello " + s;');
+      fs.writeFileSync(filePath, after);
+
+      const { isError, parsed } = await callStageChangeJson({
+        devmind_path: fx.devmindPath,
+        session_id: sessionId,
+        file_path: filePath,
+        old_string: 'return "hi " + s;',
+        new_string: 'return "hello " + s;',
+        description: 'Formats a raw string into the "hello <value>" greeting format used across the app for testing.'
+      });
+      expect(isError).toBe(false);
+      expect(parsed.staged).toBe(true);
+      expect(parsed.recorded).toBe(1);
+      expect(parsed.touched[0].name).toBe('format');
+      // The file is untouched by stage_change itself — it already had `after` on disk.
+      expect(fs.readFileSync(filePath, 'utf-8')).toBe(after);
+    });
+
+    it('stages a brand-new file that was already created outside edit_node (old_string: "")', async () => {
+      const filePath = repoFile(fx, 'alreadycreated.ts');
+      const content = 'export function alreadyCreated() { return 1; }\n';
+      fs.writeFileSync(filePath, content);
+
+      const { isError, parsed } = await callStageChangeJson({
+        devmind_path: fx.devmindPath,
+        session_id: sessionId,
+        file_path: filePath,
+        old_string: '',
+        new_string: content,
+        description: 'A trivial test function used to exercise stage_change on a file created outside edit_node.'
+      });
+      expect(isError).toBe(false);
+      expect(parsed.recorded).toBe(1);
+      expect(parsed.touched[0].is_new_to_graph).toBe(true);
+    });
+
+    it('errors when the file does not exist yet, pointing at edit_node instead', async () => {
       const { isError, textBlocks } = await callTool(harness.client, 'stage_change', {
         devmind_path: fx.devmindPath,
-        session_id: session.session_id,
-        node_id: 'wontWork',
-        file_path: repoFile(fx, 'foo.ts'),
-        code_snapshot: 'export function wontWork() { return 1; }'
+        session_id: sessionId,
+        file_path: repoFile(fx, 'doesnotexist.ts'),
+        old_string: '',
+        new_string: 'export function neverCreated() { return 1; }\n'
       });
       expect(isError).toBe(true);
-      expect(textBlocks.join(' ').toLowerCase()).toContain('tool not found');
+      expect(textBlocks.join(' ').toLowerCase()).toContain('edit_node');
+    });
+
+    it('errors when new_string is not found on disk — the edit never actually happened', async () => {
+      const { isError, textBlocks } = await callTool(harness.client, 'stage_change', {
+        devmind_path: fx.devmindPath,
+        session_id: sessionId,
+        file_path: repoFile(fx, 'bar.ts'),
+        old_string: 'return "hi " + s;',
+        new_string: 'return "this text is not in the file";'
+      });
+      expect(isError).toBe(true);
+      expect(textBlocks.join(' ').toLowerCase()).toContain('was not found');
+    });
+
+    it('rejects a path outside the configured repos, same as edit_node', async () => {
+      const outside = path.join(os.tmpdir(), 'devsmind-stage-change-outside.ts');
+      fs.writeFileSync(outside, 'export const x = 1;\n');
+      try {
+        const { isError, textBlocks } = await callTool(harness.client, 'stage_change', {
+          devmind_path: fx.devmindPath,
+          session_id: sessionId,
+          file_path: outside,
+          old_string: '',
+          new_string: 'export const x = 1;\n'
+        });
+        expect(isError).toBe(true);
+        expect(textBlocks.join(' ').toLowerCase()).toContain('configured repos');
+      } finally {
+        fs.rmSync(outside, { force: true });
+      }
+    });
+
+    it('requires session_id, same as edit_node', async () => {
+      let threw = false;
+      let errorText = '';
+      try {
+        const { isError, textBlocks } = await callTool(harness.client, 'stage_change', {
+          devmind_path: fx.devmindPath,
+          file_path: repoFile(fx, 'bar.ts'),
+          old_string: 'return "hi " + s;',
+          new_string: 'return "hello " + s;'
+        });
+        threw = isError;
+        errorText = textBlocks.join(' ');
+      } catch (err) {
+        threw = true;
+        errorText = String((err as Error).message || err);
+      }
+      expect(threw).toBe(true);
+      expect(errorText.toLowerCase()).toContain('session_id');
+    });
+
+    it('falls back to staging the whole-file edit when nothing traces into the graph', async () => {
+      const filePath = repoFile(fx, 'styles.css');
+      fs.writeFileSync(filePath, 'body { color: red; }\n');
+      const after = 'body { color: blue; }\n';
+      fs.writeFileSync(filePath, after);
+
+      const { isError, parsed } = await callStageChangeJson({
+        devmind_path: fx.devmindPath,
+        session_id: sessionId,
+        file_path: filePath,
+        old_string: 'body { color: red; }\n',
+        new_string: after
+      });
+      expect(isError).toBe(false);
+      expect(parsed.recorded).toBe(0);
+      expect(parsed.file_edit_staged).toBe(true);
+    });
+
+    it('a staged entry reaches the graph via commit_changes exactly like edit_node', async () => {
+      const filePath = repoFile(fx, 'bar.ts');
+      const before = fs.readFileSync(filePath, 'utf-8');
+      const after = before.replace('return "hi " + s;', 'return "hey " + s;');
+      fs.writeFileSync(filePath, after);
+
+      await callTool(harness.client, 'stage_change', {
+        devmind_path: fx.devmindPath,
+        session_id: sessionId,
+        file_path: filePath,
+        old_string: 'return "hi " + s;',
+        new_string: 'return "hey " + s;',
+        description: 'Formats a raw string into a greeting, used across the app for testing.'
+      });
+
+      const { isError, parsed } = await callToolJson(harness.client, 'commit_changes', {
+        devmind_path: fx.devmindPath,
+        session_id: sessionId,
+        message: 'catch up format() edit made outside edit_node',
+        reasoning: { what_changed: 'changed greeting prefix', why: 'test', goal: 'exercise stage_change -> commit_changes' },
+        feedback: defaultFeedback()
+      });
+      expect(isError).toBe(false);
+      expect(parsed).toBeTruthy();
     });
   });
 

@@ -180,3 +180,77 @@ export function replaceTextInFile(
   }
   return { ok: true, replacements: ranges.length, ranges, before: original };
 }
+
+/**
+ * Locate an edit that was already applied to the file by some OTHER tool (the caller's own
+ * editor, not DevsMind) — the read-only counterpart to {@link replaceTextInFile}, used by
+ * `stage_change` to catch up on a write `edit_node` never saw. Nothing is written here; `newString`
+ * is expected to already be sitting on disk, and `oldString` exists only to reconstruct what came
+ * before it, the same way `replaceTextInFile`'s `before` does.
+ *
+ * Semantics mirror `replaceTextInFile` with the roles of old/new reversed: `newString` is what
+ * must be found in the CURRENT file content, byte-for-byte except EOL style, exactly once unless
+ * `replaceAll`. `oldString` is substituted back into each matched span to reconstruct the
+ * pre-edit content, which is what makes the change traceable and diffable exactly like a real
+ * `edit_node` write.
+ */
+export function locateAppliedEdit(
+  filePath: string,
+  oldString: string,
+  newString: string,
+  replaceAll = false
+): TextEditResult {
+  if (oldString === newString) {
+    return { ok: false, error: 'old_string and new_string are identical — nothing to record.' };
+  }
+
+  let current: string;
+  try {
+    current = fs.readFileSync(filePath, 'utf-8');
+  } catch (e: any) {
+    return { ok: false, error: `could not read ${filePath}: ${e?.message || e}` };
+  }
+
+  // An empty old_string means "this file did not exist before" — some other tool just created
+  // it. There is nothing to search for: the whole current content IS the new state, and
+  // whatever came before it is, by definition, nothing.
+  if (oldString === '') {
+    return { ok: true, replacements: 1, ranges: [{ start: 0, end: current.length }], before: '' };
+  }
+
+  const pattern = buildEolTolerantPattern(normalizeEol(newString));
+
+  const matches: RegExpExecArray[] = [];
+  for (let m = pattern.exec(current); m !== null; m = pattern.exec(current)) {
+    matches.push(m);
+    if (!replaceAll && matches.length > 1) break;
+  }
+
+  if (matches.length === 0) {
+    return {
+      ok: false,
+      error: 'new_string was not found in the file. stage_change records an edit that has ALREADY landed on disk — if you have not made this change yet, call edit_node instead. Line-ending differences (CRLF vs LF) are tolerated, but every other character, including indentation, must match exactly.'
+    };
+  }
+  if (matches.length > 1 && !replaceAll) {
+    return {
+      ok: false,
+      error: `new_string matches more than one place in the file — nothing was recorded. Include surrounding lines to make it unique, or pass replace_all: true if every occurrence should be staged.`
+    };
+  }
+
+  // Reconstruct the pre-edit content by substituting old_string back into each matched span —
+  // the mirror image of how replaceTextInFile builds the NEW content from the old one.
+  const ranges: { start: number; end: number }[] = [];
+  let before = '';
+  let cursor = 0;
+  for (const match of matches) {
+    ranges.push({ start: match.index, end: match.index + match[0].length });
+    before += current.slice(cursor, match.index);
+    before += adaptEol(oldString, match[0]);
+    cursor = match.index + match[0].length;
+  }
+  before += current.slice(cursor);
+
+  return { ok: true, replacements: ranges.length, ranges, before };
+}
