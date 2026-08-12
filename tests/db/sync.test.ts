@@ -405,6 +405,84 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
         fx.cleanup();
       }
     });
+
+    it('stops repeating the directory-typed file_path warning on every future syncToDisk once the node is deprecated — deprecating it never clears the garbage file_path, so it used to warn forever', () => {
+      // Regression test: a real production brain reported the exact same "Skipped writing graph
+      // JSON: a node's file_path resolves to a directory" warning on EVERY `devsmind sync`, even
+      // after `devsmind analyze --fix` had already deprecated the offending node. `deprecateNode`
+      // sets deprecated=1 but never touches the (already-garbage) file_path column, and
+      // syncToDisk's own `SELECT DISTINCT file_path FROM nodes` never filtered deprecated — so
+      // the same unwritable path kept getting handed to writeGraphToDisk/writeVectorsToDisk,
+      // forever, indistinguishable from the bug never having been fixed.
+      const fx = makeFixture();
+      try {
+        // Two distinct collapse shapes: file_path == the .devmind dir itself (diskRelPath goes
+        // empty) and file_path == the project root one level up (diskRelPath collapses to '..'
+        // with no trailing slash) — isFilePathStructurallyDegenerate must catch both.
+        const id1 = '{app}/#corrupt';
+        const id2 = '{app}/#corrupt2';
+        fx.db.upsertNode({ id: id1, type: 'function', name: 'corrupt', file_path: fx.devmindPath });
+        fx.db.upsertNode({ id: id2, type: 'function', name: 'corrupt2', file_path: fx.root });
+        fx.db.deprecateNode(id1); // what analyze --fix actually does for a missing_files node
+        fx.db.deprecateNode(id2);
+
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          fx.db.syncToDisk();
+          fx.db.syncToDisk(); // twice, to prove it's not a one-time thing
+          expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('resolves to a directory'));
+        } finally {
+          warnSpy.mockRestore();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('still re-attempts (and rewrites) a file_path shared by an active node and a deprecated one', () => {
+      // The skip above must not become a blanket "any deprecated node's file_path is ignored" —
+      // a file with one live node and one deprecated sibling still needs its graph JSON kept
+      // current so the deprecated:1 flag on the sibling survives a fresh syncFromDisk elsewhere.
+      const fx = makeFixture();
+      try {
+        const liveId = '{app}/foo.ts#greet';
+        const deadId = '{app}/foo.ts#dead';
+        fx.db.upsertNode({ id: liveId, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        fx.db.upsertNode({ id: deadId, type: 'function', name: 'dead', file_path: repoFile(fx, 'foo.ts') });
+        fx.db.deprecateNode(deadId);
+
+        const graphJsonPath = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        fs.rmSync(graphJsonPath, { force: true });
+        expect(fs.existsSync(graphJsonPath)).toBe(false);
+
+        fx.db.syncToDisk();
+
+        expect(fs.existsSync(graphJsonPath)).toBe(true);
+        const graphData = JSON.parse(fs.readFileSync(graphJsonPath, 'utf-8'));
+        const byId = Object.fromEntries(graphData.nodes.map((n: any) => [n.id, n]));
+        expect(byId[liveId]?.deprecated).toBe(0);
+        expect(byId[deadId]?.deprecated).toBe(1);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('tolerates a node with a blank file_path instead of throwing or warning', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/#blank', type: 'function', name: 'blank', file_path: '' });
+
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          expect(() => fx.db.syncToDisk()).not.toThrow();
+          expect(warnSpy).not.toHaveBeenCalled();
+        } finally {
+          warnSpy.mockRestore();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
   });
 
   describe('getCounts', () => {

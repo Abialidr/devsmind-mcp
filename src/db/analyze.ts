@@ -24,6 +24,7 @@ export interface AnalysisReport {
   missing_files: { id: string; name: string; file_path: string }[];
   renamed_files: { repo: string; from: string; to: string; migrated: boolean }[];
   untracked_files: { repo: string; file: string }[];
+  stray_output_dirs: { file_path: string; target: string; kind: 'graph' | 'vectors' }[];
 }
 
 const LAST_ANALYSIS_KEY = 'last_analysis_at';
@@ -86,6 +87,13 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     }
   }
 
+  // Computed here, AFTER the renamed/untracked detection loop above (not alongside
+  // findSpuriousAndMissingFileNodes near the top): it calls toRepoRelativePath internally, which
+  // calls resolveRepoPath for every distinct file_path in the graph — running it earlier would
+  // interleave those calls with the detection loop's own resolveRepoPath call, corrupting any
+  // test (or future caller) that depends on that call happening a specific number of times.
+  const stray_output_dirs = db.findStrayOutputDirs();
+
   if (fix) {
     // Migrate renames FIRST, before the missing-file deprecation pass below: a node whose file
     // was just `git mv`-ed has a file_path that no longer exists on disk, so
@@ -107,6 +115,21 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     for (const e of dangling_edges) {
       db.deleteDanglingEdge(e.source_node_id, e.target_node_id);
     }
+    // Remove the stray directories THEN re-trigger the write for every file they blocked, so
+    // `--fix` fully resolves this in one shot — the affected file's graph/vectors JSON exists
+    // and is current immediately, rather than only after the user remembers to run `sync` again.
+    // Safe to rmSync: every target here already passed findStrayOutputDirs' containment check,
+    // so it's strictly inside `.devmind/graph`/`.devmind/vectors` — DevsMind's own generated
+    // output, never user source.
+    const filesToRewrite = new Set<string>();
+    for (const s of stray_output_dirs) {
+      fs.rmSync(s.target, { recursive: true, force: true });
+      filesToRewrite.add(s.file_path);
+    }
+    for (const f of filesToRewrite) {
+      db.writeGraphToDisk(f);
+      db.writeVectorsToDisk(f);
+    }
     db.setSystemMeta(LAST_ANALYSIS_KEY, new Date().toISOString());
   }
 
@@ -122,6 +145,7 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     missing_files: missing_files.length,
     renamed_files: renamed_files.length,
     untracked_files: untracked_files.length,
+    stray_output_dirs: stray_output_dirs.length,
   };
 
   return {
@@ -138,6 +162,7 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     missing_files,
     renamed_files,
     untracked_files,
+    stray_output_dirs,
   };
 }
 

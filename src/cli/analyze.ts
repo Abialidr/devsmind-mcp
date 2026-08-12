@@ -2,6 +2,7 @@ import * as path from 'path';
 import { resolveDevmindDir } from '../utils/config';
 import { DevMindDatabase } from '../db/database';
 import { runAnalysis, AnalysisReport } from '../db/analyze';
+import { renderSyncProgress, clearSyncProgressLine } from './sync-progress';
 
 /**
  * `devsmind analyze` — local, zero-AI graph health check (Phase 1 of the roadmap's
@@ -26,8 +27,14 @@ export async function handleAnalyze(opts: { path?: string; fix?: boolean; godEnt
   console.log(`\n🩺 DevsMind — Analyze graph health${opts.fix ? ' (--fix)' : ''}`);
   console.log(`   Brain : ${devmindDir.replace(/\\/g, '/')}`);
 
-  const db = new DevMindDatabase(dbPath);
+  // Opening the DB runs a full syncFromDisk() pass — on a large brain that reads every
+  // graph/history/vectors/workflows JSON file back into SQLite, and was previously silent here
+  // (unlike `sync`/`describe`/`embed`, which already wire this same progress line), so it looked
+  // hung instead of working on a many-thousand-node brain.
+  const db = new DevMindDatabase(dbPath, { onSyncProgress: renderSyncProgress });
+  clearSyncProgressLine();
   try {
+    console.log('   Running health checks...');
     const report = runAnalysis(db, workspaceRoot, { fix: opts.fix === true, godEntityThreshold });
     printReport(report);
   } finally {
@@ -47,6 +54,7 @@ const SECTIONS: { key: keyof AnalysisReport['summary']; label: string; fixable: 
   { key: 'missing_files', label: 'Nodes with missing files', fixable: true },
   { key: 'renamed_files', label: 'Renamed files (git-detected)', fixable: true },
   { key: 'untracked_files', label: 'Git-tracked files with zero graph nodes', fixable: false },
+  { key: 'stray_output_dirs', label: 'Stray .devmind output directories blocking sync', fixable: true },
 ];
 
 const MAX_ROWS = 20;
@@ -111,6 +119,8 @@ function formatRow(key: string, row: any): string {
       return `[${row.repo}] ${row.from} → ${row.to}${row.migrated ? ' (migrated)' : ''}`;
     case 'untracked_files':
       return `[${row.repo}] ${row.file}`;
+    case 'stray_output_dirs':
+      return `${row.kind} — ${row.target} (blocked writes for ${row.file_path})`;
     default:
       return JSON.stringify(row);
   }

@@ -12,7 +12,7 @@
 
 > The advertised count went **down** in 3.0.0 (42 → 35). Seven `workflow_*` tools collapsed into 8 leaner ones, and `get_node_graph`/`get_node_history` folded into `get_node_code` as parameters. Retired names still dispatch (so an agent on an old rule doesn't hard-fail) but are no longer offered — see Appendix 1.
 
-**Automated coverage:** 52 Jest suites / 1258 tests. The gate holds **100% lines** over the core set in `jest.config.js`. Every area below says which parts are covered by tests versus which still need a human at a terminal — that distinction is the whole point of the checklists.
+**Automated coverage:** 52 Jest suites / 1265 tests. The gate holds **100% lines** over the core set in `jest.config.js`. Every area below says which parts are covered by tests versus which still need a human at a terminal — that distinction is the whole point of the checklists.
 
 **The single most important architectural fact:** SQLite is a **rebuildable cache**. The **source of truth is the on-disk JSON tree** (`graph/`, `history/`, `vectors/`, `workflows/`), which is git-shared. `local/` (activity + feedback) is per-developer and never pushed. Every mutating operation mirrors to disk so `brain.db` can be rebuilt losslessly via `syncFromDisk()`.
 
@@ -484,13 +484,17 @@ flowchart TD
 
 **CLI:** `analyze`, `analyze --fix`, `prune`, `sync --analyze`
 **MCP tools:** `analyze_graph`, `recheck_graph`
-**Files:** `db/analyze.ts` (`runAnalysis`), `db/database.ts` (detectors), `cli/analyze.ts`, `cli/prune.ts`, `utils/git.ts`
+**Files:** `db/analyze.ts` (`runAnalysis`), `db/database.ts` (detectors), `cli/analyze.ts`, `cli/prune.ts`, `cli/sync-progress.ts`, `utils/git.ts`
 
-**Detectors (all local SQLite/FS/git):** god entities (degree ≥15), circular dependencies (DFS), orphaned nodes, dangling edges, duplicate/case-collision IDs, history missing developer attribution, empty code snapshots, spurious/built-in-named nodes, nodes with missing files, git-detected renames, git-tracked files with zero nodes.
+**Detectors (all local SQLite/FS/git):** god entities (degree ≥15), circular dependencies (DFS), orphaned nodes, dangling edges, duplicate/case-collision IDs, history missing developer attribution, empty code snapshots, spurious/built-in-named nodes, nodes with missing files, git-detected renames, git-tracked files with zero nodes, stray `.devmind/graph`/`.devmind/vectors` output directories blocking sync.
 
 `findSpuriousAndMissingFileNodes`'s "missing files" check is `fs.statSync(p).isFile()` (was `fs.existsSync(p)`) — **fixed** after a production node was found with `file_path` pointing at a whole repo/workspace DIRECTORY rather than a real file: `existsSync` alone said that path "exists", so the node sailed through every analyze run indefinitely, and only ever surfaced as an EISDIR crash much later, when `writeGraphToDisk`/`writeVectorsToDisk` tried to write a JSON *file* at that same path during `devsmind sync` (see area O). `statSync().isFile()` catches "doesn't exist" and "exists but isn't a file" in the same check — `--fix` deprecates either the same way.
 
-`--fix` applies **only safe/reversible** fixes: deprecate dead nodes, delete dangling edges, migrate renames. `recheck_graph` prunes spurious nodes with zero history. `prune` is an interactive manual reviewer.
+**4.1.2 — `findStrayOutputDirs()`, a second, distinct detector for the same class of bug.** The `isFile()` fix above only catches a node whose OWN `file_path` is bad. A production brain kept re-warning ("a node's file_path resolves to a directory") for files whose node was completely healthy, unchanged across repeated `analyze --fix` runs — because the actual blocker was the *computed output path* in `.devmind/graph`/`.devmind/vectors` already being occupied by a stray directory (leftover cruft from an earlier corrupted write), which `analyze` never looked at since it only ever inspects DB nodes, not the disk-side output tree. `findStrayOutputDirs()` recomputes each live node's graph/vectors target the same way `writeGraphToDisk`/`writeVectorsToDisk` do and flags any that's occupied by a directory instead of a file — deliberately mirroring only that one collapse shape, never the workspace/repo-root case (that stays `missing_files`' job, so this detector can never recommend deleting `graph/`/`vectors/` themselves). `--fix` removes the stray directory AND immediately rewrites the correct JSON for the file it blocked, in the same pass — no second `sync` needed. The node itself is never touched.
+
+`--fix` applies **only safe/reversible** fixes: deprecate dead nodes, delete dangling edges, migrate renames, clear stray output directories (and rewrite what they blocked). `recheck_graph` prunes spurious nodes with zero history. `prune` is an interactive manual reviewer.
+
+**4.1.2 — `analyze`/`analyze --fix` no longer looks hung on a large brain.** Opening the DB always runs a full `syncFromDisk()` pass (every `graph`/`history`/`vectors`/`workflows` JSON read back into SQLite) — `sync`/`describe`/`embed` already wired `cli/sync-progress.ts`'s live progress line into that same constructor call, `analyze` never did, so it printed its header then went silent for however long the sync pass took on a many-thousand-node brain. It now shows the same progress line, plus a "Running health checks..." line for the detector pass.
 
 ```mermaid
 flowchart TD
@@ -502,9 +506,10 @@ flowchart TD
   D --> D5[Missing attribution / empty snapshots]
   D --> D6[Spurious/built-in nodes / missing files]
   D --> D7[git renames / untracked code files]
-  D1 & D2 & D3 & D4 & D5 & D6 & D7 --> R[Report]
+  D --> D8[Stray graph/vectors output dirs]
+  D1 & D2 & D3 & D4 & D5 & D6 & D7 & D8 --> R[Report]
   R --> F{--fix?}
-  F -->|Yes| SAFE[Deprecate dead nodes, delete dangling edges, migrate renames]
+  F -->|Yes| SAFE[Deprecate dead nodes, delete dangling edges, migrate renames, clear+rewrite stray output dirs]
   F -->|No| DONE[Report only]
 ```
 
@@ -516,6 +521,7 @@ flowchart TD
 - [ ] `recheck_graph` removes primitives/built-ins (promise/map/data/res…) that have zero history.
 - [ ] `prune` interactive flow inspects and removes nodes/history.
 - [ ] `sync --analyze --fix` runs analyze on the freshly-synced DB.
+- [ ] `analyze --fix` on a brain with a stray `graph/`/`vectors/` output directory removes it and repopulates the correct JSON in one pass, without touching the (healthy) node.
 
 ---
 
@@ -734,7 +740,9 @@ flowchart TD
 
 - **Fix: `syncToDisk` never wrote `vectors/`, only `graph/` and `workflows/`** — an asymmetry with `syncFromDisk`, which reads all three. Normal operation didn't depend on it (`writeVectorsToDisk` runs immediately alongside every embedding write, same as `writeGraphToDisk` does for graph JSON), but it meant `devsmind sync` — the tool that exists specifically to force a resync after `vectors/*.json` got deleted, corrupted, or silently failed to write — couldn't actually repair `vectors/`. Fixed: `syncToDisk` now calls `writeVectorsToDisk` alongside `writeGraphToDisk` for every node's file_path.
 - **Fix: EISDIR crash on `devsmind sync`.** A production brain had a node whose `file_path` was literally a directory (a repo root, or the workspace root) rather than a real file — `toRepoRelativePath` collapses to `''`/`'{repo}/'`/`'..'` for those, which made `writeGraphToDisk`/`writeVectorsToDisk` try to write a JSON *file* at the `graph/`/`vectors/` directory itself (or an ancestor of it), throwing `EISDIR: illegal operation on a directory` — repeatedly, once per distinct malformed `file_path` string in the `Set` `syncToDisk` iterates. New `isDegenerateDiskJsonPath` guard (three checks: empty/trailing-slash `diskRelPath`, a `path.relative` that resolves to `''`/starts with `..`, and an existsSync+isDirectory catch-all) refuses the write and prints one clear warning instead, pointing at `devsmind analyze --fix` — which now actually cleans up the offending node (see area I).
+- **4.1.2 fix: the guard's third check (existsSync+isDirectory) had no corresponding `analyze --fix` cleanup.** That branch fires when a node's `file_path` is perfectly healthy but the *computed* `graph/`/`vectors/` output path is already occupied by a stray directory — cruft from an earlier corrupted write, unrelated to anything `findSpuriousAndMissingFileNodes` inspects (it only ever checks the node's own file, never the disk-side output tree). A production brain kept hitting this same warning, on the same files, across repeated `analyze --fix` runs, because nothing in the codebase ever removed the stray directory. `findStrayOutputDirs()` (area I) is the fix; `syncToDisk`/`writeGraphToDisk`/`writeVectorsToDisk` themselves are unchanged — they still only refuse-and-warn, on purpose, since a write-time guard is the wrong place to run destructive disk cleanup.
 - **`devsmind sync`'s printed summary now reports Vectors and Workflows too**, not just Nodes/Connections/History — `getCounts()` (`database.ts`) queries `node_vectors`/`workflows` alongside the original three, each with the same before/after delta. Answers "what did this sync actually touch" directly from the command's own output instead of requiring a manual DB check.
+- **4.1.2 fix: a node deprecated for a directory-typed `file_path` kept re-triggering the SAME warning on every future `devsmind sync`, forever.** `deprecateNode` sets `deprecated = 1` but never clears the node's (already-garbage) `file_path` — by design, nodes are never deleted — and `syncToDisk`'s `SELECT DISTINCT file_path FROM nodes` had no `deprecated` filter, so that same unwritable path kept reaching `writeGraphToDisk`/`writeVectorsToDisk` on every sync after the node was already "fixed." New `isFilePathStructurallyDegenerate` (pure string logic, no disk I/O — reuses only `isDegenerateDiskJsonPath`'s first two checks, never its existsSync+isDirectory one, which is the removable-stray-directory case above and must stay retryable) lets `syncToDisk` skip a file_path once EVERY node holding it is deprecated AND it's structurally unfixable. A file shared by a live node and a deprecated sibling is still rewritten normally, every time — the sibling's `deprecated:1` flag still needs to stay current on disk.
 
 **AST core (`ast.ts`) — the crown jewel:**
 - **TypeScript-compiler-based** (no tree-sitter). Full parse/edges/editing for `.ts .tsx .js .jsx .mjs .cjs .vue .svelte` (SFCs masked to script blocks preserving offsets). The **12 other languages** (py/go/java/cs/rb/php/rs/swift/kt/dart) get **regex identifiers only — no spans, no edges, no in-place editing.**
@@ -773,7 +781,9 @@ flowchart TD
 - [x] `syncToDisk` force-rewrites `vectors/*.json` from `node_vectors`, same as it already did for `graph/`/`workflows/` (`tests/db/sync.test.ts`).
 - [x] A node whose `file_path` resolves to a directory (workspace root, repo root, or a `..`-collapsing parent) is skipped with one clear warning by `writeGraphToDisk`/`writeVectorsToDisk`, never an EISDIR crash — and never silently creates a file where `graph/`/`vectors/` should be a directory (`tests/db/database.gaps.test.ts`).
 - [x] `findSpuriousAndMissingFileNodes` flags a directory-typed `file_path` as missing, and `analyze --fix` deprecates it (`tests/db/analyze.test.ts`).
+- [x] `findStrayOutputDirs()` flags a stray directory blocking a healthy node's `graph/`/`vectors/` JSON, and `analyze --fix` removes it and rewrites the correct JSON in the same pass, without touching the node (`tests/db/database.gaps.test.ts`, `tests/db/analyze.test.ts`).
 - [x] `getCounts()` reports `vectors`/`workflows` alongside `nodes`/`connections`/`history`, and `devsmind sync`'s printed summary shows all five with deltas (`tests/db/sync.test.ts`; manually confirmed via CLI: `Nodes/Connections/History/Vectors/Workflows` all print).
+- [x] A node deprecated for a directory-typed `file_path` does NOT re-trigger the warning on a second/third `syncToDisk` call; a file_path shared by a live node and a deprecated sibling is still rewritten every time (`tests/db/sync.test.ts`).
 
 ---
 

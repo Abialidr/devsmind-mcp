@@ -365,6 +365,56 @@ describe('runAnalysis (src/db/analyze.ts)', () => {
     });
   });
 
+  describe('stray .devmind output directories blocking sync', () => {
+    it('reports a directory blocking a perfectly healthy node\'s graph/vectors JSON, and --fix removes it and rewrites the file — the case plain missing_files can\'t catch, since the node\'s own file_path is fine', () => {
+      const fx = makeFixture();
+      try {
+        const id = '{app}/foo.ts#greet';
+        fx.db.upsertNode({ id, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        // Give it a connection so it isn't ALSO orphaned — this test is isolating the
+        // stray-output-dir category specifically, not exercising orphaned_nodes.
+        fx.db.addConnection(id, id);
+
+        // upsertNode already wrote a real graph JSON *file* here as a side effect — replace it
+        // with a directory to simulate the stray-cruft scenario.
+        const graphTarget = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        const vectorsTarget = path.join(fx.devmindPath, 'vectors', 'app', 'foo.json');
+        fs.rmSync(graphTarget, { force: true });
+        fs.rmSync(vectorsTarget, { force: true });
+        fs.mkdirSync(graphTarget, { recursive: true });
+        fs.mkdirSync(vectorsTarget, { recursive: true });
+
+        // The node's own file_path is perfectly healthy — this is NOT a missing_files case.
+        const dryReport = runAnalysis(fx.db, fx.root, {});
+        expect(dryReport.missing_files).toEqual([]);
+        expect(dryReport.stray_output_dirs.length).toBe(2);
+        for (const entry of dryReport.stray_output_dirs) {
+          expect(entry.target.toLowerCase()).toBe(entry.kind === 'graph' ? graphTarget.toLowerCase() : vectorsTarget.toLowerCase());
+        }
+        // Dry run must not touch disk.
+        expect(fs.statSync(graphTarget).isDirectory()).toBe(true);
+
+        const fixedReport = runAnalysis(fx.db, fx.root, { fix: true });
+        expect(fixedReport.stray_output_dirs.length).toBe(2);
+
+        // Blocker gone, and replaced by the real JSON file in one shot — no second sync needed.
+        expect(fs.existsSync(graphTarget)).toBe(true);
+        expect(fs.statSync(graphTarget).isFile()).toBe(true);
+        const graphData = JSON.parse(fs.readFileSync(graphTarget, 'utf-8'));
+        expect(graphData.nodes.map((n: { id: string }) => n.id)).toContain(id);
+
+        // No vectors were ever written for this node, so writeVectorsToDisk has nothing to
+        // recreate — but it must not leave the stray directory behind either.
+        expect(fs.existsSync(vectorsTarget)).toBe(false);
+
+        // Node itself was never touched — this bug isn't the node's fault.
+        expect(fx.db.getNode(id)?.deprecated).toBe(0);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('--fix behavior', () => {
     it('fix:true deprecates orphaned/spurious/missing-file nodes and deletes dangling edges, but leaves healthy nodes and unresolved categories untouched', async () => {
       const fx = makeFixture({

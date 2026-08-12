@@ -3163,6 +3163,60 @@ export class DevMindDatabase {
     return { spurious, missingFile };
   }
 
+  /**
+   * Finds `.devmind/graph`/`.devmind/vectors` JSON output paths that a live node's file_path
+   * still maps to, but that are occupied by a stray DIRECTORY instead of a file — the case
+   * `isDegenerateDiskJsonPath`'s existsSync+isDirectory branch refuses to write over. Left
+   * behind by some earlier node whose file_path once collapsed onto that exact path (see that
+   * method's comment for how); once the directory exists, `writeGraphToDisk`/`writeVectorsToDisk`
+   * can only skip-and-warn forever, since neither one ever deletes anything. This is what
+   * `devsmind analyze --fix` uses to actually remove the blocker and re-trigger the write, so a
+   * perfectly healthy node's file stops being warned about on every future sync.
+   *
+   * Deliberately mirrors ONLY the third of `isDegenerateDiskJsonPath`'s three checks (never the
+   * first two — an empty/trailing-slash/`..`-collapsing diskRelPath means the node's OWN
+   * file_path is degenerate, already covered by `missingFile` above and fixed by deprecating the
+   * node, not by deleting anything on disk). Skipping those here is required for safety: a
+   * collapsed diskRelPath would make `targetPath` resolve to `graphDir`/`vectorsDir` itself (or
+   * an ancestor of it), and blindly reporting that as "stray" would recommend deleting the whole
+   * output tree.
+   */
+  findStrayOutputDirs(): { file_path: string; target: string; kind: 'graph' | 'vectors' }[] {
+    const rows = this.db.prepare('SELECT DISTINCT file_path FROM nodes').all() as { file_path: string }[];
+    const filePaths = new Set<string>();
+    for (const row of rows) {
+      if (row.file_path) {
+        for (const p of row.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+          filePaths.add(p);
+        }
+      }
+    }
+
+    const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
+    const dirsByKind: { dir: string; kind: 'graph' | 'vectors' }[] = [
+      { dir: path.join(workspaceRoot, 'graph'), kind: 'graph' },
+      { dir: path.join(workspaceRoot, 'vectors'), kind: 'vectors' },
+    ];
+
+    const results: { file_path: string; target: string; kind: 'graph' | 'vectors' }[] = [];
+    for (const filePath of filePaths) {
+      const absPath = canonicalizePath(filePath);
+      const repoRelPath = this.toRepoRelativePath(absPath);
+      const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
+      if (!diskRelPath || diskRelPath.endsWith('/') || diskRelPath.endsWith('\\')) continue;
+
+      for (const { dir, kind } of dirsByKind) {
+        const targetPath = path.join(dir, diskRelPath);
+        const relToContainer = path.relative(dir, targetPath);
+        if (relToContainer === '' || relToContainer.startsWith('..')) continue;
+        if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+          results.push({ file_path: filePath, target: targetPath, kind });
+        }
+      }
+    }
+    return results;
+  }
+
   pruneSpuriousNodes(workspaceRoot: string): { prunedCount: number; prunedNodes: string[] } {
     const { spurious, missingFile } = this.findSpuriousAndMissingFileNodes(workspaceRoot);
     const candidates = [...spurious, ...missingFile];
@@ -3790,6 +3844,28 @@ export class DevMindDatabase {
     return fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
   }
 
+  /**
+   * True when `filePath` ITSELF can never resolve to a valid `graph/`/`vectors/` JSON target —
+   * i.e. `isDegenerateDiskJsonPath`'s first two checks (empty/trailing-slash/`..`-collapsing
+   * `diskRelPath`), never its third (existsSync+isDirectory, which is about a stray directory
+   * left on disk, not about the file_path being bad — that case is exactly what
+   * `findStrayOutputDirs` fixes, and can legitimately happen for a perfectly healthy file_path,
+   * so it must NOT be treated as permanent here). Deliberately does no filesystem I/O — pure
+   * string logic, cheap enough to call for every distinct file_path a full `syncToDisk` touches.
+   * Used to recognize a file_path that's structurally unfixable no matter how many times a write
+   * is retried, as opposed to one that's merely blocked by removable disk cruft.
+   */
+  private isFilePathStructurallyDegenerate(filePath: string): boolean {
+    const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
+    const absPath = canonicalizePath(filePath);
+    const repoRelPath = this.toRepoRelativePath(absPath);
+    const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
+    if (!diskRelPath || diskRelPath.endsWith('/') || diskRelPath.endsWith('\\')) return true;
+    const graphDir = path.join(workspaceRoot, 'graph');
+    const relToContainer = path.relative(graphDir, path.join(graphDir, diskRelPath));
+    return relToContainer === '' || relToContainer.startsWith('..');
+  }
+
   writeGraphToDisk(filePath: string) {
     try {
       if (!filePath) return;
@@ -3950,16 +4026,34 @@ export class DevMindDatabase {
    * the DB, or after a past write silently failed (e.g. the directory-typed file_path bug
    * `isDegenerateDiskJsonPath` now catches) — so leaving vectors out of the force-resync
    * defeated half the point of running it.
+   *
+   * A file_path shared by at least one ACTIVE node is always re-attempted, deprecated or not —
+   * a deprecated node sharing a real file with a live one still needs its `deprecated:1` flag
+   * kept current on disk. A file_path held ONLY by deprecated nodes is skipped when it's also
+   * `isFilePathStructurallyDegenerate` (a directory rather than a file — `deprecateNode` already
+   * wrote it once, at the moment it was deprecated, so nothing new would come of retrying):
+   * without this, a node deprecated for exactly this reason produced the identical "Skipped
+   * writing graph JSON" warning on every single future `sync`, forever, since deprecating a node
+   * never clears its (already-garbage) file_path — indistinguishable from the bug never having
+   * been fixed at all.
    */
   syncToDisk(): void {
     try {
-      const rows = this.db.prepare('SELECT DISTINCT file_path FROM nodes').all() as { file_path: string }[];
-      const filePaths = new Set<string>();
+      const rows = this.db.prepare('SELECT DISTINCT file_path, deprecated FROM nodes').all() as { file_path: string; deprecated: number }[];
+      const activeFilePaths = new Set<string>();
+      const allFilePaths = new Set<string>();
       for (const row of rows) {
-        if (row.file_path) {
-          for (const p of row.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
-            filePaths.add(p);
-          }
+        if (!row.file_path) continue;
+        for (const p of row.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+          allFilePaths.add(p);
+          if (!row.deprecated) activeFilePaths.add(p);
+        }
+      }
+
+      const filePaths = new Set<string>();
+      for (const p of allFilePaths) {
+        if (activeFilePaths.has(p) || !this.isFilePathStructurallyDegenerate(p)) {
+          filePaths.add(p);
         }
       }
 

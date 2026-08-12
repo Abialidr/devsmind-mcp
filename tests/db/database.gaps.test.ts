@@ -2213,6 +2213,70 @@ describe('DevMindDatabase — coverage gaps', () => {
     });
   });
 
+  describe('findStrayOutputDirs', () => {
+    it('detects a directory sitting at the exact graph/vectors JSON path a live, healthy node still writes to', () => {
+      const fx = makeFixture();
+      try {
+        const id = '{app}/foo.ts#greet';
+        fx.db.upsertNode({ id, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        // The canonical (lowercased-drive-letter-on-Windows) form actually stored — what
+        // findStrayOutputDirs reports back, not the raw path this test built it from.
+        const canonicalFilePath = fx.db.getNode(id)!.file_path;
+
+        // upsertNode already wrote a real graph JSON *file* here as a side effect — replace it
+        // with a directory to simulate the stray-cruft scenario.
+        const graphTarget = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        const vectorsTarget = path.join(fx.devmindPath, 'vectors', 'app', 'foo.json');
+        fs.rmSync(graphTarget, { force: true });
+        fs.rmSync(vectorsTarget, { force: true });
+        fs.mkdirSync(graphTarget, { recursive: true });
+        fs.mkdirSync(vectorsTarget, { recursive: true });
+
+        const stray = fx.db.findStrayOutputDirs();
+        expect(stray.length).toBe(2);
+        for (const entry of stray) {
+          expect(entry.file_path.toLowerCase()).toBe(canonicalFilePath.toLowerCase());
+          expect(entry.target.toLowerCase()).toBe(entry.kind === 'graph' ? graphTarget.toLowerCase() : vectorsTarget.toLowerCase());
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('does not flag a normal, already-written JSON file as stray', () => {
+      const fx = makeFixture();
+      try {
+        const id = '{app}/foo.ts#greet';
+        fx.db.upsertNode({ id, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        fx.db.writeGraphToDisk(repoFile(fx, 'foo.ts'));
+
+        expect(fx.db.findStrayOutputDirs()).toEqual([]);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('never flags graph/ or vectors/ themselves, even for a node whose own file_path collapses (that is missing_files\' job, not this one)', () => {
+      const fx = makeFixture();
+      try {
+        // Pre-create graph/ and vectors/ as real directories so that IF the collapse guards
+        // below were missing, the existsSync+isDirectory check would find something to
+        // (wrongly) flag — proving the skip is because of the collapse guards, not just because
+        // nothing happens to exist on disk yet.
+        fs.mkdirSync(path.join(fx.devmindPath, 'graph'), { recursive: true });
+        fs.mkdirSync(path.join(fx.devmindPath, 'vectors'), { recursive: true });
+
+        fx.db.upsertNode({ id: '{app}/#corrupt', type: 'function', name: 'corrupt', file_path: fx.devmindPath });
+        fx.db.upsertNode({ id: '{app}/#corrupt2', type: 'function', name: 'corrupt2', file_path: fx.repoDir });
+        fx.db.upsertNode({ id: '{app}/#corrupt3', type: 'function', name: 'corrupt3', file_path: fx.root });
+
+        expect(fx.db.findStrayOutputDirs()).toEqual([]);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('parseReasoningBlocksTimed (pure function)', () => {
     const CREATED_AT = '2026-01-01T00:00:00.000Z';
 
