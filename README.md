@@ -146,6 +146,27 @@ devsmind start     # 8. start the server (skip if stdio)
 >
 > **This mattered most jumping to 4.0.0**, which *removed* `stage_change` (folded into `edit_node`) and changed the indexing protocol — a rule written against an older version told your agent to call a tool that no longer existed. `stage_change` is back since then, but with a different signature (it now recovers an edit already made outside `edit_node`, rather than being a second way to make one) — a rule from between 4.0.0 and now that never mentions it just won't tell your agent about the recovery path, not break anything. Check the [Changelog](CHANGELOG.md) after any upgrade — some releases need a re-paste, some don't.
 
+> 🪝 **Optional: auto-sync after every `git pull`**
+>
+> Step 7 above (`devsmind sync`) is easy to forget — and a stale local cache just means your agent's `search_nodes` results are behind what teammates already committed. A git `post-merge` hook runs it automatically every time `git pull` brings in new commits.
+>
+> ```sh
+> #!/bin/sh
+> # post-merge — runs after every `git pull` / `git merge`.
+> # BRAIN_DIR only needs adjusting if .devmind/ does NOT live at your repo root — devsmind
+> # auto-detects .devmind by walking UP from wherever it's run, never down, so a .devmind in a
+> # sibling/nested folder (a dedicated "brains" repo, a monorepo subpackage, …) needs an explicit
+> # cd here (or pass --path to both commands below instead).
+> BRAIN_DIR="$(git rev-parse --show-toplevel)"
+>
+> cd "$BRAIN_DIR" || exit 1
+> devsmind analyze --fix && devsmind sync
+> ```
+>
+> **Two ways to install it, in order of how much it's worth doing:**
+> - **Quick, just for you:** save the script above as `.git/hooks/post-merge` and `chmod +x` it. Nothing to commit — `.git/hooks/` is never tracked by git, so this is per-machine only, and every teammate (and every fresh clone of yours) has to redo it by hand.
+> - **Shared with the whole team:** a hooks directory doesn't have to live inside `.git/` — that's just the default. Put the script in a tracked folder instead (e.g. `.githooks/post-merge`), commit and push it like any other file, then have everyone run **once**: `git config core.hooksPath .githooks`. From then on it fires automatically for anyone who ran that command, and updating the hook is just a normal commit everyone pulls — no manual re-copying.
+
 ---
 
 ## 🔌 The four setup commands, and why there are four
