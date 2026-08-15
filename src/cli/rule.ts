@@ -238,7 +238,7 @@ export async function handleRule(opts: { path?: string; print?: boolean; manual?
 
   try {
     const target = await pickTarget();
-    const workflowStyle = await pickWorkflowStyle();
+    const workflowStyle: WorkflowStyle = opts.manual ? 'manual' : 'automatic';
     const rule = buildRule(config, devmindDir, workflowStyle);
     const kickoff = buildKickoffPrompt(workflowStyle);
     const mode = await pickMode();
