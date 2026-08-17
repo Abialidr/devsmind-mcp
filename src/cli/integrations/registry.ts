@@ -125,7 +125,7 @@ export interface EntryContext {
  * A `global` config is different: ONE file, read by every project on the machine. Baking a single
  * project's path into it would silently point every other project at that same brain — the exact
  * bug this scope split exists to avoid. So a global entry omits `--path` entirely and leans on the
- * server's own auto-detect (`bindServerToProject` walks up from its cwd looking for `.devmind`),
+ * server's own auto-detect (`bindServerToProject` walks up from its cwd looking for `.devsmind`, or a legacy `.devmind`),
  * which works because the IDE spawns the stdio server from whichever workspace is actually open.
  * If an IDE spawns from somewhere else instead (not the common case), the server starts unbound and
  * falls back to per-call `devmind_path` — degraded, but never silently wrong.

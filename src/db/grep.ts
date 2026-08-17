@@ -36,7 +36,7 @@ import * as path from 'path';
 const ALWAYS_IGNORED = [
   'node_modules', '.git', 'dist', 'build', 'out', '.next',
   '__pycache__', '.venv', 'venv', 'coverage', '.turbo',
-  '.cache', '.idea', '.vscode', '.devmind',
+  '.cache', '.idea', '.vscode', '.devsmind', '.devmind',
   // Mobile/native build & dependency caches — not JS/Python-shaped, so the list above misses
   // them entirely. Left out originally, these are exactly the giant, non-source directories
   // (hundreds of thousands of files in Pods/DerivedData on a real iOS checkout) that a

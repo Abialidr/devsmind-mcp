@@ -24,7 +24,7 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
                           │ one bound server per project
         ┌─────────────────┴─────────────────┐
         ▼                                   ▼
-  c:\work\my-project\.devmind\        c:\work\other-project\.devmind\
+  c:\work\my-project\.devsmind\       c:\work\other-project\.devsmind\
   brain.db                            brain.db
   (Project A team brain)              (Project B team brain)
 ```
@@ -35,16 +35,18 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
 
 ## How it works
 
-Run `devsmind init` once per project → creates `.devmind/`. Commit it. Every teammate's agent reads and writes the same graph.
+Run `devsmind init` once per project → creates `.devsmind/`. Commit it. Every teammate's agent reads and writes the same graph.
 
 ---
 
-## 🛠️ Architecture: The `.devmind/` Directory
+## 🛠️ Architecture: The `.devsmind/` Directory
 
-Running `devsmind init` creates a `.devmind/` directory in your workspace. This folder contains the configuration, distributed graph database, and local cache:
+Running `devsmind init` creates a `.devsmind/` directory in your workspace. This folder contains the configuration, distributed graph database, and local cache:
+
+> **Renamed in 4.2.0 — nothing to migrate.** This directory used to be called `.devmind/`, one letter off from an unrelated npm package. Existing `.devmind/` brains are still read, forever: every lookup tries `.devsmind` first and falls back. Only `devsmind init` on a **brand-new** project uses the new name, and re-running `init` on an existing brain repairs it in place under whatever name it already has — it will never create a second one. The only thing to know: a brain created on 4.2.0+ needs **devsmind-mcp ≥ 4.2.0** on every teammate's machine, since an older install doesn't know to look for `.devsmind`.
 
 ```
-.devmind/
+.devsmind/
   ├── .gitignore              ← Written by init; ignores everything marked LOCAL below
   ├── config.json             ← Project metadata & repository mapping        (COMMITTED)
   ├── graph/                  ← Distributed graph structure JSON             (COMMITTED)
@@ -73,14 +75,14 @@ DevsMind supports two deployment topologies depending on your team's workflow:
 *   **Option A: Inside the workspace/project root directory (Shared with team)**
     ```
     c:\work\my-project\
-      ├── .devmind\              ← Config and distributed JSON database live here
+      ├── .devsmind\             ← Config and distributed JSON database live here
       ├── backend-service\
       └── frontend-web\
     ```
 *   **Option B: Standalone folder (Fully separated)**
     ```
     c:\Users\username\brains\my-project\
-      └── .devmind\              ← Brain is kept separate from code folders
+      └── .devsmind\             ← Brain is kept separate from code folders
     ```
 
 ---
@@ -110,14 +112,14 @@ npm install -g devsmind-mcp
 ### Starting a brand-new brain
 
 ```bash
-devsmind init      # 1. Create .devmind/ — interactive: project name, repos, tech stack
+devsmind init      # 1. Create .devsmind/ — interactive: project name, repos, tech stack
 devsmind mcp       # 2. Connect your IDE/CLI to the MCP server
 devsmind rule      # 3. Paste the workspace rule — this is what teaches your agent to actually use it
 devsmind memory    # 4. Print a prompt to paste into your AI chat, asking it to remember the workflow
 devsmind skill     # 5. (optional) Write it as an explicitly-invokable /devsmind skill file too
 devsmind start     # 6. Start the server (skip if your IDE launches it via stdio)
 devsmind index --run --provider gemini --key YOUR_KEY   # 7. (optional) index the codebase now
-git add .devmind && git commit -m "Add DevsMind brain"  # 8. share it
+git add .devsmind && git commit -m "Add DevsMind brain"  # 8. share it
 ```
 
 > **Step 4 is the one people skip and then wonder why the agent drifts.** A pasted rule is a file *you* maintain and it's always loaded — that part isn't optional. `devsmind memory` is a second, complementary lever: it writes nothing, it just prints a natural-language block framed as an explicit "remember this" request, because that's the one thing that actually gets an AI's own memory feature to save something reliably (background/automatic memory turns out to be discretionary almost everywhere — several tools say so in their own docs). Paste it once and ask your AI to remember it. Not every tool has a memory feature to ask that of, though — for those, `devsmind memory` says so and points at step 5's `devsmind skill` instead, which works the same regardless.
@@ -125,7 +127,7 @@ git add .devmind && git commit -m "Add DevsMind brain"  # 8. share it
 ### Joining a brain a teammate already created
 
 ```bash
-git pull           # 1. .devmind/ is already in the repo
+git pull           # 1. .devsmind/ is already in the repo
 devsmind init      # 2. sets up YOUR machine only (dev identity, local paths) — doesn't touch the shared graph
 devsmind mcp       # 3. connect your IDE/CLI
 devsmind rule      # 4. paste the workspace rule
@@ -153,8 +155,9 @@ devsmind start     # 8. start the server (skip if stdio)
 > ```sh
 > #!/bin/sh
 > # post-merge — runs after every `git pull` / `git merge`.
-> # BRAIN_DIR only needs adjusting if .devmind/ does NOT live at your repo root — devsmind
-> # auto-detects .devmind by walking UP from wherever it's run, never down, so a .devmind in a
+> # BRAIN_DIR only needs adjusting if .devsmind/ does NOT live at your repo root — devsmind
+> # auto-detects .devsmind (and a legacy .devmind) by walking UP from wherever it's run, never
+> # down, so a brain dir in a
 > # sibling/nested folder (a dedicated "brains" repo, a monorepo subpackage, …) needs an explicit
 > # cd here (or pass --path to both commands below instead).
 > BRAIN_DIR="$(git rev-parse --show-toplevel)"
@@ -210,13 +213,13 @@ Antigravity (IDE + CLI), Codex, and Kiro have no real background-memory mechanis
 >
 > - `devsmind analyze --fix` — free local health check. Finds god entities, cycles, orphans, dangling edges, duplicates; auto-applies only the safe fixes.
 > - Ask your agent to fix what it hits: `record_alias` (same symbol, another name), `link_nodes` (a real edge the AST missed), `merge_nodes` / `split_node`, `create_missing_node`.
-> - Every `commit_changes` also **reports** problems it noticed into `.devmind/local/feedback_graph.jsonl`. Read them back with `devsmind feedback`, or have an agent drain the queue: `read_graph_feedback` → verify → fix → `mark_graph_feedback_processed`.
+> - Every `commit_changes` also **reports** problems it noticed into `.devsmind/local/feedback_graph.jsonl`. Read them back with `devsmind feedback`, or have an agent drain the queue: `read_graph_feedback` → verify → fix → `mark_graph_feedback_processed`.
 >
 > Nothing here needs an API key, and none of it is auto-applied behind your back.
 
 > 💛 **And there's feedback about DevsMind itself — please share it.**
 >
-> The same `commit_changes` call asks your agent three questions that aren't about your graph at all: which tools actually helped, what it reached for *instead* of a DevsMind tool and why, and one concrete thing that would have made the task easier. Those land in `.devmind/local/feedback_product.jsonl`.
+> The same `commit_changes` call asks your agent three questions that aren't about your graph at all: which tools actually helped, what it reached for *instead* of a DevsMind tool and why, and one concrete thing that would have made the task easier. Those land in `.devsmind/local/feedback_product.jsonl`.
 >
 > It's **gitignored and never uploaded** — DevsMind has no telemetry, so unless you send it, nobody sees it. But it's the most useful bug report there is: a log of where a real agent, on real code, gave up on a DevsMind tool and did it the old way. Run `devsmind feedback`, and if anything in there looks like a pattern, [open an issue](https://github.com/Abialidr/devsmind-mcp/issues) with it. That's how this gets better.
 
@@ -323,15 +326,15 @@ The server also declares the MCP **`prompts`** capability, separate from tools: 
 
 ## 🗄️ Storage model, briefly
 
-The layout is up top under [Architecture](#-architecture-the-devmind-directory). What matters about it:
+The layout is up top under [Architecture](#-architecture-the-devsmind-directory). What matters about it:
 
 **The JSON is the source of truth, not the database.** `graph/`, `history/`, `vectors/` and `workflows/` are line-oriented JSON — git-mergeable, reviewable in a PR. `brain.db` is a disposable local cache rebuilt from them by `devsmind sync` or on server start, which is why it's gitignored: sharing a SQLite binary would conflict on every merge.
 
 **`local/` is the one thing nothing can regenerate.** Your requests, revert backups and feedback exist only there, on your machine, by design.
 
-**`devsmind init` writes `.devmind/.gitignore`** covering every LOCAL entry and repairs it on each re-run, so a brain from an older version can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive.
+**`devsmind init` writes `.devsmind/.gitignore`** covering every LOCAL entry and repairs it on each re-run, so a brain from an older version can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive.
 
-`brain.db` has 9 tables — 7 documented in [detailExplanation.md § Database Schema](detailExplanation.md#-database-schema-devmindbraindb), plus `node_tokens` and `node_vectors`, which are derived search indexes rebuilt from the nodes themselves.
+`brain.db` has 9 tables — 7 documented in [detailExplanation.md § Database Schema](detailExplanation.md#-database-schema-devsmindbraindb), plus `node_tokens` and `node_vectors`, which are derived search indexes rebuilt from the nodes themselves.
 
 ---
 

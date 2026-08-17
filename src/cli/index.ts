@@ -18,7 +18,7 @@ import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { handleDescribe } from './describe';
 import { handleEmbed } from './embed';
 import { runHttpMcpServer, runStdioMcpServer, DEVSMIND_PORT } from '../mcp/server';
-import { recoverSpaceSplitPath } from '../utils/config';
+import { recoverSpaceSplitPath, brainDirOrDefault } from '../utils/config';
 import { DEVSMIND_VERSION } from '../utils/version';
 
 const program = new Command();
@@ -380,7 +380,7 @@ program
     rpm?: string;
     yes?: boolean;
   }) => {
-    const devmindPath = opts.path ?? '.devmind';
+    const devmindPath = opts.path ?? brainDirOrDefault(process.cwd());
     const resolved = require('path').resolve(devmindPath);
 
     if (opts.run) {
@@ -464,7 +464,7 @@ program
     rpm?: string;
     fillGaps?: boolean;
   }) => {
-    const devmindPath = opts.path ?? '.devmind';
+    const devmindPath = opts.path ?? brainDirOrDefault(process.cwd());
     try {
       await runBackgroundReindexing({
         devmindPath,

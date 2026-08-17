@@ -23,7 +23,7 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
                           │ one bound server per project
         ┌─────────────────┴─────────────────┐
         ▼                                   ▼
-  c:\work\my-project\.devmind\        c:\work\other-project\.devmind\
+  c:\work\my-project\.devsmind\        c:\work\other-project\.devsmind\
   brain.db                            brain.db
   (Project A team brain)              (Project B team brain)
 ```
@@ -44,12 +44,14 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
 
 ---
 
-## 🛠️ Architecture: The `.devmind/` Directory
+## 🛠️ Architecture: The `.devsmind/` Directory
 
-Running `devsmind init` creates a `.devmind/` directory in your workspace. This folder contains the configuration, distributed graph database, and local cache:
+Running `devsmind init` creates a `.devsmind/` directory in your workspace. This folder contains the configuration, distributed graph database, and local cache:
+
+> **Renamed in 4.2.0 — there is no migration, and none is needed.** This directory was called `.devmind/` through 4.1.2, one letter off from `devmind-mcp`, an unrelated npm package that had the name first. Only `devsmind init` on a project with **no brain yet** uses the new name. Every existing `.devmind/` brain keeps resolving, permanently — this is not a deprecation window. Nothing inside a brain records its own folder name (`config.json` holds repo-relative paths or `.env` repo keys, and `brain.db` is a rebuildable cache), so the same directory is valid under either name and no command exists to convert one. The single consequence worth knowing: a brain **created** on 4.2.0+ needs devsmind-mcp **>= 4.2.0** on every teammate's machine, because an older install only ever looks for `.devmind`. Older brains have no such floor.
 
 ```
-.devmind/
+.devsmind/
   ├── .gitignore              ← Written by init; ignores everything marked LOCAL below
   ├── config.json             ← Project metadata & repository mapping        (COMMITTED)
   ├── graph/                  ← Distributed graph structure JSON             (COMMITTED)
@@ -71,7 +73,7 @@ Running `devsmind init` creates a `.devmind/` directory in your workspace. This 
 
 **The committed/local split is the whole storage design.** Everything committed is the *team's* shared brain — the graph, the reasoning, the feature timelines. Everything local is either derivable (`brain.db` is a cache; delete it and it rebuilds) or genuinely personal (`local/` holds your verbatim requests and your revert backups, which are only meaningful on the machine that wrote them).
 
-`devsmind init` writes `.devmind/.gitignore` covering every LOCAL entry, and repairs it on every re-run so a brain from an older version — or a teammate's checkout that predates an entry — can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive, and it matches entries the way git reads them (`local`, `/local` and `local/` are one entry, not three). As a backstop, the activity log checks the same file on its first write, since a brain where nobody ever re-runs `init` would otherwise never pick the line up.
+`devsmind init` writes `.devsmind/.gitignore` covering every LOCAL entry, and repairs it on every re-run so a brain from an older version — or a teammate's checkout that predates an entry — can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive, and it matches entries the way git reads them (`local`, `/local` and `local/` are one entry, not three). As a backstop, the activity log checks the same file on its first write, since a brain where nobody ever re-runs `init` would otherwise never pick the line up.
 
 ### Flexibility: Where should the brain live?
 
@@ -80,14 +82,14 @@ DevsMind supports two deployment topologies depending on your team's workflow:
 *   **Option A: Inside the workspace/project root directory (Shared with team)**
     ```
     c:\work\my-project\
-      ├── .devmind\              ← Config and distributed JSON database live here
+      ├── .devsmind\              ← Config and distributed JSON database live here
       ├── backend-service\
       └── frontend-web\
     ```
 *   **Option B: Standalone folder (Fully separated)**
     ```
     c:\Users\username\brains\my-project\
-      └── .devmind\              ← Brain is kept separate from code folders
+      └── .devsmind\              ← Brain is kept separate from code folders
     ```
 
 ---
@@ -117,7 +119,7 @@ The MCP connection, the workspace rule, the memory prompt, and the skill file ar
 
 ```bash
 # 1. Create the brain. Interactive: asks for project name, repos, tech stack,
-#    which folders to index, etc. Creates the .devmind/ directory.
+#    which folders to index, etc. Creates the .devsmind/ directory.
 devsmind init
 
 # 2. Connect your IDE / CLI to the DevsMind MCP server (guided, per-tool).
@@ -146,7 +148,7 @@ devsmind memory
 #    regardless of whether a tool has a background-memory feature at all.
 devsmind skill
 
-# 6. Start the MCP server. Run from the folder containing .devmind (or pass
+# 6. Start the MCP server. Run from the folder containing .devsmind (or pass
 #    --path <devmind_path>). Skip this if you connected via stdio in step 2 —
 #    then your IDE launches the server itself.
 devsmind start
@@ -160,13 +162,13 @@ devsmind index --run --provider gemini --key YOUR_GEMINI_KEY
 #    (see the `index` / `reindex` reference below for providers, flags, and the
 #     zero-setup grow-as-you-go alternative)
 
-# 8. Commit .devmind/ so your team shares the same brain.
-git add .devmind && git commit -m "Add DevsMind brain"
+# 8. Commit .devsmind/ so your team shares the same brain.
+git add .devsmind && git commit -m "Add DevsMind brain"
 ```
 
 ### 🔄 B) Joining / resuming an existing brain (teammate already set it up)
 
-The `.devmind/` folder is already in the repo — **no fresh setup, no indexing.** The committed `config.json` + `graph/` + `history/` are shared, but the `.env` (your developer identity, and in standalone mode your machine's local repo paths) is gitignored, so you still run `devsmind init` once to set up your local side:
+The `.devsmind/` folder is already in the repo — **no fresh setup, no indexing.** The committed `config.json` + `graph/` + `history/` are shared, but the `.env` (your developer identity, and in standalone mode your machine's local repo paths) is gitignored, so you still run `devsmind init` once to set up your local side:
 
 ```bash
 # 1. Get the committed brain.
@@ -321,7 +323,7 @@ devsmind index --run --provider gemini --model gemini-2.5-flash --key YOUR_API_K
 
 | Flag | Description |
 |---|---|
-| `-p, --path <devmind_path>` | Path to `.devmind` (default: `.devmind` in cwd) |
+| `-p, --path <devmind_path>` | Path to the brain directory (default: `.devsmind`, or a legacy `.devsmind`, in cwd) |
 | `--run` | **Required** to actually start indexing |
 | `--provider <provider>` | `gemini` (default) \| `vertex` \| `ollama` |
 | `--model <name>` | Model id (default per provider — see [Providers & Performance](#providers--performance) below) |
@@ -365,7 +367,7 @@ devsmind reindex --provider gemini --key YOUR_API_KEY
 
 | Flag | Description |
 |---|---|
-| `-p, --path <devmind_path>` | Path to `.devmind` (default: `.devmind` in cwd) |
+| `-p, --path <devmind_path>` | Path to the brain directory (default: `.devsmind`, or a legacy `.devsmind`, in cwd) |
 | `--provider <provider>` | `gemini` (default) \| `vertex` \| `ollama` |
 | `--model <name>` | Model id |
 | `--key <api_key>` | API key / service account path |
@@ -416,12 +418,12 @@ Takeaway: local models avoid API cost and keep code on-machine, but for anything
 
 ## 🆕 `devsmind init` In Depth
 
-`devsmind init` behaves differently depending on whether a `.devmind/config.json` already exists in the target directory.
+`devsmind init` behaves differently depending on whether a `.devsmind/config.json` already exists in the target directory.
 
 ### First-time setup (no existing config)
 
 1. **Project name + mode.** Prompts for a project name, then a choice between:
-   *   **Embedded** — the brain lives inside the project's own repo at `<repo>/.devmind`. Repo paths are stored as a relative path (`.`), so cloning the repo anywhere just works — no machine-specific config needed.
+   *   **Embedded** — the brain lives inside the project's own repo at `<repo>/.devsmind`. Repo paths are stored as a relative path (`.`), so cloning the repo anywhere just works — no machine-specific config needed.
    *   **Standalone** — the brain lives in its own separate folder (you're prompted for a folder name and parent directory), and can reference *multiple* independent Git repos. Each repo's absolute local path is stored per-developer in `.env` (since paths differ machine to machine).
 2. **Repo configuration.** Embedded mode configures exclusions once for the single repo. Standalone mode loops, letting you add as many repos as you want, each with its own name, local path, and exclusions.
 3. **Exclusions, per repo.** For each repo you get:
@@ -432,11 +434,11 @@ Takeaway: local models avoid API cost and keep code on-machine, but for anything
 5. **Tech stack auto-detection.** Scans each repo path for `tsconfig.json`, `go.mod`, `pom.xml`, `Cargo.toml`, `requirements.txt`/`pyproject.toml`, and `package.json` dependencies (detects nestjs, express, nextjs, react, vue, fastify, angular, svelte, hono, koa, prisma, typeorm, mongoose). You confirm or manually correct the result.
 6. **Session timeout** (default 60 minutes) and optional **environment URLs** (dev/staging/prod) and **free-text notes** for the AI.
 7. **Files written:**
-   *   `.devmind/config.json` — project name, mode, repos, ignored paths, tech stack, environments, notes. **Committed to Git.**
-   *   `.devmind/.env` — developer name/email + (standalone mode) each repo's local absolute path. **Gitignored.**
-   *   `.devmind/.gitignore` — auto-created to exclude everything machine-local: `.env`, `brain.db` (+ `-journal`/`-wal`/`-shm`), `index_scratchpad.json`, `history_scratchpad.json`, and **`local/`** (your activity log, revert backups and feedback — the one entry that protects private data rather than just noise). Re-running `init` tops up a stale or missing file rather than leaving it as-is, so a brain from an older version can't silently expose something. It **appends** and never rewrites, so any lines you added yourself survive, and entries are matched the way git reads them — `local`, `/local` and `local/` count as one, not three. As a backstop for a brain nobody ever re-inits, the activity log checks the same file on its first write.
-   *   `.devmind/graph/` and `.devmind/history/` — created with `.gitkeep` so Git tracks the (initially empty) directories.
-   *   `.devmind/brain.db` — empty SQLite cache, initialized immediately.
+   *   `.devsmind/config.json` — project name, mode, repos, ignored paths, tech stack, environments, notes. **Committed to Git.**
+   *   `.devsmind/.env` — developer name/email + (standalone mode) each repo's local absolute path. **Gitignored.**
+   *   `.devsmind/.gitignore` — auto-created to exclude everything machine-local: `.env`, `brain.db` (+ `-journal`/`-wal`/`-shm`), `index_scratchpad.json`, `history_scratchpad.json`, and **`local/`** (your activity log, revert backups and feedback — the one entry that protects private data rather than just noise). Re-running `init` tops up a stale or missing file rather than leaving it as-is, so a brain from an older version can't silently expose something. It **appends** and never rewrites, so any lines you added yourself survive, and entries are matched the way git reads them — `local`, `/local` and `local/` count as one, not three. As a backstop for a brain nobody ever re-inits, the activity log checks the same file on its first write.
+   *   `.devsmind/graph/` and `.devsmind/history/` — created with `.gitkeep` so Git tracks the (initially empty) directories.
+   *   `.devsmind/brain.db` — empty SQLite cache, initialized immediately.
 
 ### Re-running `init` (config already exists)
 
@@ -447,7 +449,7 @@ This is the **joining-developer / repair flow** — it never overwrites the shar
 3. **Standalone mode:** checks every repo's `path_key` in `.env` against the filesystem. Any repo with a missing or now-invalid local path gets prompted for a corrected absolute path; everything else in `.env` (including unrelated keys) is preserved as-is.
 4. Rewrites `.env`, **repairs `.gitignore`** (tops up any entry a newer version added — `local/` in particular, which a brain predating the activity log won't have — appending rather than rewriting, so your own lines are untouched), and re-initializes `brain.db` if needed. It reports what it added, or confirms the file already covers everything.
 
-This is exactly what a new team member runs after `git clone`-ing a project that already has `.devmind/config.json` committed — see [Quick Start B) Joining / resuming an existing brain](#-quick-start) above.
+This is exactly what a new team member runs after `git clone`-ing a project that already has `.devsmind/config.json` committed — see [Quick Start B) Joining / resuming an existing brain](#-quick-start) above.
 
 ---
 
@@ -461,14 +463,14 @@ That framing matters because it settles what belongs in one. Development already
 
 ### 1. What's stored, and where
 
-Shared with your team, committed to git under `.devmind/workflows/<workflow_id>/`:
+Shared with your team, committed to git under `.devsmind/workflows/<workflow_id>/`:
 
 | | |
 |---|---|
 | **workflow** | `id`, `name`, `description`, `archived`, `created_at`/`updated_at` |
 | **step** | `id`, `workflow_id`, `step_index`, `summary`, `reasoning`, `node_ids[]`, `doc_paths[]`, `session_id`, `created_at` |
 
-Local to your machine, gitignored under `.devmind/local/`:
+Local to your machine, gitignored under `.devsmind/local/`:
 
 | | |
 |---|---|
@@ -481,7 +483,7 @@ Each workflow is written as **two** files: `workflow.json` in the shape a pre-3.
 
 ### 2. Binding is per session, and local
 
-There is no project-wide "active workflow". Each session binds to at most one (`workflow_bind`), and that binding lives in `.devmind/local/` — so it never moves, pauses, or steals anyone else's, and two sessions can work different workflows at once.
+There is no project-wide "active workflow". Each session binds to at most one (`workflow_bind`), and that binding lives in `.devsmind/local/` — so it never moves, pauses, or steals anyone else's, and two sessions can work different workflows at once.
 
 This replaced a single global pointer that was also serialized into the committed JSON. Two sessions shared it: `workflow_resume` in one silently paused the other's mid-work, and that session's next `commit_changes` wrote its step onto the **wrong** workflow, with no error — and because the pointer travelled through git, a teammate could do it to you.
 
@@ -495,7 +497,7 @@ Copying rather than joining is deliberate. History reasoning *mutates* afterward
 
 ### 4. Documents are paths, not copies
 
-The old design copied whole files into `.devmind/workflows/<id>/artifacts/`. A copy goes stale the moment the original changes, and your repo already versions and shares the original. A step stores `doc_paths` — repo-relative paths — instead. A path outside every configured repo is rejected, since it wouldn't exist for a teammate.
+The old design copied whole files into `.devsmind/workflows/<id>/artifacts/`. A copy goes stale the moment the original changes, and your repo already versions and shares the original. A step stores `doc_paths` — repo-relative paths — instead. A path outside every configured repo is rejected, since it wouldn't exist for a teammate.
 
 ### 5. Reading a long one
 
@@ -548,7 +550,7 @@ Nothing detects drift onto a different topic — asking an AI to notice "this is
 
 ---
 
-## 🗄️ Database Schema: `.devmind/brain.db`
+## 🗄️ Database Schema: `.devsmind/brain.db`
 
 The local SQLite database (`brain.db`) acts as a metadata cache. The full database schema consists of seven tables:
 
@@ -595,7 +597,7 @@ CREATE TABLE history (
 ```
 > ⏱️ **Session Boundary Rule**: If the AI updates a function, it checks the last history log. If `updated_at` is less than **1 hour ago**, it updates the same record in-place (same session) instead of inserting a new row — `code_snapshot` is replaced with the latest state (git already owns code version history), but `reasoning` is **appended**, not overwritten, so an earlier commit's "why" within the same session is preserved rather than silently lost. If older than 1 hour, it inserts a new history record (new session).
 >
-> 💾 **JSON Storage Note**: In version 2.0.0, the actual code snapshots and AI change reasonings are stored in `.devmind/history/[id].json` to resolve Git merge conflicts, while the SQLite database holds empty strings for `code_snapshot` and `reasoning`.
+> 💾 **JSON Storage Note**: In version 2.0.0, the actual code snapshots and AI change reasonings are stored in `.devsmind/history/[id].json` to resolve Git merge conflicts, while the SQLite database holds empty strings for `code_snapshot` and `reasoning`.
 >
 > 🔴🟢 **Edit trail (3.0.0)**: that same JSON also carries an `edits` array — one entry per edit, each holding the entity's code `before` and `after` it, plus `at` and the `reasoning` of the commit that produced it (one `reasoning` object per `commit_changes` call, shared by every edit that commit made — not one per edit). It lives only in the JSON, never in SQLite, exactly like `code_snapshot`. This is what `devsmind diff` renders and what `devsmind revert` restores from.
 >
@@ -664,15 +666,15 @@ CREATE TABLE workflow_artifacts (
   FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE CASCADE
 );
 ```
-> The table and any existing rows remain readable, but nothing writes to it. Artifacts were **copies** of files placed under `.devmind/workflows/<id>/artifacts/`, and a copy goes stale the moment the original changes — while your repo already versions and shares the original. A step's `doc_paths` stores the **path** instead: already versioned, already synced, can't drift.
+> The table and any existing rows remain readable, but nothing writes to it. Artifacts were **copies** of files placed under `.devsmind/workflows/<id>/artifacts/`, and a copy goes stale the moment the original changes — while your repo already versions and shares the original. A step's `doc_paths` stores the **path** instead: already versioned, already synced, can't drift.
 
 
-### 8. Activity log (3.0.0) — `.devmind/local/`, not `brain.db`
+### 8. Activity log (3.0.0) — `.devsmind/local/`, not `brain.db`
 
 Not a SQLite table, deliberately — everything above lives in `brain.db`, which the README calls "a disposable local cache rebuilt from JSON on startup," and an activity log that could be silently rebuilt away would defeat the point of it. Plain JSON instead, gitignored, its own small directory:
 
 ```
-.devmind/local/
+.devsmind/local/
   sessions.json                  -- [{ id, developer, started_at, last_active, message_ids[], label? }]
   messages/<message_id>.json     -- one file per message, see below
 ```
@@ -693,7 +695,7 @@ A session row only comes into being via the `start_session` tool — no auto-min
 }
 ```
 
-A message's `edits[]` stores `before`/`after` directly rather than pointing at a `history_ids` entry — self-contained on purpose, so a revert never depends on (or can corrupt) what the team shares in `history/*.json`. `devsmind init` writes `local/` into `.devmind/.gitignore`; a brain that predates this release self-heals the same line the first time anything is recorded, so it can't land in a commit by accident.
+A message's `edits[]` stores `before`/`after` directly rather than pointing at a `history_ids` entry — self-contained on purpose, so a revert never depends on (or can corrupt) what the team shares in `history/*.json`. `devsmind init` writes `local/` into `.devsmind/.gitignore`; a brain that predates this release self-heals the same line the first time anything is recorded, so it can't land in a commit by accident.
 
 ### Growing the graph outside of `index`/`reindex`
 
@@ -755,7 +757,7 @@ The AI's only job anywhere in this flow is writing descriptions, via `add_descri
 *   `rename_node`: Re-keys a node identifier and updates all associated records (connections and history) seamlessly.
 *   `deprecate_node`: Marks a code node as deprecated, removing its connection mappings while retaining its coding snapshots and reasoning logs in the database.
 
-> The former `add_node` / `add_connection` tools are removed — nodes and edges are now created automatically by `edit_node` + `commit_changes`, so the AI never hand-manages edges. `update_history` (the old single-node write) and `search_code` (now folded into `search_nodes`'s automatic fallback) still work if called directly for backward compatibility, but neither is advertised to the AI anymore. `edit_node` can't write inside `.devmind/` itself (DevsMind's own config/database) — only inside your configured repos. To force a graph resync with no real code change, run `devsmind reindex` instead (`edit_node` requires `old_string` to actually differ from `new_string`, so it can't express a no-op).
+> The former `add_node` / `add_connection` tools are removed — nodes and edges are now created automatically by `edit_node` + `commit_changes`, so the AI never hand-manages edges. `update_history` (the old single-node write) and `search_code` (now folded into `search_nodes`'s automatic fallback) still work if called directly for backward compatibility, but neither is advertised to the AI anymore. `edit_node` can't write inside `.devsmind/` itself (DevsMind's own config/database) — only inside your configured repos. To force a graph resync with no real code change, run `devsmind reindex` instead (`edit_node` requires `old_string` to actually differ from `new_string`, so it can't express a no-op).
 
 ### 🧹 Category 5: Optimization & Maintenance
 *   `recheck_graph`: Scans the graph to verify file existence and deprecates language primitives, builtins, and nodes associated with missing/deleted files, retaining nodes with active histories.
@@ -805,11 +807,11 @@ To query the view URL programmatically from your agent, call `get_visualizer_url
 
 ## 👥 Git Collaboration Workflow
 
-You commit `.devmind/config.json` plus the JSON trees — `graph/`, `history/`, `vectors/`, `workflows/` — and the whole team shares one brain. **`brain.db` is *not* committed**: it's a disposable local cache, gitignored, rebuilt from those JSONs by `devsmind sync` (or on server start). Sharing a SQLite binary would conflict on every merge; sharing line-oriented JSON does not.
+You commit `.devsmind/config.json` plus the JSON trees — `graph/`, `history/`, `vectors/`, `workflows/` — and the whole team shares one brain. **`brain.db` is *not* committed**: it's a disposable local cache, gitignored, rebuilt from those JSONs by `devsmind sync` (or on server start). Sharing a SQLite binary would conflict on every merge; sharing line-oriented JSON does not.
 
 Nor is `local/` — your requests, your revert backups, your feedback. That stays on your machine by design.
 
-`commit_changes` (the AI's step below) and a real `git commit` (yours) are two different, separate things that happen to share the word "commit" — the AI's call writes only into `.devmind/`'s local graph/database, never git; the actual `git commit -am`/`git push` step is **you**, the developer, deciding to commit and share, same as on any project without DevsMind:
+`commit_changes` (the AI's step below) and a real `git commit` (yours) are two different, separate things that happen to share the word "commit" — the AI's call writes only into `.devsmind/`'s local graph/database, never git; the actual `git commit -am`/`git push` step is **you**, the developer, deciding to commit and share, same as on any project without DevsMind:
 
 ```
        Developer A                                         Developer B
@@ -823,6 +825,44 @@ Nor is `local/` — your requests, your revert backups, your feedback. That stay
 ---
 
 ## Changelog
+
+### 4.2.0 — the brain directory is `.devsmind/`, and `.devmind/` keeps working forever
+
+No breaking changes for any existing brain. One thing to know if you create a NEW one: it needs devsmind-mcp **>= 4.2.0** on every teammate's machine.
+
+#### Why rename a directory at all
+
+`devmind-mcp` is an unrelated npm package, published October 2025, one letter away from ours. It stores prose memories in a global `~/.devmind/memory.db` — a different product solving a different problem — but it had the name first. Ours is called DevsMind and wrote a directory called `.devmind/`, so a developer who saw that folder in a teammate's repo and searched npm for it landed on someone else's project. That is a naming problem that only gets more expensive with adoption, so the cheapest time to fix it is the earliest one.
+
+The rename applies to what `init` **creates**, and nothing else.
+
+#### Why there is no `migrate` command, and why that is the right call
+
+A brain is git-committed and team-shared. Renaming an existing one is therefore not a per-developer action — it's a repo-wide commit every teammate pulls. Ship a migrate command and you manufacture the one failure mode that otherwise cannot happen: someone still on 4.1.x pulls a commit that moved `.devmind/` out from under them and loses their brain mid-sprint, for a cosmetic gain.
+
+So the fallback is permanent rather than a deprecation window: `.devsmind` is tried first, `.devmind` second, at every level of the walk-up, forever. An existing brain is never orphaned, never warned about, never asked to move.
+
+This is only possible because **nothing inside a brain records its own folder name.** `config.json` stores repo-relative paths (embedded mode) or `.env` repo keys (standalone); `graph/`, `history/`, `vectors/` and `workflows/` are keyed by repo and symbol; `brain.db` is a rebuildable cache. The bytes are identical under either name. Anyone who *wants* to rename one can `git mv .devmind .devsmind` and be done — which is exactly why building a command for it would have been ceremony around a one-line git operation.
+
+#### The part that was actually work: finding every place that hardcoded the name
+
+The rename itself is trivial. The risk was that `.devmind` was written as a bare string literal in **16 places** across 8 files, each answering "where is the brain" independently. Fixing only the obvious two — the CLI's lookup and the MCP server's startup auto-detect — would have left the rest silently blind to any brain created from this release on.
+
+The worst of them: **all 12 web-view HTTP routes** each did their own `path.join(process.cwd(), '.devmind')` as the `?path=` default. Left alone, `devsmind view` would have opened successfully against a new project and shown an empty graph, empty history, empty activity — which reads as "my data is gone", not "the path default is stale". Also caught: the `--path` defaults for `index`/`reindex`, `devsmind view` and `devsmind prune`'s own hand-rolled copies of the walk-up, the `ALWAYS_IGNORED` lists in `db/grep.ts` and `utils/scanner.ts` (which now hold both names, or a brain would leak into your own search results), and the interactive directory picker in `integrations/prompt.ts`, which whitelisted `.devmind` as the one dot-folder worth showing — so a `.devsmind` brain would have been invisible in the picker whose whole job is finding it.
+
+All of them now call one resolver in `utils/config.ts`: `resolveBrainDir` (one directory), `findBrainDir` (walk up), `brainDirOrDefault` (never null; falls back to the *current* name, since pointing a fresh project at the legacy one would name a directory that will never exist). `findDevmindDir` remains as an alias so nothing else had to change.
+
+#### The one genuine bug this would have shipped
+
+`devsmind init`'s "does a brain already exist here?" check was a hardcoded `.devmind` test, entirely separate from the lookup every other code path used. Change only what `init` *creates* and that check becomes a landmine: re-running `init` on any pre-4.2.0 project would find no `.devsmind`, conclude the project was brand new, and write a second `config.json` + `brain.db` + `graph/` beside the real one — two brains in one repo, with the server reading whichever the resolver reached first. The check now asks `resolveBrainDir`, the same question everything else asks, so an existing brain is always repaired in place under whatever name it already has.
+
+#### What a user actually sees
+
+A fresh `init` prints one line naming the new directory and the version teammates need — pointed at the person creating the brain, since they're the only one who can pass it on (a teammate on 4.1.x will never see a message written in 4.2.0). Not-found errors across the CLI and server now name both directories, so "no brain here" can't be misread as "wrong name". Nothing is printed when the server binds to a legacy brain — it works, and saying so would only invite an unnecessary migration.
+
+18 tests cover the resolver: both names, precedence when both exist, an empty leftover directory not shadowing a real brain next to it, nearest-brain-wins on the walk-up, and the fallback landing on the current name.
+
+---
 
 ### 4.1.2 — devsmind analyze --fix now actually clears the EISDIR-class warning, not just the node behind it
 

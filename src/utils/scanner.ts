@@ -20,7 +20,7 @@ export const INDEXABLE_EXTENSIONS = new Set([
 const ALWAYS_IGNORED = [
   'node_modules', '.git', 'dist', 'build', 'out', '.next',
   '__pycache__', '.venv', 'venv', 'coverage', '.turbo',
-  '.cache', '.idea', '.vscode', '.devmind',
+  '.cache', '.idea', '.vscode', '.devsmind', '.devmind',
   '.dart_tool', '.gradle', '.symlinks', 'Pods', 'DerivedData', '.expo', 'Carthage'
 ];
 

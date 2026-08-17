@@ -2,23 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { runHttpMcpServer, DEVSMIND_PORT } from '../mcp/server';
-
-/**
- * Walk up from `startDir` until we find a `.devmind/config.json`,
- * or return null if not found.
- */
-function findDevmindDir(startDir: string): string | null {
-  let current = path.resolve(startDir);
-  while (true) {
-    const candidate = path.join(current, '.devmind');
-    if (fs.existsSync(path.join(candidate, 'config.json'))) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return null; // filesystem root
-    current = parent;
-  }
-}
+import { findBrainDir } from '../utils/config';
 
 export async function handleView(opts: { path?: string; port: string }) {
   const cwd = process.cwd();
@@ -28,12 +12,12 @@ export async function handleView(opts: { path?: string; port: string }) {
     const resolved = path.resolve(opts.path);
     devmindDir = fs.existsSync(path.join(resolved, 'config.json')) ? resolved : null;
   } else {
-    devmindDir = findDevmindDir(cwd);
+    devmindDir = findBrainDir(cwd);
   }
 
   if (!devmindDir) {
     console.error(
-      `❌ No .devmind directory found.\n` +
+      `❌ No .devsmind directory found (nor a legacy .devmind one).\n` +
       `   Run from inside a DevsMind brain folder, or pass --path <devmind_path>.`
     );
     process.exit(1);

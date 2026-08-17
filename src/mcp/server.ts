@@ -11,7 +11,7 @@ import {
   DevMindDatabase, parseReasoningBlocks, NO_STATIC_CALLERS_NOTE, toCompactSearchResult,
   SearchNodesResult, CompactSearchNodesResult
 } from '../db/database';
-import { loadProjectContext } from '../utils/config';
+import { loadProjectContext, findBrainDir, brainDirOrDefault } from '../utils/config';
 import { getViewHtml, ASSETS_DIR, DEVSMIND_TOKEN } from './visualizer';
 import { diffEdits, renderUnifiedDiff, diffSnapshots } from '../utils/diff';
 import { revertLastEdit } from '../db/revert';
@@ -142,17 +142,8 @@ export function getBoundDevmindPath(): string | null {
   return boundDevmindPath;
 }
 
-// Walk up from a start directory to find a .devmind folder containing config.json
-function findDevmindDir(startDir: string): string | null {
-  let current = path.resolve(startDir);
-  while (true) {
-    const candidate = path.join(current, '.devmind');
-    if (fs.existsSync(path.join(candidate, 'config.json'))) return candidate;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
+// Walk up from a start directory to find a brain folder (`.devsmind`, or a legacy `.devmind`)
+// containing config.json. Both names are tried at every level — see utils/config.ts.
 
 // Resolve devmind_path from args, falling back to auto-detect from cwd
 function resolveDevmindPath(rawPath: unknown): string {
@@ -172,9 +163,9 @@ function resolveDevmindPath(rawPath: unknown): string {
     throw new Error(`devmind_path does not exist: "${resolved}". Make sure you pass the exact DEVMIND_PATH from your workspace rules.`);
   }
   // Not provided — auto-detect from where devsmind start was run
-  const autoDetected = findDevmindDir(process.cwd());
+  const autoDetected = findBrainDir(process.cwd());
   if (autoDetected) return autoDetected;
-  throw new Error(`devmind_path was not provided and no .devmind directory was found by walking up from: "${process.cwd()}". Pass devmind_path explicitly.`);
+  throw new Error(`devmind_path was not provided and no .devsmind directory (nor a legacy .devmind one) was found by walking up from: "${process.cwd()}". Pass devmind_path explicitly.`);
 }
 
 /**
@@ -3359,7 +3350,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
   // Graph Data API endpoint
   app.get('/api/graph-data', (req, res) => {
     try {
-      const devmindPath = req.query.path ? String(req.query.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.query.path ? String(req.query.path) : brainDirOrDefault(process.cwd());
       if (!fs.existsSync(devmindPath)) {
         return res.status(400).json({ error: `Brain directory not found at: ${devmindPath}` });
       }
@@ -3383,7 +3374,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
   // Per-edit diffs for one history entry.
   app.get('/api/node-diff', (req, res) => {
     try {
-      const devmindPath = req.query.path ? String(req.query.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.query.path ? String(req.query.path) : brainDirOrDefault(process.cwd());
       const historyId = req.query.history_id ? String(req.query.history_id) : '';
       if (!historyId) return res.status(400).json({ error: 'history_id is required' });
       if (!fs.existsSync(devmindPath)) {
@@ -3421,7 +3412,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
         return res.status(415).json({ error: 'expected application/json' });
       }
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const historyId = req.body?.history_id ? String(req.body.history_id) : '';
       if (!historyId) return res.status(400).json({ error: 'history_id is required' });
       if (!fs.existsSync(devmindPath)) {
@@ -3446,7 +3437,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
   // /api/graph-data: this is one developer's whole history, fetched on every page load.
   app.get('/api/activity', (req, res) => {
     try {
-      const devmindPath = req.query.path ? String(req.query.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.query.path ? String(req.query.path) : brainDirOrDefault(process.cwd());
       if (!fs.existsSync(devmindPath)) {
         return res.status(400).json({ error: `Brain directory not found at: ${devmindPath}` });
       }
@@ -3504,7 +3495,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
   // Per-edit diffs for one message, fetched only when a human expands it in the Activity page.
   app.get('/api/message-diff', (req, res) => {
     try {
-      const devmindPath = req.query.path ? String(req.query.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.query.path ? String(req.query.path) : brainDirOrDefault(process.cwd());
       const messageId = req.query.message_id ? String(req.query.message_id) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
       if (!fs.existsSync(devmindPath)) {
@@ -3535,7 +3526,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
   // already ships, so the message still renders something rather than a guessed-at diff.
   app.get('/api/message-file-diff', (req, res) => {
     try {
-      const devmindPath = req.query.path ? String(req.query.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.query.path ? String(req.query.path) : brainDirOrDefault(process.cwd());
       const messageId = req.query.message_id ? String(req.query.message_id) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
       if (!fs.existsSync(devmindPath)) {
@@ -3607,7 +3598,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
         return res.status(415).json({ error: 'expected application/json' });
       }
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const messageId = req.body?.message_id ? String(req.body.message_id) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
       if (!fs.existsSync(devmindPath)) {
@@ -3635,7 +3626,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
         return res.status(415).json({ error: 'expected application/json' });
       }
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const messageId = req.body?.message_id ? String(req.body.message_id) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
       if (!fs.existsSync(devmindPath)) {
@@ -3660,7 +3651,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
       if (origin && !isLocalOrigin(origin, port)) return res.status(403).json({ error: 'forbidden' });
       if (!req.is('application/json')) return res.status(415).json({ error: 'expected application/json' });
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const messageId = req.body?.message_id ? String(req.body.message_id) : '';
       const filePath = req.body?.file_path ? String(req.body.file_path) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
@@ -3682,7 +3673,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
       if (origin && !isLocalOrigin(origin, port)) return res.status(403).json({ error: 'forbidden' });
       if (!req.is('application/json')) return res.status(415).json({ error: 'expected application/json' });
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const messageId = req.body?.message_id ? String(req.body.message_id) : '';
       const filePath = req.body?.file_path ? String(req.body.file_path) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
@@ -3704,7 +3695,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
       if (origin && !isLocalOrigin(origin, port)) return res.status(403).json({ error: 'forbidden' });
       if (!req.is('application/json')) return res.status(415).json({ error: 'expected application/json' });
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const messageId = req.body?.message_id ? String(req.body.message_id) : '';
       const editId = req.body?.edit_id ? String(req.body.edit_id) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
@@ -3726,7 +3717,7 @@ export function createHttpApp(port: number = DEVSMIND_PORT): express.Application
       if (origin && !isLocalOrigin(origin, port)) return res.status(403).json({ error: 'forbidden' });
       if (!req.is('application/json')) return res.status(415).json({ error: 'expected application/json' });
 
-      const devmindPath = req.body?.path ? String(req.body.path) : path.join(process.cwd(), '.devmind');
+      const devmindPath = req.body?.path ? String(req.body.path) : brainDirOrDefault(process.cwd());
       const messageId = req.body?.message_id ? String(req.body.message_id) : '';
       const editId = req.body?.edit_id ? String(req.body.edit_id) : '';
       if (!messageId) return res.status(400).json({ error: 'message_id is required' });
@@ -3797,7 +3788,7 @@ function bindServerToProject(devmindPath?: string): void {
     console.error(`DevsMind: bound via --path/DEVSMIND_PATH → serving ${boundDevmindPath}`);
     return;
   }
-  const autoDetected = findDevmindDir(process.cwd());
+  const autoDetected = findBrainDir(process.cwd());
   if (autoDetected) {
     bindDevmindPath(autoDetected);
     // The one line that makes auto-detect debuggable: a global (no --path) config relies on the
@@ -3808,7 +3799,7 @@ function bindServerToProject(devmindPath?: string): void {
     console.error(`DevsMind: started in ${process.cwd()} → serving ${boundDevmindPath}`);
   } else {
     console.error(
-      `⚠️  DevsMind: no .devmind directory found from ${process.cwd()} — starting UNBOUND. ` +
+      `⚠️  DevsMind: no .devsmind directory (nor a legacy .devmind one) found from ${process.cwd()} — starting UNBOUND. ` +
       `Callers must pass devmind_path, or run 'devsmind start' from inside your project (or pass --path).`
     );
   }

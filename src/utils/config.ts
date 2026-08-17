@@ -45,33 +45,90 @@ export interface ProjectContext {
 }
 
 /**
- * Walk up from `startDir` looking for a `.devmind/config.json`. Returns the
- * absolute path to the `.devmind` directory, or null if none is found.
+ * The brain directory name `devsmind init` creates, as of 4.2.0.
+ *
+ * It used to be `.devmind` — one letter off from an unrelated npm package (`devmind-mcp`) that
+ * had the name first, so a developer seeing `.devmind/` in a teammate's repo and searching for it
+ * landed on someone else's project. Renaming the directory we create fixes that going forward.
  */
-export function findDevmindDir(startDir: string): string | null {
+export const BRAIN_DIR_NAME = '.devsmind';
+
+/**
+ * The pre-4.2.0 name. Still read, forever — an existing brain is git-committed and team-shared, so
+ * renaming one is a repo-wide commit every teammate has to pull. There is no migration and none is
+ * needed: nothing inside a brain records its own folder name (`config.json` stores repo-relative
+ * paths or `.env` repo keys), so a `.devmind` brain works identically under either name.
+ */
+export const LEGACY_BRAIN_DIR_NAME = '.devmind';
+
+/** Both brain directory names, in lookup order — current name first, legacy second. */
+export const BRAIN_DIR_NAMES: readonly string[] = [BRAIN_DIR_NAME, LEGACY_BRAIN_DIR_NAME];
+
+/**
+ * The brain directory sitting DIRECTLY inside `dir` — `.devsmind`, else the legacy `.devmind` —
+ * or null when neither is there. Only a directory holding a `config.json` counts, so an empty
+ * leftover folder never shadows the real brain next to it.
+ *
+ * This is the one place the two names are tried. Every other lookup in the codebase goes through
+ * here or through {@link findBrainDir}; a hardcoded `'.devmind'` anywhere else is a bug that makes
+ * that one code path blind to every brain created since 4.2.0.
+ */
+export function resolveBrainDir(dir: string): string | null {
+  const base = path.resolve(dir);
+  for (const name of BRAIN_DIR_NAMES) {
+    const candidate = path.join(base, name);
+    if (fs.existsSync(path.join(candidate, 'config.json'))) return candidate;
+  }
+  return null;
+}
+
+/**
+ * {@link resolveBrainDir}, or — when there is no brain yet — the path a NEW one would take.
+ * Never null.
+ *
+ * For callers that need a path to hand onward rather than an answer to "does a brain exist": the
+ * web-view routes' `?path=` default, and the CLI's `--path` default. Falling back to the CURRENT
+ * name matters, because falling back to the legacy one would point a fresh project at a directory
+ * that will never exist.
+ */
+export function brainDirOrDefault(dir: string): string {
+  return resolveBrainDir(dir) ?? path.join(path.resolve(dir), BRAIN_DIR_NAME);
+}
+
+/**
+ * Walk up from `startDir` looking for a brain directory. Returns its absolute path, or null if
+ * none is found before the filesystem root.
+ *
+ * Both names are tried at EACH level before moving up a directory, so a nested `.devmind` brain
+ * is still found ahead of a `.devsmind` one further up the tree — the nearest brain wins, which
+ * is what the caller means by "my project's brain".
+ */
+export function findBrainDir(startDir: string): string | null {
   let current = path.resolve(startDir);
   while (true) {
-    const candidate = path.join(current, '.devmind');
-    if (fs.existsSync(path.join(candidate, 'config.json'))) {
-      return candidate;
-    }
+    const found = resolveBrainDir(current);
+    if (found) return found;
     const parent = path.dirname(current);
     if (parent === current) return null;
     current = parent;
   }
 }
 
+/** @deprecated Pre-4.2.0 name for {@link findBrainDir}. Kept so existing callers keep compiling. */
+export const findDevmindDir = findBrainDir;
+
 /**
- * Resolve the `.devmind` directory for a command: honour an explicit `--path`
- * (which must itself contain a config.json), otherwise auto-detect by walking
- * up from the current working directory. Returns null when nothing is found.
+ * Resolve the brain directory for a command: honour an explicit `--path` (which must itself
+ * contain a config.json — it points AT the brain, so its folder name is whatever the user chose),
+ * otherwise auto-detect by walking up from the current working directory. Null when nothing is
+ * found.
  */
 export function resolveDevmindDir(explicitPath?: string): string | null {
   if (explicitPath) {
     const resolved = path.resolve(explicitPath);
     return fs.existsSync(path.join(resolved, 'config.json')) ? resolved : null;
   }
-  return findDevmindDir(process.cwd());
+  return findBrainDir(process.cwd());
 }
 
 /**

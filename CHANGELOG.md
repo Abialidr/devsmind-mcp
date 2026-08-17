@@ -2,6 +2,15 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
+## 4.2.0 — the brain directory is `.devsmind/`, and `.devmind/` keeps working forever
+> No breaking changes for any existing brain — there is no migration and none is needed. One thing to know if you create a NEW one: it needs devsmind-mcp **≥ 4.2.0** on every teammate's machine, because an older install only ever looks for `.devmind`.
+
+- **`devsmind init` now creates `.devsmind/` instead of `.devmind/`.** The old name was one letter off from `devmind-mcp`, an unrelated npm package that had the name first — so a developer who saw `.devmind/` in a teammate's repo and searched for it landed on someone else's project. Only a brand-new brain gets the new name. **Every existing `.devmind/` brain is still read, forever**, and re-running `init` on one repairs it in place under the name it already has.
+- **Both names are resolved in exactly one place.** New `resolveBrainDir` / `findBrainDir` / `brainDirOrDefault` in `utils/config.ts` try `.devsmind` first, then `.devmind`, at every level of the walk-up — so the nearest brain still wins regardless of which name it uses. Every lookup in the codebase now routes through them: the MCP server's startup auto-detect (`bindServerToProject`), the CLI's `--path` defaults for `index`/`reindex`, `devsmind view`, `devsmind prune`, and all **12** web-view HTTP routes, which each had their own hardcoded `path.join(process.cwd(), '.devmind')` and would otherwise have shown an empty brain on every project created from this release on. `db/grep.ts` and `utils/scanner.ts` now ignore both names, so neither a new nor a legacy brain can leak into your own search results.
+- **Fix (would have shipped as a bug otherwise): `devsmind init` could have created a SECOND brain beside a real one.** The "does a brain already exist here?" check was a hardcoded `.devmind` test, entirely separate from the lookup used everywhere else. Left alone, re-running `init` on a pre-4.2.0 project would have found no `.devsmind`, concluded the project was brand new, and written a second `config.json`/`brain.db`/`graph/` next to the existing one. The check now asks `resolveBrainDir`, the same question every other code path asks.
+- **Nothing inside a brain records its own folder name**, which is why no migration exists: `config.json` stores repo-relative paths (embedded mode) or `.env` repo keys (standalone), and `brain.db` is a rebuildable cache. A `.devmind/` brain is byte-for-byte valid under either name, so if you ever *want* to rename one, `git mv .devmind .devsmind` is the whole procedure — no DevsMind command needed, and no reason to bother.
+- **`init` prints one line about it on a new brain**, naming the required teammate version. Not-found errors across the CLI and server now name both directories, so "no brain here" can't be misread as "wrong name".
+
 ## 4.1.2 — devsmind analyze --fix now actually clears the EISDIR-class warning, not just the node behind it
 > No breaking changes.
 

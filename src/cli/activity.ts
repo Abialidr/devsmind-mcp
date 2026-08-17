@@ -26,7 +26,7 @@ export async function handleActivity(opts: { path?: string; since?: string }): P
   const devmindDir = resolveDevmindDir(opts.path);
   if (!devmindDir) {
     console.error(
-      `❌ No .devmind directory found.\n` +
+      `❌ No .devsmind directory found (nor a legacy .devmind one).\n` +
       `   Run from inside a DevsMind brain folder, or pass --path <devmind_path>.`
     );
     process.exit(1);

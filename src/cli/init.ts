@@ -9,7 +9,11 @@ import {
   RepoConfig,
   EmbeddedRepoConfig,
   StandaloneRepoConfig,
-  TechStack
+  TechStack,
+  BRAIN_DIR_NAME,
+  BRAIN_DIR_NAMES,
+  resolveBrainDir,
+  LEGACY_BRAIN_DIR_NAME
 } from '../utils/config';
 import { pickDirectory, CancelledError } from './integrations/prompt';
 import { normalizeIgnoreEntry } from '../db/activity';
@@ -202,7 +206,7 @@ function buildFileTree(dir: string, repoRoot: string): TreeEntry[] {
       .filter(entry => {
         const name = entry.name;
         // Skip default ignored folders
-        if (name === '.git' || name === '.devmind' || name === 'node_modules') {
+        if (name === '.git' || BRAIN_DIR_NAMES.includes(name) || name === 'node_modules') {
           return false;
         }
         return true;
@@ -427,16 +431,25 @@ export async function handleInit() {
   }
 
   const cwd = process.cwd();
-  const devmindDir = path.join(cwd, '.devmind');
-  const configPath = path.join(devmindDir, 'config.json');
-  const envPath = path.join(devmindDir, '.env');
-  const dbPath = path.join(devmindDir, 'brain.db');
 
   console.log(`🤖 Initializing DevsMind in: ${cwd}`);
 
-  if (fs.existsSync(devmindDir) && fs.existsSync(configPath)) {
+  // Whether a brain already exists here has to be asked under BOTH names, not just the one we
+  // create today. Checking only `.devsmind` would make a re-init on a pre-4.2.0 project decide it
+  // is brand new and create a SECOND brain beside the real one — two config.jsons, two databases,
+  // and a `graph/` the server never reads. An existing brain is always repaired in place, under
+  // whatever name it already has; only a genuinely new one gets the current name.
+  const existing = resolveBrainDir(cwd);
+
+  if (existing) {
+    const configPath = path.join(existing, 'config.json');
     console.log(`✨ Found existing DevsMind configuration at ${configPath}`);
-    await handleExistingInit(devmindDir, configPath, envPath, dbPath);
+    await handleExistingInit(
+      existing,
+      configPath,
+      path.join(existing, '.env'),
+      path.join(existing, 'brain.db')
+    );
   } else {
     console.log(`🆕 Creating a new DevsMind brain...`);
     await handleNewInit(cwd);
@@ -637,7 +650,7 @@ async function handleNewInit(cwd: string) {
 
   if (baseResponse.mode === 'embedded') {
     targetDir = cwd;
-    devmindDir = path.join(targetDir, '.devmind');
+    devmindDir = path.join(targetDir, BRAIN_DIR_NAME);
   } else {
     const defaultFolderName = `${baseResponse.projectName.toLowerCase().replace(/[^a-z0-9]/g, '-')}-brain`;
 
@@ -660,7 +673,7 @@ async function handleNewInit(cwd: string) {
     }
 
     targetDir = path.join(folderParent, folderNameResponse.folderName);
-    devmindDir = path.join(targetDir, '.devmind');
+    devmindDir = path.join(targetDir, BRAIN_DIR_NAME);
 
     if (!fs.existsSync(targetDir)) {
       fs.mkdirSync(targetDir, { recursive: true });
@@ -918,9 +931,19 @@ async function handleNewInit(cwd: string) {
   console.log(`🗄️  Initialized SQLite database at ${dbPath}`);
 
   console.log(`\n🎉 DevsMind Team AI Brain setup successfully completed!`);
+
+  // The one place this is worth saying. A brain is git-committed and team-shared, so a teammate on
+  // a pre-4.2.0 DevsMind cloning THIS repo finds no `.devmind` and reports no brain at all. Nothing
+  // is lost and nothing needs migrating — they just need to upgrade — but this line is the only
+  // warning anyone gets, and it lands on the one person who can pass it on.
+  console.log(
+    `\n📁 Brain directory is ${BRAIN_DIR_NAME}/ (renamed from ${LEGACY_BRAIN_DIR_NAME}/ in 4.2.0).\n` +
+    `   Teammates need devsmind-mcp >= 4.2.0 to read it. Existing ${LEGACY_BRAIN_DIR_NAME}/ brains keep working as-is — nothing to migrate.`
+  );
+
   if (baseResponse.mode === 'standalone') {
-    console.log(`💡 Next step: set DEVMIND_PATH = ${devmindDir} in your AI workspace rule.`);
+    console.log(`\n💡 Next step: set DEVMIND_PATH = ${devmindDir} in your AI workspace rule.`);
   } else {
-    console.log(`💡 Next step: run 'devsmind start' to launch the MCP server.`);
+    console.log(`\n💡 Next step: run 'devsmind start' to launch the MCP server.`);
   }
 }

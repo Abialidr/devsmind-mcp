@@ -3,9 +3,15 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   findDevmindDir,
+  findBrainDir,
+  resolveBrainDir,
+  brainDirOrDefault,
   resolveDevmindDir,
   loadProjectContext,
   recoverSpaceSplitPath,
+  BRAIN_DIR_NAME,
+  LEGACY_BRAIN_DIR_NAME,
+  BRAIN_DIR_NAMES,
   DevMindConfig
 } from '../../src/utils/config';
 
@@ -23,6 +29,143 @@ const sampleConfig: DevMindConfig = {
   mode: 'embedded',
   repos: [{ name: 'app', relative_path: 'src' }]
 };
+
+// ── 4.2.0: `.devsmind` is the created name, `.devmind` is read forever ───────────────────────
+//
+// The whole rename rests on one claim: a brain resolves identically under either name, from every
+// entry point. These are the tests for the resolver every entry point now calls — if they hold,
+// an existing `.devmind/` brain cannot be orphaned by the rename, and a new `.devsmind/` one
+// cannot be missed.
+describe('brain directory name resolution (4.2.0 rename)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkTempDir(); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('exposes the two names in lookup order — current first, legacy second', () => {
+    expect(BRAIN_DIR_NAME).toBe('.devsmind');
+    expect(LEGACY_BRAIN_DIR_NAME).toBe('.devmind');
+    expect(BRAIN_DIR_NAMES).toEqual(['.devsmind', '.devmind']);
+  });
+
+  describe('resolveBrainDir', () => {
+    it('finds a .devsmind brain', () => {
+      writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+      expect(resolveBrainDir(dir)).toBe(path.join(dir, '.devsmind'));
+    });
+
+    it('finds a legacy .devmind brain — an existing brain is never orphaned', () => {
+      writeConfig(path.join(dir, '.devmind'), sampleConfig);
+      expect(resolveBrainDir(dir)).toBe(path.join(dir, '.devmind'));
+    });
+
+    it('prefers .devsmind when both exist', () => {
+      writeConfig(path.join(dir, '.devmind'), sampleConfig);
+      writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+      expect(resolveBrainDir(dir)).toBe(path.join(dir, '.devsmind'));
+    });
+
+    it('ignores a directory with no config.json, so an empty leftover cannot shadow the real brain', () => {
+      fs.mkdirSync(path.join(dir, '.devsmind'), { recursive: true });
+      writeConfig(path.join(dir, '.devmind'), sampleConfig);
+      expect(resolveBrainDir(dir)).toBe(path.join(dir, '.devmind'));
+    });
+
+    it('returns null when neither name is present', () => {
+      expect(resolveBrainDir(dir)).toBeNull();
+    });
+
+    it('does NOT walk up — it answers only about the directory it was given', () => {
+      writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+      const nested = path.join(dir, 'a', 'b');
+      fs.mkdirSync(nested, { recursive: true });
+      expect(resolveBrainDir(nested)).toBeNull();
+    });
+  });
+
+  describe('findBrainDir', () => {
+    it('walks up to a legacy .devmind brain', () => {
+      writeConfig(path.join(dir, '.devmind'), sampleConfig);
+      const nested = path.join(dir, 'a', 'b', 'c');
+      fs.mkdirSync(nested, { recursive: true });
+      expect(findBrainDir(nested)).toBe(path.join(dir, '.devmind'));
+    });
+
+    it('walks up to a .devsmind brain', () => {
+      writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+      const nested = path.join(dir, 'a', 'b', 'c');
+      fs.mkdirSync(nested, { recursive: true });
+      expect(findBrainDir(nested)).toBe(path.join(dir, '.devsmind'));
+    });
+
+    it('takes the NEAREST brain, even when the far one uses the current name', () => {
+      // Both names are tried at each level before moving up, so a nested legacy brain still wins
+      // over a `.devsmind` further up — "my project's brain" means the closest one.
+      writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+      const inner = path.join(dir, 'sub');
+      writeConfig(path.join(inner, '.devmind'), sampleConfig);
+      const nested = path.join(inner, 'a', 'b');
+      fs.mkdirSync(nested, { recursive: true });
+      expect(findBrainDir(nested)).toBe(path.join(inner, '.devmind'));
+    });
+
+    it('returns null walking up to the filesystem root with no brain anywhere', () => {
+      const nested = path.join(dir, 'lonely');
+      fs.mkdirSync(nested, { recursive: true });
+      expect(findBrainDir(nested)).toBeNull();
+    });
+
+    it('is what the deprecated findDevmindDir alias resolves to', () => {
+      expect(findDevmindDir).toBe(findBrainDir);
+    });
+  });
+
+  describe('brainDirOrDefault', () => {
+    it('returns an existing .devsmind brain', () => {
+      writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+      expect(brainDirOrDefault(dir)).toBe(path.join(dir, '.devsmind'));
+    });
+
+    it('returns an existing legacy .devmind brain', () => {
+      writeConfig(path.join(dir, '.devmind'), sampleConfig);
+      expect(brainDirOrDefault(dir)).toBe(path.join(dir, '.devmind'));
+    });
+
+    it('falls back to the CURRENT name when there is no brain yet', () => {
+      // Never the legacy name: a fresh project would be pointed at a directory that will never
+      // exist. This is the value the web-view routes and the CLI `--path` defaults hand onward.
+      expect(brainDirOrDefault(dir)).toBe(path.join(dir, '.devsmind'));
+    });
+
+    it('always returns an absolute path, even from a relative input', () => {
+      const result = brainDirOrDefault('.');
+      expect(path.isAbsolute(result)).toBe(true);
+    });
+  });
+
+  it('resolveDevmindDir auto-detect finds a legacy brain by walking up', () => {
+    writeConfig(path.join(dir, '.devmind'), sampleConfig);
+    const nested = path.join(dir, 'a');
+    fs.mkdirSync(nested, { recursive: true });
+    const spy = jest.spyOn(process, 'cwd').mockReturnValue(nested);
+    try {
+      expect(resolveDevmindDir()).toBe(path.join(dir, '.devmind'));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('resolveDevmindDir auto-detect finds a .devsmind brain by walking up', () => {
+    writeConfig(path.join(dir, '.devsmind'), sampleConfig);
+    const nested = path.join(dir, 'a');
+    fs.mkdirSync(nested, { recursive: true });
+    const spy = jest.spyOn(process, 'cwd').mockReturnValue(nested);
+    try {
+      expect(resolveDevmindDir()).toBe(path.join(dir, '.devsmind'));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
 
 describe('findDevmindDir', () => {
   let dir: string;

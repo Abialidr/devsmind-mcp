@@ -12,6 +12,7 @@ import {
   MemoryScope,
   ConfigFormat,
 } from './registry';
+import { BRAIN_DIR_NAMES } from '../../utils/config';
 
 /** Thrown when the user cancels a prompt (Esc / Ctrl-C). Callers treat it as a clean abort. */
 export class CancelledError extends Error {
@@ -187,7 +188,10 @@ export async function pickDirectory(
     let subdirs: string[] = [];
     try {
       subdirs = fs.readdirSync(currentDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && (opts.showHidden || !d.name.startsWith('.') || d.name === '.devmind'))
+        // Brain directories are the one dot-folder always worth showing, since pointing `--path`
+        // at one is exactly what this picker is often for. Both names, or a 4.2.0 `.devsmind`
+        // brain would be invisible in the very picker meant to find it.
+        .filter(d => d.isDirectory() && (opts.showHidden || !d.name.startsWith('.') || BRAIN_DIR_NAMES.includes(d.name)))
         .map(d => d.name)
         .sort();
     } catch {
