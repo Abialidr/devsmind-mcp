@@ -60,9 +60,9 @@ describe('buildGeminiContents', () => {
     }]);
   });
 
-  it('omits the text part when assistant content is null', () => {
+  it('provides a fallback text part when assistant content is null and toolCalls is empty (Vertex AI requirement)', () => {
     const contents = buildGeminiContents([{ role: 'assistant', content: null, toolCalls: [] }]) as any[];
-    expect(contents).toEqual([{ role: 'model', parts: [] }]);
+    expect(contents).toEqual([{ role: 'model', parts: [{ text: '(no response)' }] }]);
   });
 
   it('maps a tool-result message to a user-role functionResponse matched by NAME, parsing JSON content', () => {

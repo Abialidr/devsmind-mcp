@@ -143,10 +143,12 @@ program
 
 program
   .command('skill')
-  .description('Write the DevsMind workflow contract as an explicitly-invokable skill file (.agents/skills/devsmind/SKILL.md)')
+  .description('Write the DevsMind workflow contract as a skill file for your specific agent/IDE')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .option('--print', 'Just print the file contents to stdout (no interactive write)')
-  .action(async (opts: { path?: string; print?: boolean }) => {
+  .option('--print', 'Just print the file contents to stdout (no interactive write, no tool picker)')
+  .option('--tool <id>', 'Target agent non-interactively (cursor, vscode, windsurf, kiro, antigravity, claude-code, antigravity-cli, codex, qwen)')
+  .option('--global', 'Write to the global (user-level) scope instead of project scope (only valid with --tool)')
+  .action(async (opts: { path?: string; print?: boolean; tool?: string; global?: boolean }) => {
     try {
       await handleSkill(opts);
     } catch (err) {
@@ -154,6 +156,7 @@ program
       process.exit(1);
     }
   });
+
 
 program
   .command('sync')

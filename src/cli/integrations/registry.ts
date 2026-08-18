@@ -28,6 +28,15 @@ export interface RuleScope {
   file: OsPath;
 }
 
+/** Where a tool discovers skill files. Always a `SKILL.md` inside a named subdir. */
+export interface SkillScope {
+  scope: Scope;
+  /** Directory that will hold the SKILL.md (e.g. `.agents/skills/devsmind`). */
+  dir: OsPath;
+  /** Filename — always `SKILL.md` for every tool currently known. */
+  file: string;
+}
+
 /**
  * Where a tool's own persistent agent-memory/skills store WOULD live — distinct from `rules`,
  * which is a static file a human maintains. `devsmind memory` no longer writes here (see
@@ -72,6 +81,17 @@ export interface IdeTarget {
     style: 'standalone' | 'append-section';
     /** Optional transform of the rule body before writing (e.g. Cursor .mdc frontmatter). */
     wrap?: (body: string) => string;
+  };
+  /**
+   * Where this tool looks for skill files — the paths `devsmind skill` writes to.
+   * Distinct from `memory` (which tracks whether the tool has autonomous in-chat memory):
+   * skills are explicit, human-placed instruction files the agent loads on-demand.
+   * First scope is the recommended default (project-scope where available).
+   */
+  skill: {
+    scopes: SkillScope[];
+    /** Extra note shown after writing, e.g. how to invoke the skill. */
+    note?: string;
   };
   memory: {
     /** Whether this tool has a genuine background/persistent memory concept AT ALL — independent
@@ -196,17 +216,14 @@ const cursorMdcWrap = (body: string): string =>
 
 /**
  * Skill format: YAML frontmatter (name + description) + markdown body.
- *
- * Shared by every target that reads `.agents/skills/` — Antigravity (IDE + CLI) and Codex all
- * discover the SAME `.agents/skills/devsmind/SKILL.md`. One wrap, deliberately: these writes are
- * whole-file (`standalone`), so per-tool frontmatter would mean whichever command ran last
- * silently rewrote the others' file. Identical bytes make that collision a no-op instead.
+ * Used by every target's skill writer — content is tool-agnostic, only the path differs.
  */
 export const skillMdWrap = (body: string): string =>
   `---\nname: devsmind\ndescription: DevsMind team code-graph MCP server — when and how to use it\n---\n\n${body}\n`;
 
 /** The one skill location all `.agents/skills/` readers share. See {@link skillMdWrap}.
- *  Also the write target for `devsmind skill` (src/cli/integrations/skill.ts). */
+ *  Also the write target for `devsmind skill` (src/cli/integrations/skill.ts).
+ *  Kept as a named export so existing callers (memory.scopes, tests) don't need updating. */
 export const AGENTS_SKILL_SCOPE: MemoryScope = {
   scope: 'project',
   dir: '.agents/skills/devsmind',
@@ -244,6 +261,12 @@ export const TARGETS: IdeTarget[] = [
       style: 'standalone',
       wrap: cursorMdcWrap,
     },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.cursor/rules/devsmind-skill', file: 'SKILL.md' },
+      ],
+      note: 'Cursor reads .cursor/rules/ automatically. The skill will be available to Cursor Agent in every chat.',
+    },
     memory: {
       hasRealMechanism: true,
       askHint: "You won't save this just by reading it — after this message, explicitly PROPOSE it as a Cursor Memory yourself, so the developer sees it and can approve it. Cursor only saves a memory once approved, even for an explicit request like this one.",
@@ -268,6 +291,12 @@ export const TARGETS: IdeTarget[] = [
       scopes: [{ scope: 'project', file: '.github/copilot-instructions.md' }],
       style: 'append-section',
     },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.github/devsmind-skill', file: 'SKILL.md' },
+      ],
+      note: 'VS Code does not have a native skill-file convention yet. Placing it in .github/ keeps it discoverable alongside copilot-instructions.md. You can reference it manually in a Copilot chat.',
+    },
     memory: {
       hasRealMechanism: true,
       askHint: "Copilot Memory builds up from real usage over several sessions rather than saving instantly from one request — treat this less as a single save and more as the first strong signal. The developer can check what's actually landed with the \"Chat: Show Memory Files\" command.",
@@ -290,6 +319,12 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: '.windsurf/rules/devsmind.md' }],
       style: 'standalone',
+    },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.windsurf/rules/devsmind-skill', file: 'SKILL.md' },
+      ],
+      note: 'Windsurf reads .windsurf/rules/ as global rules. The skill file will be visible to Cascade alongside the main rule.',
     },
     memory: {
       hasRealMechanism: true,
@@ -314,6 +349,12 @@ export const TARGETS: IdeTarget[] = [
       scopes: [{ scope: 'project', file: '.kiro/steering/devsmind.md' }],
       style: 'standalone',
     },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.kiro/steering/devsmind-skill', file: 'SKILL.md' },
+      ],
+      note: 'Kiro reads .kiro/steering/ as always-on steering docs. The skill file lands alongside the main DevsMind steering rule.',
+    },
     memory: {
       hasRealMechanism: false,
       featureName: 'Knowledge / PR-comment learning',
@@ -336,6 +377,13 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'AGENTS.md' }],
       style: 'append-section',
+    },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.agents/skills/devsmind', file: 'SKILL.md' },
+        { scope: 'global', dir: '~/.gemini/config/skills/devsmind', file: 'SKILL.md' },
+      ],
+      note: 'Antigravity discovers skills by scanning .agents/skills/ for any SKILL.md. Invoke with `/devsmind` in chat. The global scope seeds the skill for ALL your Antigravity projects.',
     },
     memory: {
       hasRealMechanism: false,
@@ -371,6 +419,16 @@ export const TARGETS: IdeTarget[] = [
       scopes: [{ scope: 'project', file: 'CLAUDE.md' }],
       style: 'append-section',
     },
+    skill: {
+      scopes: [
+        // Claude Code reads CLAUDE.md files placed in ~/.claude/ as user-level instructions,
+        // and project-level .claude/ dirs are auto-discovered. A SKILL.md here is a static
+        // context file the agent can be told to load explicitly.
+        { scope: 'project', dir: '.claude/devsmind', file: 'SKILL.md' },
+        { scope: 'global', dir: '~/.claude/devsmind', file: 'SKILL.md' },
+      ],
+      note: 'Claude Code does not have a native skills directory, but reads files from .claude/. Pair with `devsmind rule` (CLAUDE.md): the rule loads every turn, the skill is a detailed reference Claude can read on demand.',
+    },
     memory: {
       hasRealMechanism: true,
       askHint: "This is exactly the kind of explicit request Auto Memory saves reliably from — go ahead and save it now.",
@@ -383,7 +441,7 @@ export const TARGETS: IdeTarget[] = [
   },
   {
     id: 'antigravity-cli',
-    label: 'Antigravity CLI',
+    label: 'Antigravity CLI (agy)',
     kind: 'cli',
     mcp: {
       scopes: [
@@ -397,6 +455,13 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'AGENTS.md' }],
       style: 'append-section',
+    },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.agents/skills/devsmind', file: 'SKILL.md' },
+        { scope: 'global', dir: '~/.gemini/config/skills/devsmind', file: 'SKILL.md' },
+      ],
+      note: 'Antigravity CLI shares the same .agents/skills/ path as the Antigravity IDE. Invoke with `/devsmind` in agy chat. The global scope seeds the skill for ALL your projects.',
     },
     memory: {
       hasRealMechanism: false,
@@ -426,6 +491,15 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'AGENTS.md' }],
       style: 'append-section',
+    },
+    skill: {
+      scopes: [
+        // Codex discovers skills by scanning .agents/skills/ — the same path Antigravity reads,
+        // so one placement covers both. Invoke as $devsmind in Codex chat.
+        { scope: 'project', dir: '.agents/skills/devsmind', file: 'SKILL.md' },
+        { scope: 'global', dir: '~/.codex/skills/devsmind', file: 'SKILL.md' },
+      ],
+      note: 'Codex discovers skills by scanning .agents/skills/ — the same path as Antigravity, so one placement covers both. Invoke as `$devsmind` in Codex chat.',
     },
     memory: {
       hasRealMechanism: false,
@@ -460,6 +534,13 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'QWEN.md' }],
       style: 'append-section',
+    },
+    skill: {
+      scopes: [
+        { scope: 'project', dir: '.qwen/skills/devsmind', file: 'SKILL.md' },
+        { scope: 'global', dir: '~/.qwen/skills/devsmind', file: 'SKILL.md' },
+      ],
+      note: 'Qwen Code does not have a native skills convention yet. The file lands in .qwen/skills/ for future discoverability. Pair with QWEN.md (`devsmind rule`) for guaranteed context.',
     },
     memory: {
       hasRealMechanism: true,

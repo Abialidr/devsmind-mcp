@@ -213,18 +213,25 @@ export function buildGeminiContents(messages: LlmConversationMessage[]): unknown
       const parts: Record<string, unknown>[] = [];
       if (m.content) parts.push({ text: m.content });
       for (const tc of m.toolCalls) parts.push({ functionCall: { name: tc.name, args: tc.args } });
+      // Vertex/Gemini API rejects a message with an empty `parts` array (HTTP 400:
+      // "must include at least one parts field"). This happens when the model returned
+      // a turn with no text AND no tool calls (the "nudge" path in extract-agent.ts).
+      if (parts.length === 0) parts.push({ text: '(no response)' });
       return { role: 'model', parts };
     }
-    // Tool result. Gemini's function-response part carries no call id — it matches the most
-    // recent pending call BY NAME, which is why only one call for a given name should ever be
-    // outstanding at once (the curation loop below satisfies this: it always awaits ALL of a
-    // turn's tool calls before sending the next).
-    let response: unknown;
+    // Vertex AI's `function_response.response` is typed as `google.protobuf.Struct`,
+    // which only accepts a JSON **object** — never an array or primitive. Wrap any
+    // non-object parse result (e.g. `listFileImports` returns an array) in `{ result: … }`
+    // so the payload is always Struct-compatible.
+    let parsed: unknown;
     try {
-      response = JSON.parse(m.content);
+      parsed = JSON.parse(m.content);
     } catch {
-      response = { result: m.content };
+      parsed = m.content;
     }
+    const response = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? parsed
+      : { result: parsed };
     return { role: 'user', parts: [{ functionResponse: { name: m.toolName, response } }] };
   });
 }
