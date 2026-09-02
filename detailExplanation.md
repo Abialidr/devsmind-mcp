@@ -752,7 +752,7 @@ This "grow-as-you-go" path needs zero upfront setup and is a reasonable default 
 
 DevsMind tools are designed with **layered granularity**. The AI only pulls the depth of data it needs, keeping token overhead minimal.
 
-DevsMind exposes **38 tools** to the AI agent, grouped below by what they're for.
+DevsMind exposes **39 tools** to the AI agent, grouped below by what they're for.
 
 > The server also declares the MCP **`prompts`** capability, a separate surface from tools — `prompts/list` returns one static prompt, `devsmind-workflow`, and `prompts/get` returns the exact same contract text sent automatically at connect (`DEVSMIND_INSTRUCTIONS`). It takes no arguments; a client that supports the capability can invoke it any time to re-assert the contract mid-conversation, the same way a slash command would. Not every client speaks `prompts` — where it isn't supported, `devsmind rule`/`devsmind memory`/`devsmind skill` remain the way to get the contract in front of the agent.
 
@@ -797,12 +797,13 @@ The AI's only job anywhere in this flow is writing descriptions, via `add_descri
 *   `analyze_graph`: Runs a local, **zero-token** health check — god entities, circular dependency cycles, orphaned nodes, dangling edges, duplicate/case-collision ids, history missing developer attribution, empty code snapshots, spurious/built-in nodes, missing files, git-detected renames, and git-tracked files with zero graph nodes. Set `fix:true` to auto-apply only the safe fixes (soft-deprecate dead nodes, remove dangling edges, migrate renames); everything else is report-only since it needs a human/AI judgement call. See [`devsmind analyze`](#-other-cli-commands) below for the CLI equivalent and full detection list.
 
 ### 🗂️ Category 6: Workflows
-A named, backward-looking log of how one piece of functionality grew across many nodes and many sessions — read it to learn how the code got this way. Eight tools; see [Workflows In Depth](#-workflows-in-depth) above for the model behind them.
+A named, backward-looking log of how one piece of functionality grew across many nodes and many sessions — read it to learn how the code got this way. Nine tools; see [Workflows In Depth](#-workflows-in-depth) above for the model behind them.
 *   `workflow_create`: Names a new thread. Does not touch anyone else's session — creating one doesn't pause anything, because there is nothing global to pause.
 *   `workflow_bind`: Attaches THIS session to a workflow; omit the id to detach. The binding is local to your session and to your machine. (`workflow_pause`/`workflow_resume` still answer as unadvertised aliases for detach/attach, so an agent working from a pre-3.0 rule doesn't hard-fail.)
 *   `workflow_list`: Lists workflows — `query` matches name **and** description, `limit`/`offset` page, `include_archived` opts the retired ones back in. The agent is instructed to call this before starting work that might relate to an existing thread, and to offer continuing it rather than silently starting fresh.
 *   `workflow_get_context`: The one read — steps in order, each with its reasoning and the nodes it touched, plus any document paths. Paged (`limit`/`offset`/`last_n`), with `steps_total` always exact. The call to make right after binding.
 *   `workflow_add_step`: Records one step. **Usually not called directly** — `commit_changes` auto-records a step from whatever it just staged whenever the session is bound. Call it yourself for what a commit can't express: a decision or research finding that changed no code, with the documents behind it three ways: `doc_paths` (repo-relative paths, never copies; a path outside every configured repo is rejected), `doc_content` (paste up to 10 docs' full text — 500K chars each — for research that was never a file), or `doc_uploads` (up to 10 absolute paths to existing files, any type, 20MB cap each, copied byte-for-byte into `.devsmind/workflows/` for a doc with no on-repo home). See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) below.
+*   `workflow_remove_step`: Removes ONE step that should not have been recorded — a duplicate from a retry, or one attached to the wrong workflow. Unlike `workflow_archive`, this is a real delete: the step and any artifacts filed under it (files on disk included) are gone, `step_index` is left gapped rather than renumbered, and there is no undo. Use it to correct a mistake just made, not to edit settled history.
 *   `workflow_sync`: Attaches work you already did — for when you were unbound, or on the wrong thread. Reads your local activity log, previews what it would attach, and only writes on `confirm:true`. Re-running is a no-op.
 *   `workflow_archive`: Retires a thread from the list without deleting anything, reversibly. Deliberately not "complete": a feature is never finished, it just stops being worked on.
 *   `workflow_import`: Imports existing flow/architecture docs (`# Title` / `## Summary` markdown files) as workflows — a whole folder or a single file. The doc is referenced by path, not copied. Re-importing the same file updates its workflow in place instead of duplicating it. See [`devsmind workflow-import`](#-other-cli-commands) below for the CLI equivalent.
@@ -863,6 +864,28 @@ Nor is `local/` — your requests, your revert backups, your feedback. That stay
 ---
 
 ## Changelog
+
+### 4.3.1 — remove a mistaken workflow step, and skip repos you'll never touch
+
+No breaking changes. Nothing here runs automatically until you use one of the two new pieces.
+
+#### `workflow_remove_step`
+
+Every existing workflow tool was append-only or reversible: `workflow_add_step` only adds, `workflow_archive` only hides (and un-hides). Nothing removed a step outright — so a duplicate step from a retried tool call, or one recorded onto the wrong workflow because the session was bound somewhere unintended, stayed on the timeline permanently, with no way to correct it short of leaving it there.
+
+`workflow_remove_step` (`db.removeWorkflowStep` in `db/database.ts`) is a real delete, not a lifecycle state: it removes the step row, deletes any `workflow_artifacts` filed under it — including their bytes on disk, via `fs.unlinkSync` — and updates `workflows.updated_at`. `step_index` is deliberately **not** renumbered afterwards. Steps 1 and 3 with no 2 in between is an honest record of what happened; renumbering would rewrite every later step's identity for a purely cosmetic gap, and neither `getWorkflowSteps` nor `getWorkflowContext` need contiguous indices — both page by row count in `step_index ASC` order, not by index arithmetic, so a gap costs nothing downstream.
+
+This is intentionally the odd one out among the workflow tools, and the tool description says so explicitly: use it to correct a mistake just made, not to edit settled history. `workflow_archive` remains the right tool for "this thread is done" — reversible, nothing lost. `workflow_remove_step` has no undo.
+
+#### Skipping a repo you don't have locally
+
+A standalone-mode brain lists every repo the *team* has ever registered in the one shared `config.json` — but a given developer's machine often only has some of them checked out. Before this release, `devsmind init`/`sync`/`pull`'s repo-path reconciliation (`findMissingStandaloneRepoPaths`, `reconcileRepoPaths`) treated "no `.env` entry for this repo" as something to fix *right now*, every time it was detected — there was no way to say "I will never have this one, stop asking." A developer working on a single repo in a brain that also tracks a dozen backend services (a mobile app, say) hit this on every `sync`.
+
+New `SKIPPED_REPO_MARKER` (`__skip__`) in `utils/config.ts` is a fourth outcome alongside `ok`/`missing`/`invalid` in `findMissingStandaloneRepoPaths`'s scan — an `.env` entry whose value is the literal marker string, not a path. The path-reconciliation prompt (now identical in `init.ts`'s existing-brain repair loop and `sync.ts`'s `reconcileRepoPaths`, which `devsmind pull` shares) offers "Skip — not on this machine" alongside the existing folder browser for any repo that still needs an answer; choosing it writes the marker instead of a path. A repo already marked skipped is carried forward on every future `.env` rewrite without being re-prompted — the same treatment `ok` repos already got.
+
+`resolveRepoPath` treats the marker exactly like "not configured": it returns `null` rather than resolving to a bogus literal path (`cwd()/__skip__`, say). Every caller downstream — `utils/scanner.ts`'s per-repo file walk, `db/analyze.ts`'s renamed/changed-file scan, the indexer — already treated a `null` repo path as "unavailable, skip silently," since that's exactly what a `missing` repo has always resolved to. So the marker slots into an existing degrade-gracefully path rather than requiring changes at every consumer; the only place that needed a real code change was `resolveRepoPath` itself, to stop the sentinel string from being handed out as if it were a real directory.
+
+The marker is a plain `.env` value rather than a new config field or separate file, because `.env` is already the one place a per-machine, per-repo fact like this lives, and every reconciliation call site already reads and rewrites it as plain `key=value` lines.
 
 ### 4.3.0 — the `devsmind` branch, `devsmind add-repo`, and `workflow_add_step` can copy a doc in
 
@@ -928,24 +951,6 @@ Both are validated before the step is ever written — count caps, size caps, an
 #### `workflow_artifacts` is no longer vestigial
 
 The table was marked vestigial (see [Database Schema § 7](#7-workflow_artifacts--dormant-since-300-active-again-in-430)) when `doc_paths` replaced the old copy-everything `workflow_add_artifact`. `doc_content` and `doc_uploads` write to it again — via `addWorkflowArtifact` (already existed, just unused) and new `addWorkflowArtifactFromFile` in `db/database.ts` — but only for the two cases above. `doc_paths` is still the path of least surprise for anything already in a repo; the table is back because "never copy" turned out to be one rule too many, not because the original reasoning against copies was wrong.
-
-#### `devsmind add-repo` — one repo at a time, into an existing brain
-
-Standalone mode only. Before this, adding a repo to a brain that already existed meant re-running the whole `devsmind init` wizard — developer info, every existing repo's path check, the lot — just to register one new one. `devsmind add-repo` (CLI) and `add_repo` (MCP tool) do exactly the one thing: prompt for a name and a local path (the same prompt `init`'s existing-brain path-repair step already used, extracted rather than duplicated — see `findMissingStandaloneRepoPaths` below), write it into `config.json`/`.env`, and index just that repo by calling `index --run`'s own machinery with `--repos <name>` under the hood.
-
-**Resumable, which scoped indexing wasn't before this.** `index --run --repos <name>` always started its scratchpad fresh, on purpose — every ad-hoc `--repos` invocation shares one file (`index_scratchpad.scoped.json`), so blindly resuming it could resume a completely different repo's leftover run. `add-repo` sidesteps that by owning its own dedicated scratchpad file instead of the shared one; `runBackgroundIndexing` gained an optional `padFile` override for exactly this, and only reuses (rather than recreates) a scratchpad when the caller explicitly supplies one. A second `add-repo` call with an interrupted run pending picks it up from a small marker file recording which repo was in progress — needed because `config.json`/`.env` are written *before* indexing starts, so a crash in that narrow window would otherwise leave nothing to identify which repo to resume.
-
-**The MCP tool mirrors `index_start`'s own pattern** (extract structure locally, no LLM, hand back a batch to describe) rather than trying to drive the CLI's LLM-driven `--run` from inside a tool call, which isn't a fit for a request/response cycle. `index_continue`/`index_checkpoint`/`index_complete` gained an optional `scratchpad` parameter so the SAME three tools keep working for `add_repo`'s scoped session — Phase 1 (file scanning) is filtered down to just the one repo when a caller passes a scratchpad name, but Phase 2 (edge resolution) deliberately stays whole-graph even then: a newly-added repo's own outgoing references need the full node set to resolve against, and an existing repo can gain a new incoming reference into it, so narrowing that step would be a correctness regression, not an optimization.
-
-One implementation snag worth recording: the MCP server caches one `DevMindDatabase` instance per brain, and that instance snapshots `config.repos` once, in its constructor. A DB already cached by an earlier tool call in the same session (`start_session`, say) would keep producing `../<repo>/...`-shaped node ids for the just-added repo instead of `{<repo>}/...`, having never seen it in the config it loaded at construction time. `add_repo`'s handler now evicts that cache entry (`invalidateDatabase`) right after writing the new repo into `config.json`, before indexing it — caught by an assertion on the returned node ids during testing, not something manual testing alone surfaced.
-
-#### `devsmind sync` / `devsmind pull` catch a repo added elsewhere
-
-`config.json` is shared (committed on the code branch); `.env` is per-machine and never shared. So when a teammate runs `add-repo` and pushes, every *other* machine's `.env` silently falls behind — nothing detected that gap before this, and rule/skill files kept describing the old, shorter repo list indefinitely.
-
-Both `sync` and `pull` now start with the same check (`reconcileRepoPaths` in `cli/sync.ts`, `findMissingStandaloneRepoPaths` in `utils/config.ts` — the latter extracted from `devsmind init`'s existing-brain path-repair loop rather than a second hand-rolled copy of the same scan): does `config.json` name a repo `.env` has no path for, or one whose recorded path no longer exists on disk? Nothing missing is the common case, and stays exactly as fast as before — no prompts, no extra output. Something missing triggers, in order: a path prompt for each affected repo (same `browseForDir` picker `init` uses), a rewrite of `.env` from its own known-good state (not a naive append — an early version of this literally left the stale line next to the corrected one, caught by a test asserting the old value was gone, not just that the new one was present), then a loop offering to re-run `devsmind rule` and `devsmind skill` for however many tools are in use, since those files were generated against the shorter repo list and are now stale. A non-interactive run (CI, a script) prints a warning and skips straight past the prompt rather than hanging on one nothing can answer.
-
-`devsmind pull` reuses this unchanged rather than a thinner copy of it, and along the way also gained the second half of a real sync: it previously only ran `syncFromDisk` (disk → `brain.db`), never `syncToDisk` back out, unlike `devsmind sync` which always did both.
 
 ---
 

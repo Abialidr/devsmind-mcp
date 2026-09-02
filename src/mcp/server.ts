@@ -1110,6 +1110,19 @@ export function createMcpServer(): Server {
           }
         },
         {
+          name: 'workflow_remove_step',
+          description: 'Remove ONE step that should not have been recorded — a duplicate from a retry, or one attached to the wrong workflow. This is a real delete, unlike workflow_archive: it also deletes any artifacts filed under that step (the files on disk included). Use it to correct a mistake just made, not to edit settled history — there is no undo.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              workflow_id: { type: 'string', description: 'The workflow the step belongs to' },
+              step_id: { type: 'string', description: 'id of the step to remove (from workflow_add_step\'s response, or workflow_get_context)' }
+            },
+            required: ['devmind_path', 'workflow_id', 'step_id']
+          }
+        },
+        {
           name: 'workflow_sync',
           description: 'Attach work you already did onto a workflow, after the fact — for when you were unbound, or bound to the wrong thread. Reads your LOCAL activity log (this machine only) and proposes one step per request you worked on. DRY RUN BY DEFAULT: the first call writes nothing and returns what it would attach, so show that to the user and call again with confirm:true. Safe to re-run — the edits behind each created step are marked consumed, so nothing is ever attached twice.',
           inputSchema: {
@@ -3301,6 +3314,16 @@ export function createMcpServer(): Server {
             args.archived !== false
           );
           return { content: [{ type: 'text', text: JSON.stringify({ status: workflow.archived ? 'archived' : 'unarchived', workflow }, null, 2) }] };
+        }
+
+        case 'workflow_remove_step': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const db = getDatabase(devmindPath);
+          const result = db.removeWorkflowStep(
+            requireStr(args, 'workflow_id', 'workflow_remove_step'),
+            requireStr(args, 'step_id', 'workflow_remove_step')
+          );
+          return { content: [{ type: 'text', text: JSON.stringify({ status: 'removed', ...result }, null, 2) }] };
         }
 
         case 'workflow_sync': {

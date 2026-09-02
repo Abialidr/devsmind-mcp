@@ -11,6 +11,7 @@ import {
   recoverSpaceSplitPath,
   isStandaloneMode,
   findMissingStandaloneRepoPaths,
+  resolveRepoPath,
   BRAIN_DIR_NAME,
   LEGACY_BRAIN_DIR_NAME,
   BRAIN_DIR_NAMES,
@@ -359,7 +360,7 @@ describe('findMissingStandaloneRepoPaths', () => {
   it('embedded mode always returns everything ok, regardless of env', () => {
     const embedded: DevMindConfig = { project_name: 'x', mode: 'embedded', repos: [{ name: 'app', relative_path: '.' }] };
     const result = findMissingStandaloneRepoPaths(embedded, {});
-    expect(result).toEqual({ ok: [], missing: [], invalid: [] });
+    expect(result).toEqual({ ok: [], missing: [], invalid: [], skipped: [] });
   });
 
   it('a repo with no .env entry at all is "missing"', () => {
@@ -402,5 +403,31 @@ describe('findMissingStandaloneRepoPaths', () => {
     expect(result.ok.map(o => o.repo.name)).toEqual(['repo-a']);
     expect(result.missing).toEqual([]);
     expect(result.invalid).toEqual([]);
+  });
+
+  it('a repo whose .env entry is the skip marker is "skipped", not "ok"/"missing"/"invalid"', () => {
+    // The case a mobile-only developer hits on a brain that also lists a dozen backend repos:
+    // they will never have a local path for those, and re-prompting every sync is pure friction.
+    const result = findMissingStandaloneRepoPaths(standaloneConfig, { REPO_A: dir, REPO_B: '__skip__' });
+    expect(result.ok.map(o => o.repo.name)).toEqual(['repo-a']);
+    expect(result.missing).toEqual([]);
+    expect(result.invalid).toEqual([]);
+    expect(result.skipped.map(r => r.name)).toEqual(['repo-b']);
+  });
+});
+
+describe('resolveRepoPath — the skip marker', () => {
+  it('resolves a skipped repo to null, not the literal marker string', () => {
+    const config: DevMindConfig = {
+      project_name: 'sample',
+      mode: 'standalone',
+      repos: [{ name: 'mobile', path_key: 'REPO_MOBILE' }],
+    };
+    const context = {
+      devmind_path: path.join(os.tmpdir(), '.devsmind'),
+      config,
+      env: { REPO_MOBILE: '__skip__' },
+    };
+    expect(resolveRepoPath(context, 'mobile')).toBeNull();
   });
 });

@@ -14,9 +14,10 @@ import {
   BRAIN_DIR_NAMES,
   resolveBrainDir,
   LEGACY_BRAIN_DIR_NAME,
-  findMissingStandaloneRepoPaths
+  findMissingStandaloneRepoPaths,
+  SKIPPED_REPO_MARKER
 } from '../utils/config';
-import { browseForDir } from './integrations/prompt';
+import { browseForDir, selectPrompt, CancelledError } from './integrations/prompt';
 import { normalizeIgnoreEntry } from '../db/activity';
 
 // ─── Detection Helpers ─────────────────────────────────────────────────────
@@ -531,9 +532,14 @@ async function handleExistingInit(
   } else {
     console.log(`🌐 Standalone mode — checking repository paths in .env...`);
 
-    const { ok, missing: missingKeys, invalid: invalidPaths } = findMissingStandaloneRepoPaths(config, envConfig);
+    const { ok, missing: missingKeys, invalid: invalidPaths, skipped } = findMissingStandaloneRepoPaths(config, envConfig);
     for (const { repo, currentPath } of ok) {
       envLines.push(`${repo.path_key}=${currentPath}`);
+    }
+    // A skipped repo needs no prompt, ever — but its marker must survive this rewrite or the
+    // next run would treat it as freshly missing and ask again.
+    for (const repo of skipped) {
+      envLines.push(`${repo.path_key}=${SKIPPED_REPO_MARKER}`);
     }
 
     // Keep unaffected existing keys (not repo paths, not dev info)
@@ -545,6 +551,9 @@ async function handleExistingInit(
       }
     }
 
+    if (skipped.length) {
+      console.log(`⏭️  ${skipped.length} repo(s) marked as not on this machine: ${skipped.map(r => r.name).join(', ')} (change with "devsmind add-repo" or by editing .env)`);
+    }
     if (missingKeys.length === 0 && invalidPaths.length === 0) {
       console.log(`✅ All repo paths are configured and valid.`);
     } else {
@@ -553,6 +562,26 @@ async function handleExistingInit(
 
       for (const repo of reposToPrompt) {
         if ('path_key' in repo && repo.path_key) {
+          let choice: 'browse' | 'skip';
+          try {
+            choice = await selectPrompt(
+              `Repo "${repo.name}" (${repo.path_key})`,
+              [
+                { title: '📂 Browse for its local folder', value: 'browse' as const },
+                { title: `⏭️  Skip — not on this machine`, value: 'skip' as const },
+              ],
+              0
+            );
+          } catch (err) {
+            if (err instanceof CancelledError) { console.log('❌ Initialization cancelled.'); return; }
+            throw err;
+          }
+
+          if (choice === 'skip') {
+            envLines.push(`${repo.path_key}=${SKIPPED_REPO_MARKER}`);
+            continue;
+          }
+
           const initialPath = envConfig[repo.path_key] || process.cwd();
           const localPath = await browseForDir(
             `Select the local folder for repo "${repo.name}" (${repo.path_key})`,

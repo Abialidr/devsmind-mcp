@@ -2,6 +2,12 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
+## 4.3.1 — remove a mistaken workflow step, and skip repos you'll never touch
+> No breaking changes. Nothing here runs automatically until you use one of the two new pieces.
+
+- **New `workflow_remove_step` MCP tool.** Deletes ONE step that should not have been recorded — a duplicate from a retry, or one attached to the wrong workflow — along with any artifacts filed under it (the files on disk included). Unlike `workflow_archive`, this is a real delete with no undo: `step_index` is left gapped rather than renumbered, so the gap itself says exactly what happened, and every other step keeps its identity. Nine workflow tools now, up from eight.
+- **`devsmind init`/`devsmind sync`/`devsmind pull` can now be told "skip this repo" instead of always demanding a local path for every repo in `config.json`.** A developer who only ever touches one repo out of a dozen (a mobile app in a brain that also tracks several backend services, say) used to get re-prompted for all the others on every single reconcile. Choosing "Skip — not on this machine" writes a `__skip__` marker to `.env` that's honored forever after — `resolveRepoPath` treats it exactly like "no path configured" (silently unavailable, never an error), and the reconciliation prompt in all three commands remembers the choice and never asks again for that repo. A different teammate who does need that repo is unaffected; the marker is per-machine, like every other `.env` entry.
+
 ## 4.3.0 — the `devsmind` branch, `devsmind add-repo`, and `workflow_add_step` can copy a doc in
 > No breaking changes to an existing brain. `config.json` still lives on your code branch, exactly as before — only `graph/`, `history/`, `vectors/`, `workflows/` move, and only once you run `devsmind push`. `doc_paths` behaves exactly as before too. Nothing here runs automatically until you use one of the new pieces.
 

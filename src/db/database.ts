@@ -3089,6 +3089,35 @@ export class DevMindDatabase {
     ).all(workflowId) as DbWorkflowStep[];
   }
 
+  /**
+   * Removes ONE step that should not have been recorded — a duplicate from a retry, or one
+   * attached to the wrong workflow — and any artifacts filed under it (their bytes on disk
+   * included). Unlike `setWorkflowArchived`, this is a real delete: a step is a log entry a
+   * mistake put there, not settled history, and there is no "unarchive" a wrong step needs.
+   *
+   * `step_index` is deliberately NOT renumbered afterwards — the gap it leaves is honest (steps 1
+   * and 3 without a 2 says exactly what happened) and renumbering would rewrite every later step's
+   * identity for no benefit, since pagination in getWorkflowSteps/getWorkflowContext orders by
+   * step_index and pages by row count, not by index arithmetic.
+   */
+  removeWorkflowStep(workflowId: string, stepId: string): { removed_step_id: string; removed_artifact_ids: string[] } {
+    if (!this.getWorkflow(workflowId)) throw new Error(`Workflow not found: ${workflowId}`);
+    const step = this.db.prepare('SELECT id FROM workflow_steps WHERE id = ? AND workflow_id = ?').get(stepId, workflowId) as { id: string } | undefined;
+    if (!step) throw new Error(`Workflow step not found: ${stepId}`);
+
+    const artifacts = this.db.prepare('SELECT id, file_path FROM workflow_artifacts WHERE step_id = ?').all(stepId) as { id: string; file_path: string }[];
+    for (const artifact of artifacts) {
+      try { fs.unlinkSync(artifact.file_path); } catch { /* already gone, or never made it to disk — nothing left to clean up */ }
+    }
+    this.db.prepare('DELETE FROM workflow_artifacts WHERE step_id = ?').run(stepId);
+    this.db.prepare('DELETE FROM workflow_steps WHERE id = ?').run(stepId);
+
+    const now = new Date().toISOString();
+    this.db.prepare('UPDATE workflows SET updated_at = ? WHERE id = ?').run(now, workflowId);
+    this.writeWorkflowToDisk(workflowId);
+    return { removed_step_id: stepId, removed_artifact_ids: artifacts.map(a => a.id) };
+  }
+
   // NOTE: `readWorkflowArtifact` and `searchWorkflows` were removed here.
   // Artifacts are referenced by PATH now (workflow_add_step's doc_paths, plus the file paths
   // getWorkflowContext already returns), so nothing needs the DB to read a file back for it —

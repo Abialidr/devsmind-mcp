@@ -1,12 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
-import { resolveDevmindDir, loadProjectContext, findMissingStandaloneRepoPaths } from '../utils/config';
+import { resolveDevmindDir, loadProjectContext, findMissingStandaloneRepoPaths, SKIPPED_REPO_MARKER } from '../utils/config';
 import { DevMindDatabase } from '../db/database';
 import { runAnalysis } from '../db/analyze';
 import { printReport } from './analyze';
 import { renderSyncProgress, clearSyncProgressLine } from './sync-progress';
-import { browseForDir, confirmPrompt, CancelledError } from './integrations/prompt';
+import { browseForDir, confirmPrompt, selectPrompt, CancelledError } from './integrations/prompt';
 import { handleRule } from './rule';
 import { handleSkill } from './integrations/skill';
 
@@ -23,7 +23,7 @@ import { handleSkill } from './integrations/skill';
  */
 export async function reconcileRepoPaths(devmindDir: string): Promise<void> {
   const ctx = loadProjectContext(devmindDir);
-  const { ok, missing, invalid } = findMissingStandaloneRepoPaths(ctx.config, ctx.env);
+  const { ok, missing, invalid, skipped } = findMissingStandaloneRepoPaths(ctx.config, ctx.env);
   if (missing.length === 0 && invalid.length === 0) return;
 
   const needsPath = [...missing, ...invalid.map(i => i.repo)];
@@ -41,6 +41,8 @@ export async function reconcileRepoPaths(devmindDir: string): Promise<void> {
   // same key (same rebuild-not-patch approach devsmind init's existing-brain repair step uses).
   const envLines: string[] = [];
   for (const { repo, currentPath } of ok) envLines.push(`${repo.path_key}=${currentPath}`);
+  // Already-skipped repos need no prompt — carry their marker forward untouched, same as `ok`.
+  for (const repo of skipped) envLines.push(`${repo.path_key}=${SKIPPED_REPO_MARKER}`);
   const repoPathKeys = new Set(ctx.config.repos.map(r => 'path_key' in r ? r.path_key : undefined).filter(Boolean));
   for (const [key, value] of Object.entries(ctx.env)) {
     if (!repoPathKeys.has(key)) envLines.push(`${key}=${value}`);
@@ -49,6 +51,18 @@ export async function reconcileRepoPaths(devmindDir: string): Promise<void> {
   for (const repo of needsPath) {
     if (!repo.path_key) continue;
     const invalidEntry = invalid.find(i => i.repo.name === repo.name);
+    const choice = await selectPrompt(
+      `Repo "${repo.name}" (${repo.path_key})`,
+      [
+        { title: '📂 Browse for its local folder', value: 'browse' as const },
+        { title: `⏭️  Skip — not on this machine`, value: 'skip' as const },
+      ],
+      0
+    );
+    if (choice === 'skip') {
+      envLines.push(`${repo.path_key}=${SKIPPED_REPO_MARKER}`);
+      continue;
+    }
     const localPath = await browseForDir(
       `Select the local folder for repo "${repo.name}" (${repo.path_key})`,
       invalidEntry?.currentPath || process.cwd()

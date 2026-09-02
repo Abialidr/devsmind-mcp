@@ -328,6 +328,92 @@ describe('DevMindDatabase — workflow context vault', () => {
     });
   });
 
+  describe('removeWorkflowStep', () => {
+    it('deletes the step and any artifacts filed under it, bytes on disk included, leaving other steps untouched', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Wallet', 'x');
+        const first = fx.db.addWorkflowStep(wf.id, { summary: 'Keep me' });
+        const mistake = fx.db.addWorkflowStep(wf.id, { summary: 'Wrong workflow, retry' });
+        const artifact = fx.db.addWorkflowArtifact(wf.id, { stepId: mistake.id, type: 'step_doc', sourceName: 'note.md', content: 'oops' });
+        expect(fs.existsSync(artifact.file_path)).toBe(true);
+
+        const result = fx.db.removeWorkflowStep(wf.id, mistake.id);
+        expect(result).toEqual({ removed_step_id: mistake.id, removed_artifact_ids: [artifact.id] });
+        expect(fs.existsSync(artifact.file_path)).toBe(false);
+
+        const ctx = fx.db.getWorkflowContext(wf.id);
+        expect(ctx.steps.map(s => s.id)).toEqual([first.id]);
+        expect(ctx.steps_total).toBe(1);
+        expect(ctx.artifacts).toEqual([]);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('leaves a gap in step_index rather than renumbering what is left', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Wallet', 'x');
+        fx.db.addWorkflowStep(wf.id, { summary: 'one' });
+        const two = fx.db.addWorkflowStep(wf.id, { summary: 'two' });
+        const three = fx.db.addWorkflowStep(wf.id, { summary: 'three' });
+
+        fx.db.removeWorkflowStep(wf.id, two.id);
+
+        const steps = fx.db.getWorkflowSteps(wf.id);
+        expect(steps.map(s => s.summary)).toEqual(['one', 'three']);
+        expect(steps.map(s => s.step_index)).toEqual([1, 3]);
+        expect(steps[1].id).toBe(three.id);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('does not touch an artifact filed under a DIFFERENT step on the same workflow', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Wallet', 'x');
+        const keptStep = fx.db.addWorkflowStep(wf.id, { summary: 'keep' });
+        const removedStep = fx.db.addWorkflowStep(wf.id, { summary: 'remove' });
+        const keptArtifact = fx.db.addWorkflowArtifact(wf.id, { stepId: keptStep.id, type: 'step_doc', sourceName: 'keep.md', content: 'x' });
+
+        fx.db.removeWorkflowStep(wf.id, removedStep.id);
+
+        expect(fs.existsSync(keptArtifact.file_path)).toBe(true);
+        const ctx = fx.db.getWorkflowContext(wf.id);
+        expect(ctx.artifacts.map(a => a.id)).toEqual([keptArtifact.id]);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('throws clearly for an unknown workflow id', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        expect(() => fx.db.removeWorkflowStep('wf_nope', 'step_nope')).toThrow(/Workflow not found/);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('throws clearly for a step id that does not exist, or belongs to a different workflow', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wfA = fx.db.createWorkflow('A', 'x');
+        const wfB = fx.db.createWorkflow('B', 'x');
+        const stepOnB = fx.db.addWorkflowStep(wfB.id, { summary: 's' });
+
+        expect(() => fx.db.removeWorkflowStep(wfA.id, 'never-existed')).toThrow(/Workflow step not found/);
+        // Belongs to a real workflow, just not this one — must not be removable through wfA.
+        expect(() => fx.db.removeWorkflowStep(wfA.id, stepOnB.id)).toThrow(/Workflow step not found/);
+        expect(fx.db.getWorkflowSteps(wfB.id)).toHaveLength(1);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('surviving a teammate on an older build', () => {
     it('restores reasoning/node_ids/doc_paths/archived after a v1 client rewrote workflow.json', () => {
       // The scenario a single file could not survive: `devsmind sync` re-serializes every

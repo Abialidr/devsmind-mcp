@@ -330,7 +330,7 @@ Rough benchmark (~1,080-file repo, informal): local Ollama model took ~15h at ~5
 
 ## 🔌 MCP tools, grouped by purpose
 
-DevsMind exposes 38 tools to the agent. The ones you'll see referenced most:
+DevsMind exposes 39 tools to the agent. The ones you'll see referenced most:
 
 | Group | Tools |
 |---|---|
@@ -339,7 +339,7 @@ DevsMind exposes 38 tools to the agent. The ones you'll see referenced most:
 | **Read code/history** | `get_node_code` — the one node-read call. Code, metadata, imports, named callers **and** callees, a file outline, and recent reasoning, all included by default; `graph_depth`/`graph_direction` walk further for a blast radius or a whole call flow, and `history:"full"` returns every revision with diffs. `get_activity_log` answers "what changed recently / which files did we touch" — from your local log, falling back to the committed history everyone shares, so it still answers on a fresh clone (`source:"both"` to see teammates' work alongside your own) |
 | **Write (the important one)** | `edit_node` — the write path to use, for every file. Edits any file, traces what changed, and **returns the red/green diff of what it changed** so you see it in the session — all in one call. `stage_change` catches up when a file already got edited WITHOUT `edit_node` — same shape, but it locates `new_string` already on disk instead of writing it. `commit_changes` flushes everything staged and takes the one `reasoning` (why/goal) that gets recorded against all of it — **not git**, despite the name: it never runs a git command, it only writes into DevsMind's own local graph. Your actual `git commit`/`git push` is still a separate step you (or your agent, if you ask it to) do yourself. |
 | **Maintenance** | `analyze_graph` (zero-token health check), `recheck_graph`, `rename_node`/`deprecate_node`, and the feedback loop: `read_graph_feedback` → fix → `mark_graph_feedback_processed` |
-| **Multi-day workflows** | `workflow_create`, `workflow_bind` (per session, local to you), `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_sync`, `workflow_archive`, `workflow_import` |
+| **Multi-day workflows** | `workflow_create`, `workflow_bind` (per session, local to you), `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_remove_step` (undo a step added by mistake), `workflow_sync`, `workflow_archive`, `workflow_import` |
 | **The `devsmind` branch** *(4.3.0)* | `push_devsmind_branch` — **unlike `commit_changes`, this one DOES run real git** (commit + push), but only ever on the dedicated `devsmind` branch; your checked-out branch is never touched. `pull_devsmind_branch` reads it back down and re-syncs `brain.db` |
 | **Adding a repo** *(4.3.0, standalone mode)* | `add_repo` — registers one new repo and indexes it, same local extraction `index_start` uses, scoped to just that repo. Continue with `index_continue`/`index_complete`, passing the `scratchpad` value it returns |
 

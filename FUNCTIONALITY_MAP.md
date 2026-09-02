@@ -640,7 +640,7 @@ flowchart TD
 
 **What it does:** A named, **backward-looking** log of how one piece of functionality grew, across many nodes and many sessions. You read it before touching something, to learn how it got this way. Not a plan, not a task list; nothing ever "completes". Full rationale: [WORKFLOW_DESIGN.md](WORKFLOW_DESIGN.md).
 
-**MCP tools (8, down from 12):** `workflow_create`, `workflow_bind`, `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_sync`, `workflow_archive`, `workflow_import`
+**MCP tools (9, down from 12):** `workflow_create`, `workflow_bind`, `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_remove_step`, `workflow_sync`, `workflow_archive`, `workflow_import`
 **CLI:** `workflow` (interactive: list, read a timeline, archive/unarchive), `workflow-import`
 **Files:** `db/database.ts` (workflow ops), `db/workflow-import.ts`, `db/activity.ts` (`bindSessionWorkflow`/`readSessionWorkflow`/`lastBoundWorkflowId`)
 
@@ -905,7 +905,7 @@ flowchart TD
 
 ## Appendix 1 — Unadvertised but dispatchable handlers (10)
 
-38 advertised, 48 dispatchable (as of 4.3.0's `add_repo`). Everything below still answers if called by name but is no longer offered in `ListTools`, so an agent working from a rule written before 3.0.0 degrades instead of hard-failing. `stage_change` is **not** in this table — it was fully removed in 4.0.0 (the `case` was deleted outright) and is back as of this release, but as an **advertised, live tool again** with different semantics (see area G above), not as a retired/legacy handler.
+39 advertised, 49 dispatchable (as of 4.3.1's `workflow_remove_step`). Everything below still answers if called by name but is no longer offered in `ListTools`, so an agent working from a rule written before 3.0.0 degrades instead of hard-failing. `stage_change` is **not** in this table — it was fully removed in 4.0.0 (the `case` was deleted outright) and is back as of this release, but as an **advertised, live tool again** with different semantics (see area G above), not as a retired/legacy handler.
 
 | Handler | Status | Superseded by |
 |---|---|---|
@@ -931,7 +931,7 @@ Fully removed — the `case` is gone too, so calling these errors: `workflow_sea
 All five have been resolved. Kept as a record of what was wrong, and of the fix, so a future audit doesn't re-litigate them:
 
 1. ~~**Port in comments:** some JSDoc said **4500** while all code used **4513**.~~ **Fixed** — the three stale references in `mcp/server.ts` now say 4513.
-2. ~~**Tool count:** docs said "45 tools", the server advertised 42.~~ **Fixed** — the real number as of 4.3.0 (`add_repo` added) is **38 advertised / 48 dispatchable**, and README, `detailExplanation.md` and this doc all say so. Verify with the one-liner in the note below rather than trusting any prose.
+2. ~~**Tool count:** docs said "45 tools", the server advertised 42.~~ **Fixed** — the real number as of 4.3.1 (`workflow_remove_step` added) is **39 advertised / 49 dispatchable**, and README, `detailExplanation.md` and this doc all say so. Verify with the one-liner in the note below rather than trusting any prose.
 3. ~~**CLI version string:** `.version('1.0.0')` while `package.json` was on 2.x.~~ **Fixed** — it drifted for the entire project history because it was hardcoded next to the real number. `src/utils/version.ts` reads `package.json` at runtime, and the CLI, the MCP `serverInfo` and `GET /health` all derive from it, so there is one number and nothing left to sync.
 4. **Deprecated flags still accepted:** `--chunk-size`, `--chunk-overlap`, `--local-edges` remain no-ops on `index`/`reindex`. **Deliberately kept** — `--local-edges` is documented as `[Deprecated]` in its own help text, and silently accepting a flag from someone's saved shell script beats erroring on it. Still worth a decision before removing.
 5. ~~**`get_visualizer_url`** advertised a `/3d?path=` URL.~~ **Fixed** — confirmed there was no such route (16 Express routes, none `/3d`), so the link 404'd. It returns one `url` plus a note about the in-page toggle.

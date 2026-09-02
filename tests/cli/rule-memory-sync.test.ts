@@ -48,7 +48,7 @@ const TOOLS_REFERENCED = [
   'read_graph_feedback', 'mark_graph_feedback_processed', 'flag_indexer_rule',
   'record_alias', 'link_nodes', 'merge_nodes', 'split_node', 'create_missing_node',
   'workflow_list', 'workflow_bind', 'workflow_get_context', 'workflow_add_step',
-  'workflow_create', 'workflow_archive', 'workflow_sync', 'workflow_import',
+  'workflow_create', 'workflow_archive', 'workflow_remove_step', 'workflow_sync', 'workflow_import',
 ];
 
 /**

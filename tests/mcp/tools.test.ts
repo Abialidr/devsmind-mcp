@@ -1693,6 +1693,63 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       }
     });
 
+    it('workflow_remove_step deletes a mistaken step, its artifact file included, without touching the others', async () => {
+      const fx2 = makeFixture({ skipDefaultFiles: true });
+      try {
+        const h = await connectMcpClient();
+        try {
+          const { parsed: s } = await callToolJson(h.client, 'start_session', { devmind_path: fx2.devmindPath }) as { parsed: { session_id: string } };
+          const { parsed: wf } = await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'Payments', description: 'x'
+          }) as { parsed: { workflow: { id: string } } };
+          await callTool(h.client, 'workflow_bind', { devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: wf.workflow.id });
+
+          const { parsed: keep } = await callToolJson(h.client, 'workflow_add_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, summary: 'Keep me'
+          }) as { parsed: { step: { id: string } } };
+
+          const { parsed: mistake } = await callToolJson(h.client, 'workflow_add_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, summary: 'Wrong workflow, retry',
+            doc_content: [{ name: 'note.md', content: 'oops' }]
+          }) as { parsed: { step: { id: string }; artifacts?: { id: string; file_path: string }[] } };
+          const artifactPath = mistake.artifacts![0].file_path;
+          expect(fs.existsSync(artifactPath)).toBe(true);
+
+          const { parsed: removed } = await callToolJson(h.client, 'workflow_remove_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: wf.workflow.id, step_id: mistake.step.id
+          }) as { parsed: { status: string; removed_step_id: string; removed_artifact_ids: string[] } };
+          expect(removed.status).toBe('removed');
+          expect(removed.removed_step_id).toBe(mistake.step.id);
+          expect(removed.removed_artifact_ids).toEqual([mistake.artifacts![0].id]);
+          // The artifact's bytes are cleaned up on disk, not just the DB row.
+          expect(fs.existsSync(artifactPath)).toBe(false);
+
+          const { parsed: ctx } = await callToolJson(h.client, 'workflow_get_context', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: wf.workflow.id
+          }) as { parsed: { steps: { id: string }[]; steps_total: number } };
+          expect(ctx.steps_total).toBe(1);
+          expect(ctx.steps.map(st => st.id)).toEqual([keep.step.id]);
+
+          // A step id that never existed, or belongs to a different workflow, is refused clearly.
+          const badStep = await callTool(h.client, 'workflow_remove_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: wf.workflow.id, step_id: 'nope'
+          });
+          expect(badStep.isError).toBe(true);
+          expect(badStep.textBlocks.join(' ')).toMatch(/step not found/i);
+
+          const badWorkflow = await callTool(h.client, 'workflow_remove_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: 'wf_nope', step_id: keep.step.id
+          });
+          expect(badWorkflow.isError).toBe(true);
+          expect(badWorkflow.textBlocks.join(' ')).toMatch(/Workflow not found/);
+        } finally {
+          await h.close();
+        }
+      } finally {
+        fx2.cleanup();
+      }
+    });
+
     it('workflow_sync previews before writing, then attaches once and is a no-op on re-run', async () => {
       const fx2 = makeFixture({ skipDefaultFiles: true, extraFiles: { 'a.ts': 'export function alpha(): number {\n  return 1;\n}\n' } });
       try {
@@ -1786,12 +1843,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       }
     });
 
-    it('advertises 7 workflow tools and none of the retired ones', async () => {
+    it('advertises 8 workflow tools and none of the retired ones', async () => {
       const { tools } = await harness.client.listTools();
       const names = tools.map(t => t.name).filter(n => n.startsWith('workflow_')).sort();
       expect(names).toEqual([
         'workflow_add_step', 'workflow_archive', 'workflow_bind', 'workflow_create',
-        'workflow_get_context', 'workflow_import', 'workflow_list', 'workflow_sync'
+        'workflow_get_context', 'workflow_import', 'workflow_list', 'workflow_remove_step', 'workflow_sync'
       ].sort());
       for (const gone of ['workflow_pause', 'workflow_resume', 'workflow_get_steps', 'workflow_search', 'workflow_add_artifact', 'workflow_read_artifact', 'workflow_sync_retroactive']) {
         expect(names).not.toContain(gone);

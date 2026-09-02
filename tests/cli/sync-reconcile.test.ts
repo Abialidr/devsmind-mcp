@@ -105,6 +105,7 @@ describe('reconcileRepoPaths', () => {
     const newLocalPath = fs.mkdtempSync(path.join(os.tmpdir(), 'devsmind-reconcile-newpath-'));
     try {
       answers(
+        'browse',            // "Browse for its local folder" vs "Skip"
         { action: 'use' },  // browseForDir's pickDirectory confirms the starting folder for repo-a
         true,                // "Update devsmind rule for a tool now?" -> yes
         false,               // "Update the rule for another tool too?" -> no
@@ -133,6 +134,7 @@ describe('reconcileRepoPaths', () => {
     const devmindDir = writeStandaloneBrain([{ name: 'repo-a', path_key: 'REPO_A' }], {});
     try {
       answers(
+        'browse',
         { action: 'use' },
         true, true, false,   // rule: yes, another, no
         true, true, true, false // skill: yes, another, another, no
@@ -151,6 +153,7 @@ describe('reconcileRepoPaths', () => {
     const devmindDir = writeStandaloneBrain([{ name: 'repo-a', path_key: 'REPO_A' }], {});
     try {
       answers(
+        'browse',
         { action: 'use' },
         false, // rule: no
         false  // skill: no
@@ -178,7 +181,7 @@ describe('reconcileRepoPaths', () => {
         { REPO_A: goodRepo, REPO_B: path.join(goodRepo, 'gone') }
       );
       try {
-        answers({ action: 'use' }, false, false);
+        answers('browse', { action: 'use' }, false, false);
 
         await reconcileRepoPaths(devmindDir);
 
@@ -191,6 +194,52 @@ describe('reconcileRepoPaths', () => {
       }
     } finally {
       fs.rmSync(goodRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('choosing "skip" writes the marker and never invokes the folder browser', async () => {
+    const devmindDir = writeStandaloneBrain([{ name: 'mobile-only', path_key: 'REPO_MOBILE_ONLY' }], {});
+    try {
+      answers(
+        'skip',
+        false, // rule: no
+        false  // skill: no
+      );
+
+      await reconcileRepoPaths(devmindDir);
+
+      const env = fs.readFileSync(path.join(devmindDir, '.env'), 'utf-8');
+      expect(env).toMatch(/REPO_MOBILE_ONLY=__skip__/);
+      // Only 3 prompts total (skip choice + rule + skill) — no folder-navigator prompt in between.
+      expect(ask).toHaveBeenCalledTimes(3);
+    } finally {
+      fs.rmSync(path.dirname(devmindDir), { recursive: true, force: true });
+    }
+  });
+
+  it('a repo already marked skipped is not re-prompted on a later reconcile', async () => {
+    // The whole point: a mobile developer answers "skip" once for each backend repo, and never
+    // sees them again — this is what makes that durable across every future sync/pull.
+    const devmindDir = writeStandaloneBrain(
+      [
+        { name: 'mobile-only', path_key: 'REPO_MOBILE_ONLY' },
+        { name: 'newly-added', path_key: 'REPO_NEW' }
+      ],
+      { REPO_MOBILE_ONLY: '__skip__' }
+    );
+    try {
+      answers(
+        'browse', { action: 'use' }, // only the genuinely missing repo gets prompted
+        false, false
+      );
+
+      await reconcileRepoPaths(devmindDir);
+
+      const env = fs.readFileSync(path.join(devmindDir, '.env'), 'utf-8');
+      expect(env).toMatch(/REPO_MOBILE_ONLY=__skip__/); // marker survives the rewrite
+      expect(env).toMatch(/REPO_NEW=/);
+    } finally {
+      fs.rmSync(path.dirname(devmindDir), { recursive: true, force: true });
     }
   });
 });

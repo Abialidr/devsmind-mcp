@@ -205,7 +205,10 @@ export function resolveRepoPath(context: ProjectContext, repoName: string): stri
     // In standalone mode, look up in environment variables using path_key
     if ('path_key' in repo && repo.path_key) {
       const localPath = context.env[repo.path_key];
-      return localPath ? path.resolve(localPath) : null;
+      // A skipped repo has an .env entry but it is the marker, not a real path — resolving it
+      // would hand callers a bogus absolute path (cwd + "__skip__") instead of "not available".
+      if (!localPath || localPath === SKIPPED_REPO_MARKER) return null;
+      return path.resolve(localPath);
     }
     return null;
   }
@@ -219,11 +222,26 @@ export function isStandaloneMode(config: DevMindConfig): boolean {
 }
 
 /**
- * Standalone-mode repos split three ways against `.env`: `ok` (a `path_key` entry that exists
- * and resolves to a real directory), `missing` (no entry in `.env` at all — e.g. a repo a
- * teammate added that this machine hasn't configured yet), and `invalid` (an entry present but
- * the path no longer exists on disk — moved, renamed, or a stale value carried over). Embedded
- * mode has no such split (its paths are relative, not per-machine), so it always returns all-`ok`.
+ * The `.env` value that marks a repo as deliberately not on this machine — e.g. a mobile
+ * developer whose brain also lists a dozen backend services they will never touch. Written by
+ * `devsmind init`/`add-repo`/`sync`'s path-reconciliation prompt when the developer picks "skip"
+ * instead of browsing for a folder. A plain sentinel string rather than a separate `.env` file or
+ * schema field, because `.env` is already the one per-machine, per-repo place this kind of fact
+ * lives, and every reconciliation call site already round-trips it as key=value lines.
+ */
+export const SKIPPED_REPO_MARKER = '__skip__';
+
+/**
+ * Standalone-mode repos split four ways against `.env`: `ok` (a `path_key` entry that exists and
+ * resolves to a real directory), `missing` (no entry in `.env` at all — e.g. a repo a teammate
+ * added that this machine hasn't configured yet), `invalid` (an entry present but the path no
+ * longer exists on disk — moved, renamed, or a stale value carried over), and `skipped` (the
+ * developer explicitly said this repo does not belong on this machine). Embedded mode has no such
+ * split (its paths are relative, not per-machine), so it always returns everything-`ok`.
+ *
+ * `skipped` is deliberately its own bucket, not folded into `ok`: a caller that means "give me
+ * every repo this machine can actually read" (e.g. indexing) must still be able to tell the two
+ * apart, even though both are equally "nothing to prompt for" from reconciliation's point of view.
  *
  * The exact scan `devsmind init`'s existing-brain path-repair step already did inline — extracted
  * here so `devsmind sync`/`devsmind pull` can run the same check as their own reconciliation
@@ -233,12 +251,14 @@ export function findMissingStandaloneRepoPaths(config: DevMindConfig, env: Recor
   ok: { repo: StandaloneRepoConfig; currentPath: string }[];
   missing: StandaloneRepoConfig[];
   invalid: { repo: StandaloneRepoConfig; currentPath: string }[];
+  skipped: StandaloneRepoConfig[];
 } {
   const ok: { repo: StandaloneRepoConfig; currentPath: string }[] = [];
   const missing: StandaloneRepoConfig[] = [];
   const invalid: { repo: StandaloneRepoConfig; currentPath: string }[] = [];
+  const skipped: StandaloneRepoConfig[] = [];
 
-  if (!isStandaloneMode(config)) return { ok, missing, invalid };
+  if (!isStandaloneMode(config)) return { ok, missing, invalid, skipped };
 
   for (const repo of config.repos) {
     if (!('path_key' in repo) || !repo.path_key) continue;
@@ -246,13 +266,15 @@ export function findMissingStandaloneRepoPaths(config: DevMindConfig, env: Recor
     const currentPath = env[repo.path_key];
     if (!currentPath) {
       missing.push(standaloneRepo);
+    } else if (currentPath === SKIPPED_REPO_MARKER) {
+      skipped.push(standaloneRepo);
     } else if (!fs.existsSync(path.resolve(currentPath))) {
       invalid.push({ repo: standaloneRepo, currentPath });
     } else {
       ok.push({ repo: standaloneRepo, currentPath });
     }
   }
-  return { ok, missing, invalid };
+  return { ok, missing, invalid, skipped };
 }
 
 /** Canonicalizes drive letter to lowercase on Windows for case-insensitive matching. */
