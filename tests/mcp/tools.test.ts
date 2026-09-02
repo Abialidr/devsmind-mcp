@@ -679,6 +679,10 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       // The page limit bounds the node COUNT, not the byte size — a page of nodes with long
       // descriptions can still overflow. Same backstop and the same "say what you dropped"
       // contract as search_nodes.
+      //
+      // Explicit timeout: this stages+commits 60 real nodes through the full MCP path plus a
+      // fresh client connection, well past the suite's default 20s budget on a loaded machine —
+      // observed exceeding it during a full coverage run while comfortably under it in isolation.
       const heavy: Record<string, string> = {};
       for (let i = 0; i < 60; i++) {
         heavy[`big${i}.ts`] = `export function big${i}(): number {\n  return ${i};\n}\n`;
@@ -719,7 +723,7 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       } finally {
         heavyFx.cleanup();
       }
-    });
+    }, 40000);
 
     it('get_node_graph (area F) traverses depth/direction on a nonexistent node without throwing', async () => {
       const { isError, parsed } = await callToolJson(harness.client, 'get_node_graph', {
