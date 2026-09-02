@@ -4,7 +4,14 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
-  testTimeout: 20000,
+  // 45s, not the default 5s or the previous 20s: several tests do real, load-sensitive I/O — a
+  // git subprocess per call (tests/db/analyze.test.ts, 36 call sites) or a full MCP round-trip
+  // through a fresh client (tests/mcp/tools.test.ts) — and two different ones from those two
+  // categories were each observed exceeding 20s only when running inside the full ~1350-test
+  // coverage suite under load, while finishing in 3-5s in isolation every time. Raised globally
+  // rather than per-test, since more tests in the same two files are one unlucky run away from
+  // the identical flake.
+  testTimeout: 45000,
   collectCoverage: false,
   collectCoverageFrom: [
     'src/utils/tokenize.ts',
