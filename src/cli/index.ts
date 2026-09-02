@@ -11,6 +11,8 @@ import { handleDiff, handleRevert } from './diff';
 import { handleActivity } from './activity';
 import { handleFeedback } from './feedback';
 import { handleWorkflow, handleWorkflowImport } from './workflow';
+import { handlePush, handlePull } from './branch';
+import { handleAddRepo } from './add-repo';
 import { handleMcp } from './integrations/mcp';
 import { handleMemory } from './integrations/memory';
 import { handleSkill } from './integrations/skill';
@@ -170,6 +172,33 @@ program
       await handleSync(opts);
     } catch (err) {
       console.error(`❌ Sync failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('push')
+  .description(`Commit graph/history/vectors/workflows onto the dedicated 'devsmind' branch and push it — your checked-out branch is never touched, so PRs stay to your actual code changes`)
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .option('-m, --message <text>', 'Commit message for the devsmind branch (prompted interactively if omitted)')
+  .action(async (opts: { path?: string; message?: string }) => {
+    try {
+      await handlePush(opts);
+    } catch (err) {
+      console.error(`❌ Push failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('pull')
+  .description(`Sync graph/history/vectors/workflows down from the 'devsmind' branch into .devsmind/ and re-sync brain.db — the read side of 'devsmind push'`)
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (opts: { path?: string }) => {
+    try {
+      await handlePull(opts);
+    } catch (err) {
+      console.error(`❌ Pull failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });
@@ -439,6 +468,37 @@ program
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --from-scratch`);
       console.log(`   devsmind index --run --edges-only --repos harrir-web,harrir-web-admin`);
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --repos harrir-mini-app\n`);
+    }
+  });
+
+program
+  .command('add-repo')
+  .description('Standalone mode only: add one repo to an existing brain and index just that repo')
+  .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
+  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
+  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
+  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
+  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: off — whole file in one call). Set this for very large files or smaller-context models.')
+  .option('--chunk-overlap <lines>', 'Overlap lines between chunks, only used when --chunk-size is set (default: 50)')
+  .option('--describe-batch-size <number>', 'Nodes described per LLM call during Phase 3 (default: 25)')
+  .option('--rpm <number>', 'Max LLM requests per minute, paced proactively to avoid 429s (default: unthrottled — fires as fast as possible)')
+  .action(async (opts: {
+    path?: string;
+    provider?: string;
+    model?: string;
+    key?: string;
+    url?: string;
+    chunkSize?: string;
+    chunkOverlap?: string;
+    describeBatchSize?: string;
+    rpm?: string;
+  }) => {
+    try {
+      await handleAddRepo(opts);
+    } catch (err) {
+      console.error(`❌ Add repo failed: ${(err as Error).message}`);
+      process.exit(1);
     }
   });
 

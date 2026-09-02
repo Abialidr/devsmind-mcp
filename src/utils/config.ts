@@ -211,6 +211,50 @@ export function resolveRepoPath(context: ProjectContext, repoName: string): stri
   }
 }
 
+/** True for a standalone-mode brain (`.devsmind/` living apart from the repos it tracks, each
+ *  repo's local path recorded per-machine in `.env`) — as opposed to embedded mode, where the
+ *  brain sits inside the one repo it covers and repo paths are relative, not per-machine. */
+export function isStandaloneMode(config: DevMindConfig): boolean {
+  return config.mode === 'standalone';
+}
+
+/**
+ * Standalone-mode repos split three ways against `.env`: `ok` (a `path_key` entry that exists
+ * and resolves to a real directory), `missing` (no entry in `.env` at all — e.g. a repo a
+ * teammate added that this machine hasn't configured yet), and `invalid` (an entry present but
+ * the path no longer exists on disk — moved, renamed, or a stale value carried over). Embedded
+ * mode has no such split (its paths are relative, not per-machine), so it always returns all-`ok`.
+ *
+ * The exact scan `devsmind init`'s existing-brain path-repair step already did inline — extracted
+ * here so `devsmind sync`/`devsmind pull` can run the same check as their own reconciliation
+ * trigger, not a second hand-rolled copy of it.
+ */
+export function findMissingStandaloneRepoPaths(config: DevMindConfig, env: Record<string, string>): {
+  ok: { repo: StandaloneRepoConfig; currentPath: string }[];
+  missing: StandaloneRepoConfig[];
+  invalid: { repo: StandaloneRepoConfig; currentPath: string }[];
+} {
+  const ok: { repo: StandaloneRepoConfig; currentPath: string }[] = [];
+  const missing: StandaloneRepoConfig[] = [];
+  const invalid: { repo: StandaloneRepoConfig; currentPath: string }[] = [];
+
+  if (!isStandaloneMode(config)) return { ok, missing, invalid };
+
+  for (const repo of config.repos) {
+    if (!('path_key' in repo) || !repo.path_key) continue;
+    const standaloneRepo = repo as StandaloneRepoConfig;
+    const currentPath = env[repo.path_key];
+    if (!currentPath) {
+      missing.push(standaloneRepo);
+    } else if (!fs.existsSync(path.resolve(currentPath))) {
+      invalid.push({ repo: standaloneRepo, currentPath });
+    } else {
+      ok.push({ repo: standaloneRepo, currentPath });
+    }
+  }
+  return { ok, missing, invalid };
+}
+
 /** Canonicalizes drive letter to lowercase on Windows for case-insensitive matching. */
 export function canonicalizePath(p: string): string {
   if (!p) return p;

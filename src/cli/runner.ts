@@ -396,6 +396,14 @@ export async function runBackgroundIndexing(opts: {
    */
   describe?: boolean;
   describeBatchSize?: number;
+  /**
+   * Overrides the scratchpad filename a scoped (`repos`) run would otherwise default to
+   * (`index_scratchpad.scoped.json`, shared by every ad-hoc `--repos` invocation and always
+   * started fresh — see `forceFresh` below). A caller that owns a DEDICATED file here (nothing
+   * else ever writes to it) gets resumability instead: `devsmind add-repo` uses this so an
+   * interrupted single-repo index can continue on the next run without re-prompting.
+   */
+  padFile?: string;
 }) {
   const resolvedDevmind = path.resolve(opts.devmindPath);
   const chunkSize = opts.chunkSize;
@@ -444,8 +452,11 @@ export async function runBackgroundIndexing(opts: {
   }
   // Scoped runs use a SEPARATE scratchpad so they can't clobber (or mark "complete") the
   // global session — otherwise a later full `index --run` would see the scoped run's
-  // "complete" and skip every un-indexed repo.
-  const padFile: string | undefined = scopedRepos ? 'index_scratchpad.scoped.json' : undefined;
+  // "complete" and skip every un-indexed repo. A caller can supply its OWN dedicated file
+  // (e.g. `devsmind add-repo`'s `add_repo_scratchpad.json`) instead of the shared
+  // `index_scratchpad.scoped.json` every ad-hoc `--repos` run defaults to — see `forceFresh`
+  // below for why that matters.
+  const padFile: string | undefined = opts.padFile ?? (scopedRepos ? 'index_scratchpad.scoped.json' : undefined);
 
   // Missing-node detection: resolveConnectionsLocally reports references that resolve to a
   // real repo file with no node (a Phase-1 extraction gap). Deduped by (file, symbol); these
@@ -681,10 +692,14 @@ export async function runBackgroundIndexing(opts: {
     return;
   }
 
-  // 3. Read or create scratchpad. Scoped runs always start a fresh scratchpad — they are
-  // targeted re-runs, so they must not be blocked by (or resume) a prior global session.
+  // 3. Read or create scratchpad. An ad-hoc scoped run (no explicit `padFile`) always starts
+  // fresh — it shares `index_scratchpad.scoped.json` with every other `--repos` invocation, so
+  // blindly resuming it could resume a DIFFERENT repo's leftover run. A caller with its OWN
+  // dedicated `padFile` (e.g. `devsmind add-repo`) doesn't have that ambiguity — nothing else
+  // ever writes to that file — so it's safe, and desirable, to resume.
+  const forceFresh = !!scopedRepos && !opts.padFile;
   let pad = readScratchpad(resolvedDevmind, padFile);
-  if (scopedRepos || !pad) {
+  if (forceFresh || !pad) {
     pad = createScratchpad(resolvedDevmind, total_files, padFile);
   } else if (pad.status === 'complete') {
     console.log('✅ Indexing is already completed!');

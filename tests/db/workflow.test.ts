@@ -267,6 +267,67 @@ describe('DevMindDatabase — workflow context vault', () => {
     });
   });
 
+  describe('addWorkflowArtifactFromFile', () => {
+    it('copies an existing file\'s bytes into the workflow store and records the row', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Wallet', 'x');
+        const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devsmind-artifact-src-'));
+        const sourcePath = path.join(srcDir, 'spec.pdf');
+        const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0x01]); // binary-ish content
+        fs.writeFileSync(sourcePath, bytes);
+
+        try {
+          const artifact = fx.db.addWorkflowArtifactFromFile(wf.id, { type: 'step_doc', sourcePath });
+
+          expect(artifact.source_name).toBe('spec.pdf');
+          expect(artifact.workflow_id).toBe(wf.id);
+          expect(artifact.step_id).toBeNull();
+          expect(fs.existsSync(artifact.file_path)).toBe(true);
+          expect(fs.readFileSync(artifact.file_path)).toEqual(bytes);
+
+          const ctx = fx.db.getWorkflowContext(wf.id);
+          expect(ctx.artifacts).toHaveLength(1);
+          expect(ctx.artifacts[0].file_path).toBe(artifact.file_path);
+        } finally {
+          fs.rmSync(srcDir, { recursive: true, force: true });
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('sanitizes an unsafe source file name the same way addWorkflowArtifact does', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Wallet', 'x');
+        const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devsmind-artifact-src-'));
+        const sourcePath = path.join(srcDir, 'weird name!.txt');
+        fs.writeFileSync(sourcePath, 'hi', 'utf-8');
+
+        try {
+          const artifact = fx.db.addWorkflowArtifactFromFile(wf.id, { type: 'step_doc', sourcePath });
+          expect(artifact.source_name).toBe('weird name!.txt'); // original name is preserved in the DB row
+          expect(path.basename(artifact.file_path)).toMatch(/^[a-f0-9-]+_weird_name_\.txt$/);
+        } finally {
+          fs.rmSync(srcDir, { recursive: true, force: true });
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('throws clearly for an unknown workflow id, before touching the filesystem', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        expect(() => fx.db.addWorkflowArtifactFromFile('wf_nope', { type: 'step_doc', sourcePath: path.join(os.tmpdir(), 'nope.txt') }))
+          .toThrow(/Workflow not found/);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('surviving a teammate on an older build', () => {
     it('restores reasoning/node_ids/doc_paths/archived after a v1 client rewrote workflow.json', () => {
       // The scenario a single file could not survive: `devsmind sync` re-serializes every

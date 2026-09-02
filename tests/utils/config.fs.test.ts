@@ -9,10 +9,13 @@ import {
   resolveDevmindDir,
   loadProjectContext,
   recoverSpaceSplitPath,
+  isStandaloneMode,
+  findMissingStandaloneRepoPaths,
   BRAIN_DIR_NAME,
   LEGACY_BRAIN_DIR_NAME,
   BRAIN_DIR_NAMES,
-  DevMindConfig
+  DevMindConfig,
+  StandaloneRepoConfig
 } from '../../src/utils/config';
 
 function mkTempDir(): string {
@@ -326,5 +329,78 @@ describe('loadProjectContext', () => {
     fs.writeFileSync(path.join(dir, '.env'), 'DEVELOPER_NAME=Ada\n');
     const ctx = loadProjectContext(dir);
     expect(ctx.developer).toEqual({ name: 'Ada', email: '' });
+  });
+});
+
+describe('isStandaloneMode', () => {
+  it('is true for standalone, false for embedded', () => {
+    expect(isStandaloneMode({ project_name: 'x', mode: 'standalone', repos: [] })).toBe(true);
+    expect(isStandaloneMode({ project_name: 'x', mode: 'embedded', repos: [] })).toBe(false);
+  });
+});
+
+// ── 4.4.0: config.json/.env reconciliation — the check devsmind sync/pull run to detect a repo
+// added elsewhere (e.g. devsmind add-repo) that this machine hasn't caught up to yet. Extracted
+// from devsmind init's existing-brain path-repair loop, so this IS that same scan.
+describe('findMissingStandaloneRepoPaths', () => {
+  const standaloneConfig: DevMindConfig = {
+    project_name: 'sample',
+    mode: 'standalone',
+    repos: [
+      { name: 'repo-a', path_key: 'REPO_A' },
+      { name: 'repo-b', path_key: 'REPO_B' }
+    ]
+  };
+
+  let dir: string;
+  beforeEach(() => { dir = mkTempDir(); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('embedded mode always returns everything ok, regardless of env', () => {
+    const embedded: DevMindConfig = { project_name: 'x', mode: 'embedded', repos: [{ name: 'app', relative_path: '.' }] };
+    const result = findMissingStandaloneRepoPaths(embedded, {});
+    expect(result).toEqual({ ok: [], missing: [], invalid: [] });
+  });
+
+  it('a repo with no .env entry at all is "missing"', () => {
+    const result = findMissingStandaloneRepoPaths(standaloneConfig, { REPO_A: dir });
+    expect(result.ok.map(o => o.repo.name)).toEqual(['repo-a']);
+    expect(result.missing.map(r => r.name)).toEqual(['repo-b']);
+    expect(result.invalid).toEqual([]);
+  });
+
+  it('a repo with an .env entry pointing at a path that no longer exists is "invalid"', () => {
+    const goneDir = path.join(dir, 'does-not-exist');
+    const result = findMissingStandaloneRepoPaths(standaloneConfig, { REPO_A: dir, REPO_B: goneDir });
+    expect(result.ok.map(o => o.repo.name)).toEqual(['repo-a']);
+    expect(result.missing).toEqual([]);
+    expect(result.invalid).toEqual([{ repo: standaloneConfig.repos[1], currentPath: goneDir }]);
+  });
+
+  it('every repo resolving to a real path on disk is fully ok, nothing missing or invalid', () => {
+    const dir2 = mkTempDir();
+    try {
+      const result = findMissingStandaloneRepoPaths(standaloneConfig, { REPO_A: dir, REPO_B: dir2 });
+      expect(result.missing).toEqual([]);
+      expect(result.invalid).toEqual([]);
+      expect(result.ok.map(o => o.repo.name).sort()).toEqual(['repo-a', 'repo-b']);
+    } finally {
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a standalone-mode repo entry with no path_key, rather than treating it as missing', () => {
+    const withBareRepo: DevMindConfig = {
+      project_name: 'sample',
+      mode: 'standalone',
+      repos: [
+        { name: 'repo-a', path_key: 'REPO_A' },
+        { name: 'no-key' } as unknown as StandaloneRepoConfig,
+      ],
+    };
+    const result = findMissingStandaloneRepoPaths(withBareRepo, { REPO_A: dir });
+    expect(result.ok.map(o => o.repo.name)).toEqual(['repo-a']);
+    expect(result.missing).toEqual([]);
+    expect(result.invalid).toEqual([]);
   });
 });

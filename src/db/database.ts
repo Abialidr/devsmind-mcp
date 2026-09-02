@@ -3010,6 +3010,31 @@ export class DevMindDatabase {
   }
 
   /**
+   * Copies an EXISTING file's bytes into `.devmind/workflows/<workflowId>/<artifactId>_<name>` and
+   * records the DB row — same storage as addWorkflowArtifact, but the source is a file already on
+   * disk rather than a string already in memory, so this is copyFileSync (binary-safe: PDFs,
+   * docx, images) instead of writeFileSync(..., 'utf-8').
+   */
+  addWorkflowArtifactFromFile(workflowId: string, opts: { stepId?: string; type: string; sourcePath: string }): DbWorkflowArtifact {
+    if (!this.getWorkflow(workflowId)) throw new Error(`Workflow not found: ${workflowId}`);
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const sourceName = path.basename(opts.sourcePath);
+    const safeName = sourceName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'artifact';
+    const dir = path.join(this.workflowsDir(), workflowId);
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `${id}_${safeName}`);
+    fs.copyFileSync(opts.sourcePath, filePath);
+    this.db.prepare(`
+      INSERT INTO workflow_artifacts (id, workflow_id, step_id, type, source_name, file_path, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, workflowId, opts.stepId || null, opts.type, sourceName, filePath, now);
+    this.db.prepare(`UPDATE workflows SET updated_at = ? WHERE id = ?`).run(now, workflowId);
+    this.writeWorkflowToDisk(workflowId);
+    return { id, workflow_id: workflowId, step_id: opts.stepId || null, type: opts.type, source_name: sourceName, file_path: filePath, created_at: now };
+  }
+
+  /**
    * The workflow's story: its steps in order, plus the docs attached to it.
    *
    * Paged, because this is now the ONLY read (it absorbed the old `workflow_get_steps`) and steps

@@ -43,6 +43,11 @@ export async function confirmPrompt(message: string, initial = true): Promise<bo
   return assertAnswer(res.v as boolean | undefined);
 }
 
+export async function textPrompt(message: string, opts?: { validate?: (v: string) => true | string }): Promise<string> {
+  const res = await prompts({ type: 'text', name: 'v', message, validate: opts?.validate });
+  return assertAnswer(res.v as string | undefined);
+}
+
 // ─── Target / transport / scope / mode pickers ───────────────────────────────
 
 export async function pickTarget(): Promise<IdeTarget> {
@@ -219,6 +224,20 @@ export async function pickDirectory(
     }
   }
   throw new CancelledError();
+}
+
+/**
+ * {@link pickDirectory}, but a cancel resolves to `null` instead of throwing — the shape every
+ * `init`/`add-repo`-style "browse for this repo's local folder" prompt actually wants, since a
+ * cancel there just means "stop the wizard cleanly", not an error to propagate.
+ */
+export async function browseForDir(message: string, startDir: string): Promise<string | null> {
+  try {
+    return await pickDirectory(startDir, message);
+  } catch (err) {
+    if (err instanceof CancelledError) return null;
+    throw err;
+  }
 }
 
 function existsDir(p: string): boolean {

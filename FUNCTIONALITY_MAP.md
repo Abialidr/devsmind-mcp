@@ -650,7 +650,8 @@ flowchart TD
 - **Binding is per session and local** (the brain's `local/`, gitignored). It never moves, pauses, or steals anyone else's, and two sessions can work different workflows at once. There is no stored "active workflow" — "is this active" is just whether some session is bound, and "what was I last on" is *derived* (the newest session carrying a `workflow_id`), surfaced by `start_session` only when one exists.
 - **Steps record `reasoning` + `node_ids`**, not `history_ids` (see area K for why a history row can't identify a commit). Reasoning is **copied** rather than joined, because history reasoning *mutates* afterwards — the hourly merge appends, a revert can drop a block — and a record of what we thought at the time can't read from a moving target.
 - **`archived` replaces `status`.** Nothing ever completed and nobody marked it, so the field lied. Threads sort by last-touched; archiving claims only what it delivers — hide from the list, reversibly. `pending_tasks` is gone with no replacement: a stale "what's left" is worse than none, because an agent acts on it confidently.
-- **Documents are `doc_paths`, not copies.** The old `workflow_add_artifact` duplicated whole files into the brain's `workflows/<id>/artifacts/`; a copy goes stale the moment the original changes, and your repo already versions the original. A path outside every configured repo is rejected — a file only you can see is useless to a teammate.
+- **Documents are `doc_paths` by default, not copies.** The old `workflow_add_artifact` duplicated whole files into the brain's `workflows/<id>/artifacts/`; a copy goes stale the moment the original changes, and your repo already versions the original. A path outside every configured repo is rejected — a file only you can see is useless to a teammate.
+- **4.3.0: `doc_content`/`doc_uploads` cover what a path can't.** For research that was never a file (`doc_content`, paste up to 10 docs' text) or a doc with no on-repo home (`doc_uploads`, up to 10 existing files copied in byte-for-byte, any type, 20MB cap each). Both land in the once-dormant `workflow_artifacts` table via `addWorkflowArtifact`/`addWorkflowArtifactFromFile` — `doc_paths` is untouched and still the default for anything already in a repo.
 - **`workflow_sync` actually reads something.** `workflow_sync_retroactive` read no activity log, no history, no transcript — the agent hand-assembled a `steps` array. The new one reads your local activity log, previews, and writes only on `confirm:true`. Dedupe is by **consumed edit id**, not a per-message flag: a message keeps growing after tagging, so a boolean would permanently strand everything added later.
 - **`workflow_get_context` is paged and size-guarded** (it had *no* cap: every step, every artifact, optionally every artifact file inlined whole). `last_n` reads the tail; `steps_total` is always exact; oversized pages drop `reasoning` then `node_ids` with a `compacted` note. Document content is never inlined.
 - **Cross-version safety via a sidecar.** Each workflow is two files: `workflow.json` in the shape a pre-3.0 client understands, plus `v2.json` holding what that shape has no field for (`archived`, per-step `reasoning`/`node_ids`/`doc_paths`). `devsmind sync` re-serializes `workflow.json` from local columns, so an un-upgraded teammate who pulled and synced *would* have rewritten it without the new fields and committed that loss — they have no idea the sidecar exists, so they can't touch it, and the next read merges everything back.
@@ -665,7 +666,7 @@ flowchart TD
   WL[workflow_list - query matches name AND description] --> WB
   WB --> GC[workflow_get_context - paged, last_n for the tail]
   WB --> CM[commit_changes auto-logs a step: summary + reasoning + node_ids + session_id]
-  AS[workflow_add_step] --> RES[Research/decision with NO code change + doc_paths]
+  AS[workflow_add_step] --> RES[Research/decision with NO code change + doc_paths / doc_content / doc_uploads]
   CM & AS & RES --> DISK[workflow.json + v2.json sidecar - git synced]
   UNB[Worked unbound or on the wrong thread] --> WS[workflow_sync: reads local activity log]
   WS --> PREV[Preview - writes only on confirm:true, dedupe by consumed edit id]
@@ -679,6 +680,7 @@ flowchart TD
 - [ ] `workflow_bind` with no id unbinds; binding does not touch any other session.
 - [ ] A commit while bound auto-records a step carrying `reasoning`, the right `node_ids`, **and a populated `session_id`** (that column existed and sat null on the path creating nearly every step).
 - [ ] `workflow_add_step` records a research finding with **no** code change; `doc_paths` inside a repo is accepted and one outside every repo is rejected.
+- [ ] **(4.3.0)** `doc_content` and `doc_uploads` each accept up to their count/size caps and reject over-cap or malformed entries; `doc_uploads` rejects a missing path and a directory path; both write into `workflow_artifacts` (`addWorkflowArtifact`/`addWorkflowArtifactFromFile`) without disturbing `doc_paths` handling.
 - [ ] `workflow_list` `query` finds a workflow **by its own name** — the old `workflow_search` scanned step summaries and artifact names but never `workflows.name`, so looking one up by name returned nothing.
 - [ ] `workflow_get_context` `last_n`/`limit`/`offset` page correctly and `steps_total` stays exact.
 - [ ] `workflow_sync` previews before writing, writes on `confirm:true`, and **re-running is a no-op**. Also: a commit already recorded by `commit_changes` is not re-proposed (an e2e run caught exactly that — only sync marked edits consumed).
@@ -736,9 +738,11 @@ flowchart TD
 **What it does:** The backbone everything depends on — disk↔db sync and the AST parser that powers extraction, edges, and editing.
 
 **CLI:** `sync`, `sync --analyze`
-**Files:** `db/database.ts` (`syncFromDisk`, `syncToDisk`), `utils/ast.ts`, `utils/scanner.ts`, `db/schema.ts`, `cli/sync.ts`, `cli/sync-progress.ts`
+**Files:** `db/database.ts` (`syncFromDisk`, `syncToDisk`), `utils/ast.ts`, `utils/scanner.ts`, `db/schema.ts`, `cli/sync.ts` (also `reconcileRepoPaths`, 4.3.0 — see area Q), `cli/sync-progress.ts`
 
 **Sync detail:** `devsmind sync` runs BOTH directions in one call — `syncFromDisk` (disk → `brain.db`: reads `graph/**` + `history/*.json` + `vectors/*.json` + `workflows/`, heals legacy relative paths, rebuilds nodes/edges/history/vectors/workflows under `foreign_keys=OFF`, orphan-sweeps vectors) **then** `syncToDisk` (`brain.db` → disk: force-writes `graph/`/`vectors/`/`workflows/` JSON from current DB state). `syncFromDisk` is **critical under `--stdio`**, where the editor-spawned process never auto-syncs after `git pull`. SQLite = cache; JSON = source of truth. `node_tokens` (BM25) is the only non-synced, freely-rebuildable table.
+
+- **4.3.0: both directions now start with `reconcileRepoPaths`** — standalone mode, and a no-op the vast majority of runs. Detects a repo `config.json` names that this machine's `.env` has no path for (a teammate's `devsmind add-repo` catching up), prompts for it, then offers to refresh `devsmind rule`/`devsmind skill`. `devsmind pull` (area P) reuses the exact same function rather than a thinner copy, and along the way gained the `syncToDisk` half it was previously missing — it used to only run `syncFromDisk`. See area Q.
 
 - **Fix: `syncToDisk` never wrote `vectors/`, only `graph/` and `workflows/`** — an asymmetry with `syncFromDisk`, which reads all three. Normal operation didn't depend on it (`writeVectorsToDisk` runs immediately alongside every embedding write, same as `writeGraphToDisk` does for graph JSON), but it meant `devsmind sync` — the tool that exists specifically to force a resync after `vectors/*.json` got deleted, corrupted, or silently failed to write — couldn't actually repair `vectors/`. Fixed: `syncToDisk` now calls `writeVectorsToDisk` alongside `writeGraphToDisk` for every node's file_path.
 - **Fix: EISDIR crash on `devsmind sync`.** A production brain had a node whose `file_path` was literally a directory (a repo root, or the workspace root) rather than a real file — `toRepoRelativePath` collapses to `''`/`'{repo}/'`/`'..'` for those, which made `writeGraphToDisk`/`writeVectorsToDisk` try to write a JSON *file* at the `graph/`/`vectors/` directory itself (or an ancestor of it), throwing `EISDIR: illegal operation on a directory` — repeatedly, once per distinct malformed `file_path` string in the `Set` `syncToDisk` iterates. New `isDegenerateDiskJsonPath` guard (three checks: empty/trailing-slash `diskRelPath`, a `path.relative` that resolves to `''`/starts with `..`, and an existsSync+isDirectory catch-all) refuses the write and prints one clear warning instead, pointing at `devsmind analyze --fix` — which now actually cleans up the offending node (see area I).
@@ -789,9 +793,119 @@ flowchart TD
 
 ---
 
+## P. The `devsmind` branch (4.3.0)
+
+**What it does:** Moves the churny part of a brain — `graph/`, `history/`, `vectors/`, `workflows/` — onto its own dedicated `devsmind` git branch, decoupled from whatever code branch is checked out. `config.json` deliberately stays on the code branch (see area A / `config.json` for why a fresh clone needs it visible immediately).
+
+**MCP tools (2):** `push_devsmind_branch`, `pull_devsmind_branch`
+**CLI:** `push [-m <message>]`, `pull`
+**Files:** `utils/devsmind-branch.ts` (all the git logic, shared by both entry points), `cli/branch.ts`, `mcp/server.ts` (tool schemas + case handlers)
+
+**The problem this exists to fix.** DevsMind can write hundreds of `graph/`/`history/` JSON files in one commit. Committed onto whatever branch the developer is working on — the only behavior before 4.3.0 — every one of those files shows up in that branch's diff, making PRs difficult to open and difficult to review: the real code change gets buried under graph/history noise.
+
+**Why a `git worktree`, not a stash.** A stash-based "stash → checkout devsmind → pop → commit → push → checkout back" flow was the originally proposed design. Rejected: it mutates the developer's real working directory and index mid-flight, and any interruption (a conflict on pop, a crash) leaves the repo straddling two branches with a stash floating around. `push`/`pull` instead use a throwaway `git worktree` in a scratch temp dir, cleaned up in a `finally` — the caller's HEAD/branch/index/working tree are never touched, so there is no "checkout back" step because the caller never left it.
+
+**Orphan branch, not a divergent code copy.** When `devsmind` doesn't exist yet, `push` creates it via `git checkout --orphan` with the inherited working tree explicitly cleared first — so the branch's tree only ever holds `.devsmind/`, never a stale snapshot of source code from whatever branch happened to be checked out at creation time.
+
+**Mirror semantics.** Each of the four subdirs is fully replaced (removed, then recopied) on both push and pull, not merged file-by-file — a deletion or rename on one side propagates to the other on the next push/pull, same as a normal git diff would show it.
+
+**Stranded-commit handling.** If `git push` fails after the local commit already landed (network blip), a later `push` with zero new file changes still checks whether local is ahead of `<remote>/devsmind` and pushes the existing commit rather than reporting a false "nothing to do". Caught during manual testing of the first implementation, which returned early on `filesChanged === 0` regardless of push state.
+
+**`config.json` never moves.** It's what lets `resolveBrainDir`/`findBrainDir` recognize "this repo has a brain" on a fresh clone, before anyone has run `pull`. Only the four genuinely churny subdirs move — see area A.
+
+**Deliberately out of scope for 4.3.0:** whether `devsmind init` should start gitignoring `graph/`/`history/`/`vectors/`/`workflows/` on the code branch by default (so a brand-new project never tracks them there at all, rather than only stopping once `push` has been run once) is an open product-wide decision, not bundled into this release.
+
+```mermaid
+flowchart TD
+  DEV["developer's checked-out branch (main / feature)"] -.never touched.-> WT
+  subgraph WT["throwaway git worktree (scratch temp dir)"]
+    SETUP[checkout devsmind branch<br/>- create as ORPHAN if new] --> COPY["replace graph/history/vectors/workflows<br/>(config.json excluded)"]
+    COPY --> ADD[git add -A .devsmind]
+    ADD --> CHECK{anything changed?}
+    CHECK -->|no, and remote already matches| NOOP[nothing_to_push]
+    CHECK -->|no, but local ahead of remote| PUSH1[push existing commit]
+    CHECK -->|yes| COMMIT[git commit] --> PUSH2[git push, if a remote exists]
+  end
+  PULL[pull_devsmind_branch / devsmind pull] --> WT2["worktree checked out to devsmind<br/>(remote-tracking ref preferred)"]
+  WT2 --> REPLACE["replace local graph/history/vectors/workflows wholesale"]
+  REPLACE --> SYNC[db.syncFromDisk]
+```
+
+**✅ Verify during testing:**
+- [x] `push` creates the `devsmind` branch as a genuine orphan (no parent commit, no source files in its tree) on first use (`tests/utils/devsmind-branch.test.ts`).
+- [x] The developer's checked-out branch, HEAD, and working tree are never touched by either `push` or `pull`, and no worktree is left registered afterward (`tests/utils/devsmind-branch.test.ts`).
+- [x] A second `push` with nothing changed is a clean no-op (`committed:false, pushed:false`), not an error (`tests/utils/devsmind-branch.test.ts`).
+- [x] A locally-committed-but-unpushed commit (simulating a prior failed push) still gets pushed by a later `push` call even with zero new file changes (`tests/utils/devsmind-branch.test.ts`).
+- [x] `push` with no remote configured commits locally without error (`tests/utils/devsmind-branch.test.ts`).
+- [x] `pull` reports `found:false` cleanly when no `devsmind` branch exists anywhere yet, rather than erroring (`tests/utils/devsmind-branch.test.ts`, `tests/mcp/tools.test.ts`).
+- [x] Full round-trip — push from one clone, pull from a second — including a deleted file's subdir disappearing on the puller's side when it was the last file in that subdir (`tests/utils/devsmind-branch.test.ts`).
+- [x] `config.json`, `.env`, `brain.db`, and `local/` never land on the `devsmind` branch even when present alongside real changes (`tests/utils/devsmind-branch.test.ts`).
+- [x] `push_devsmind_branch` requires `session_id` (a real write); `pull_devsmind_branch` does not (session-exempt read) (`tests/mcp/tools.test.ts`).
+- [x] `pull_devsmind_branch` re-syncs `brain.db` after copying files down, reporting non-zero counts for content that was actually committed (`tests/mcp/tools.test.ts`).
+- [ ] A real remote push/pull over `https://`/`ssh://` (not just a local bare repo, which is all the test suite exercises).
+- [ ] Two teammates pushing concurrently — the second push's `git push` fails non-fast-forward and reports a clear "run pull and try again" error rather than force-pushing.
+
+---
+
+## Q. `add-repo` + repo-path reconciliation (4.3.0)
+
+**What it does:** Standalone mode only. Two halves of one problem: (1) add ONE repo to an existing brain without re-running the whole `init` wizard, indexing just that repo; (2) detect when `config.json` names a repo this machine's `.env` doesn't have a path for yet (that repo was added — and pushed — from somewhere else) and walk through fixing it, rather than leaving `.env`/`devsmind rule`/`devsmind skill` silently stale forever.
+
+**MCP tools (1):** `add_repo` — also extends `index_checkpoint`/`index_continue`/`index_complete` with an optional `scratchpad` param
+**CLI:** `add-repo`; `sync` and `pull` (area O/P) both gained a reconciliation pre-flight
+**Files:** `cli/add-repo.ts`, `utils/config.ts` (`isStandaloneMode`, `findMissingStandaloneRepoPaths`), `cli/runner.ts` (`runBackgroundIndexing`'s `padFile`), `cli/sync.ts` (`reconcileRepoPaths`), `mcp/server.ts` (`add_repo`, `scopedRepoFiles`, `invalidateDatabase`), `db/indexer.ts` (`completeScratchpad`'s `fileName`)
+
+**Why now, not bundled into `init`.** `config.json` is shared (now via the `devsmind` branch, area P); `.env` is per-machine and never shared. Before this, the only way to add a repo to an existing brain was the full `init` wizard, and nothing ever told a teammate their `.env`/rule/skill had fallen behind after someone else added one — they'd just find `search_nodes` quietly missing a repo, with no signal why.
+
+**`add-repo` reuses existing machinery on both sides, doesn't duplicate it:**
+- CLI: writes `config.json`/`.env` (same prompt shape as `init`'s existing-brain repair step, `browseForDir` + name validation), then calls `runBackgroundIndexing({ repos: [name], padFile: 'add_repo_scratchpad.json', ... })` — the identical function `index --run --repos <name>` already used, just with LLM options passed through.
+- MCP: mirrors `index_start`'s own pattern (local AST extraction, no LLM, hand back a batch) rather than driving the CLI's blocking `--run` from inside a tool call. `index_continue`/`index_checkpoint`/`index_complete` gained an optional `scratchpad` param so the SAME three tools keep serving a scoped session — Phase 1 (file scan) filters to just the one repo via `scopedRepoFiles`, but Phase 2 (edge resolution, inside `index_complete`) deliberately stays whole-graph even then: a new repo's own references need the full node set to resolve against, and it can be the target of a NEW reference from an existing repo too.
+
+**Resumability, which scoped indexing didn't have before.** `runBackgroundIndexing`'s scoped runs always started a fresh scratchpad (`index_scratchpad.scoped.json` is shared by every ad-hoc `--repos` invocation, so resuming it blindly could resume the wrong repo). New optional `padFile` override: a caller supplying its OWN dedicated file (as `add-repo` does) gets real resumability instead — nothing else ever writes to that file. The CLI additionally writes a small marker (`add_repo_pending.json`, recording which repo) right after the config/env write and before indexing starts, since a crash in that exact window would otherwise leave `IndexScratchpad.current_repo` still null with nothing to identify what to resume.
+
+**The bug reconciliation exists to prevent, retroactively: 4.3.0 also fixes it going forward.** `findMissingStandaloneRepoPaths` (`utils/config.ts`) is the exact "for each repo, does `.env` have a valid path" scan `init`'s existing-brain repair already did — extracted so `devsmind sync`/`devsmind pull` can run the identical check as their own pre-flight, not a second hand-rolled copy that could drift from it. Nothing missing is a silent no-op (the common case, same speed as before); something missing prompts for the path(s), rebuilds `.env` from KNOWN-good state (not a naive append — an early version left the stale invalid line sitting next to the corrected one, caught by a test asserting the old value was actually GONE, not just that the new one was present), then loops offering to re-run `devsmind rule`/`devsmind skill` per tool. Non-TTY (CI, a script) prints a warning and skips the prompt rather than hanging.
+
+**One MCP-only bug worth recording.** The server caches one `DevMindDatabase` per brain, and that instance snapshots `config.repos` once, in its constructor — `toRepoRelativePath` never re-reads it. A DB already cached by an earlier call in the SAME session (`start_session`, typically) kept producing `../<repo>/...`-shaped node ids for the just-added repo instead of `{<repo>}/...`, having never seen it in the config it loaded at construction time. `invalidateDatabase` evicts that cache entry right after `add_repo` writes the new repo into `config.json`. Caught by an assertion on the returned node ids during testing, not by manual testing alone.
+
+```mermaid
+flowchart TD
+  AR[devsmind add-repo / add_repo] --> PEND{Pending marker exists?}
+  PEND -->|yes| RESUME[Resume: skip name/path prompt, use recorded repo]
+  PEND -->|no| ASK[Prompt name + path] --> WRITE[Write config.json + .env + pending marker]
+  WRITE --> IDX["Index scoped to ONE repo (dedicated scratchpad)"]
+  RESUME --> IDX
+  IDX -->|complete| DONE[Delete pending marker]
+  IDX -->|interrupted| PEND
+
+  SYNC[devsmind sync] --> CHECK{config.json repo has no .env path?}
+  PULL[devsmind pull] --> CHECK
+  CHECK -->|no| FAST[Straight to syncFromDisk + syncToDisk - no prompts]
+  CHECK -->|yes, TTY| FIX[Prompt for path, rewrite .env from known-good state]
+  CHECK -->|yes, non-TTY| WARN[Print warning, skip prompt]
+  FIX --> REFRESH["Loop: re-run devsmind rule / devsmind skill per tool"]
+  REFRESH --> FAST
+  WARN --> FAST
+```
+
+**✅ Verify during testing:**
+- [x] `add-repo` refuses in embedded mode with a clear error, without touching `config.json` (`tests/cli/add-repo.test.ts`, `tests/mcp/add-repo.test.ts`).
+- [x] Fresh `add-repo` writes `config.json`/`.env`, indexes ONLY the new repo (an existing repo's own index session is untouched), and cleans up the pending marker / reports `status:'started'` only on real completion (`tests/cli/add-repo.test.ts`, `tests/mcp/add-repo.test.ts`).
+- [x] A second `add-repo` call while a prior one is still in progress resumes it — no re-prompt, no duplicate repo registered (`tests/cli/add-repo.test.ts`, `tests/mcp/add-repo.test.ts`).
+- [x] A duplicate repo name and a nonexistent path are both rejected, writing nothing (`tests/cli/add-repo.test.ts`, `tests/mcp/add-repo.test.ts`).
+- [x] `add_repo`'s returned node ids use `{repo}/...`, not a `../repo/...` fallback, even when a DB was already cached earlier in the same session (`tests/mcp/add-repo.test.ts`).
+- [x] A scoped run with an explicit `padFile` resumes an in-progress scratchpad; one with no `padFile` still always starts fresh (regression-checked against a DIFFERENT repo's leftover state) (`tests/cli/runner.padfile.test.ts`).
+- [x] `reconcileRepoPaths` is a complete no-op (no prompts, no rule/skill calls) when every repo already resolves, and in embedded mode regardless of `.env` state (`tests/cli/sync-reconcile.test.ts`).
+- [x] Non-TTY skips the prompt/walkthrough with a printed warning instead of hanging (`tests/cli/sync-reconcile.test.ts`).
+- [x] A missing repo path is prompted for and written; an invalid (stale) one is re-prompted and its OLD line is actually removed, not left duplicated alongside the new one (`tests/cli/sync-reconcile.test.ts`).
+- [x] The rule/skill loop calls each the right number of times based on "another?" answers (`tests/cli/sync-reconcile.test.ts`).
+- [x] `findMissingStandaloneRepoPaths` correctly three-way-splits ok/missing/invalid, and always returns all-ok for embedded mode (`tests/utils/config.fs.test.ts`).
+- [ ] A real two-machine scenario over an actual remote (manually verified once this session over a local bare repo; not automated) — machine A `add-repo` + `push`, machine B clones fresh and `pull`s, sees the reconciliation prompt, resolves it, and a second `sync` afterward is silent.
+
+---
+
 ## Appendix 1 — Unadvertised but dispatchable handlers (10)
 
-35 advertised, 45 dispatchable. Everything below still answers if called by name but is no longer offered in `ListTools`, so an agent working from a rule written before 3.0.0 degrades instead of hard-failing. `stage_change` is **not** in this table — it was fully removed in 4.0.0 (the `case` was deleted outright) and is back as of this release, but as an **advertised, live tool again** with different semantics (see area G above), not as a retired/legacy handler.
+38 advertised, 48 dispatchable (as of 4.3.0's `add_repo`). Everything below still answers if called by name but is no longer offered in `ListTools`, so an agent working from a rule written before 3.0.0 degrades instead of hard-failing. `stage_change` is **not** in this table — it was fully removed in 4.0.0 (the `case` was deleted outright) and is back as of this release, but as an **advertised, live tool again** with different semantics (see area G above), not as a retired/legacy handler.
 
 | Handler | Status | Superseded by |
 |---|---|---|
@@ -817,12 +931,12 @@ Fully removed — the `case` is gone too, so calling these errors: `workflow_sea
 All five have been resolved. Kept as a record of what was wrong, and of the fix, so a future audit doesn't re-litigate them:
 
 1. ~~**Port in comments:** some JSDoc said **4500** while all code used **4513**.~~ **Fixed** — the three stale references in `mcp/server.ts` now say 4513.
-2. ~~**Tool count:** docs said "45 tools", the server advertised 42.~~ **Fixed** — the real number is **35 advertised / 45 dispatchable**, and README, `detailExplanation.md` and this doc all say so. Verify with the one-liner in the note below rather than trusting any prose.
+2. ~~**Tool count:** docs said "45 tools", the server advertised 42.~~ **Fixed** — the real number as of 4.3.0 (`add_repo` added) is **38 advertised / 48 dispatchable**, and README, `detailExplanation.md` and this doc all say so. Verify with the one-liner in the note below rather than trusting any prose.
 3. ~~**CLI version string:** `.version('1.0.0')` while `package.json` was on 2.x.~~ **Fixed** — it drifted for the entire project history because it was hardcoded next to the real number. `src/utils/version.ts` reads `package.json` at runtime, and the CLI, the MCP `serverInfo` and `GET /health` all derive from it, so there is one number and nothing left to sync.
 4. **Deprecated flags still accepted:** `--chunk-size`, `--chunk-overlap`, `--local-edges` remain no-ops on `index`/`reindex`. **Deliberately kept** — `--local-edges` is documented as `[Deprecated]` in its own help text, and silently accepting a flag from someone's saved shell script beats erroring on it. Still worth a decision before removing.
 5. ~~**`get_visualizer_url`** advertised a `/3d?path=` URL.~~ **Fixed** — confirmed there was no such route (16 Express routes, none `/3d`), so the link 404'd. It returns one `url` plus a note about the in-page toggle.
 
-> **Counting tools, reliably:** `node -e "const l=require('fs').readFileSync('src/mcp/server.ts','utf-8').split('\n'); console.log(new Set((l.slice(381,1092).join('\n').match(/name: '[a-z_]+'/g)||[]).map(n=>n.slice(7,-1))).size)"` — reads the `ListTools` block directly. Any number written in prose will drift; this won't.
+> **Counting tools, reliably:** `node -e "const l=require('fs').readFileSync('src/mcp/server.ts','utf-8').split('\n'); console.log(new Set((l.slice(445,1177).join('\n').match(/name: '[a-z_]+'/g)||[]).map(n=>n.slice(7,-1))).size)"` — reads the `ListTools` block directly. Any number written in prose will drift; this won't. **The line range itself drifts too** — re-find it with `grep -n "const tools[: ]\|^    \];" src/mcp/server.ts` before trusting this one-liner after any edit to the tools array.
 
 ---
 

@@ -16,6 +16,7 @@ import {
   pickMode,
   pickWorkflowStyle,
   pickDirectory,
+  browseForDir,
   CancelledError,
 } from '../../src/cli/integrations/prompt';
 import { TARGETS, getTarget, EntryContext } from '../../src/cli/integrations/registry';
@@ -365,6 +366,34 @@ describe('pickDirectory', () => {
     answers(undefined);
 
     await expect(pickDirectory(root, 'Pick one')).rejects.toThrow(CancelledError);
+  });
+});
+
+describe('browseForDir', () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'devsmind-browse-')));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('resolves to the picked directory', async () => {
+    answers({ action: 'use' });
+
+    await expect(browseForDir('Pick one', root)).resolves.toBe(root);
+  });
+
+  it('resolves to null instead of throwing when the navigator is cancelled', async () => {
+    answers(undefined);
+
+    await expect(browseForDir('Pick one', root)).resolves.toBeNull();
+  });
+
+  it('propagates any error that is not a cancel', async () => {
+    ask.mockRejectedValueOnce(new Error('disk exploded'));
+
+    await expect(browseForDir('Pick one', root)).rejects.toThrow('disk exploded');
   });
 });
 

@@ -11,7 +11,8 @@ import {
   DevMindDatabase, parseReasoningBlocks, NO_STATIC_CALLERS_NOTE, toCompactSearchResult,
   SearchNodesResult, CompactSearchNodesResult
 } from '../db/database';
-import { loadProjectContext, findBrainDir, brainDirOrDefault } from '../utils/config';
+import { loadProjectContext, findBrainDir, brainDirOrDefault, isStandaloneMode, StandaloneRepoConfig } from '../utils/config';
+import { pushDevsmindBranch, pullDevsmindBranch, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
 import { getViewHtml, ASSETS_DIR, DEVSMIND_TOKEN } from './visualizer';
 import { diffEdits, renderUnifiedDiff, diffSnapshots } from '../utils/diff';
 import { revertLastEdit } from '../db/revert';
@@ -26,7 +27,8 @@ import {
   readScratchpad,
   createScratchpad,
   completeScratchpad,
-  writeScratchpad
+  writeScratchpad,
+  IndexScratchpad
 } from '../db/indexer';
 import { extractFilesIntoGraph, pendingDescriptionNodes, resolveEdgesIncrementally } from '../db/index-build';
 import { scanRepoFiles, INDEXABLE_EXTENSIONS } from '../utils/scanner';
@@ -142,6 +144,29 @@ export function getBoundDevmindPath(): string | null {
   return boundDevmindPath;
 }
 
+/**
+ * For a SCOPED indexing session (a caller-provided `scratchpad` filename, e.g. `add_repo`'s
+ * dedicated one) Phase 1 must only scan the ONE repo that session is for — otherwise
+ * `index_continue` would silently pull in every other repo's files too. Phase 2 (edge
+ * resolution, inside `index_complete`) deliberately stays whole-graph even for a scoped
+ * session — a newly-added repo's outgoing references need the full node set to resolve
+ * against, and an existing repo may gain a new incoming reference INTO it, so narrowing that
+ * step would be a correctness regression, not an optimization.
+ *
+ * The DEFAULT (unscoped) scratchpad's `current_repo` is never used to scope anything here —
+ * it's set as an incidental side effect of normal Phase 1 processing (whichever repo the last
+ * extracted file happened to be in), not a deliberate scope. Only an explicitly-provided
+ * `scratchpadFile` opts into this filtering.
+ */
+function scopedRepoFiles(devmindPath: string, scratchpadFile: string | undefined, pad: IndexScratchpad): { files: string[]; totalFiles: number } {
+  const { repos, total_files } = scanRepoFiles(devmindPath);
+  if (!scratchpadFile || !pad.current_repo) {
+    return { files: repos.flatMap(r => r.files), totalFiles: total_files };
+  }
+  const scoped = repos.filter(r => r.repo_name === pad.current_repo);
+  return { files: scoped.flatMap(r => r.files), totalFiles: scoped.reduce((sum, r) => sum + r.files.length, 0) };
+}
+
 // Walk up from a start directory to find a brain folder (`.devsmind`, or a legacy `.devmind`)
 // containing config.json. Both names are tried at every level — see utils/config.ts.
 
@@ -240,6 +265,27 @@ const LIST_NODES_DEFAULT_LIMIT = 100;
  * readable in one response, and the full text is always still on the history rows. */
 const STEP_REASONING_CAP = 2000;
 
+/** `add_repo`'s dedicated scratchpad filename — separate from the default whole-workspace one so
+ * a scoped single-repo indexing session can never collide with (or be mistaken for) it. Passed as
+ * `scratchpad` to index_checkpoint/index_continue/index_complete to keep working with it. */
+const ADD_REPO_MCP_SCRATCHPAD = 'add_repo_scratchpad.json';
+
+/** Max characters PER doc in `workflow_add_step`'s `doc_content` — generous enough for a real spec
+ * doc, small enough that one call can't dump a multi-MB blob through the MCP transport. */
+const DOC_CONTENT_CAP = 500_000;
+
+/** Max number of `doc_content` entries per `workflow_add_step` call — a step records one decision,
+ * not a document dump. */
+const DOC_CONTENT_MAX_COUNT = 10;
+
+/** Max number of `doc_uploads` entries per `workflow_add_step` call — same reasoning as
+ * DOC_CONTENT_MAX_COUNT. */
+const DOC_UPLOAD_MAX_COUNT = 10;
+
+/** Max size PER file copied in via `doc_uploads` — generous for a spec doc or a diagram export,
+ * small enough that one call can't copy a huge archive into `.devmind/workflows/`. */
+const DOC_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+
 /**
  * The part of a commit's reasoning worth carrying onto a workflow step: WHY it was done, what it
  * was for, and what was decided.
@@ -301,6 +347,24 @@ function getDatabase(devmindPath: string): DevMindDatabase {
   return dbCache.get(dbFile)!;
 }
 
+/**
+ * Evicts (closing first, best-effort) the cached `DevMindDatabase` for `devmindPath` — the next
+ * `getDatabase` call constructs a fresh one. Needed after `add_repo` writes a new repo into
+ * `config.json`: `DevMindDatabase` snapshots `ProjectContext` once, in its constructor
+ * (`toRepoRelativePath` reads `this.context.config.repos`, set there and never refreshed), so a
+ * cached instance from an earlier tool call in the SAME session (e.g. `start_session`) would
+ * otherwise keep producing `../<repo>/...`-style ids for the just-added repo's nodes instead of
+ * `{<repo>}/...`, having never seen it in `config.repos`.
+ */
+function invalidateDatabase(devmindPath: string): void {
+  const dbFile = path.join(devmindPath, 'brain.db');
+  const existing = dbCache.get(dbFile);
+  if (existing) {
+    try { existing.close(); } catch { /* best-effort */ }
+    dbCache.delete(dbFile);
+  }
+}
+
 
 /**
  * Closes every cached DB connection (best-effort) and clears the cache. Normally only reached via
@@ -353,7 +417,10 @@ const SESSION_EXEMPT_READ_TOOLS = new Set<string>([
   // are gone, so they no longer belong here. `workflow_list` is NOT exempt any more either: it
   // reports `bound_workflow_id`, which is a per-session fact — without a session_id it could only
   // ever answer null, which reads as "you are on nothing" rather than "I cannot tell".
-  'get_activity_log'
+  'get_activity_log',
+  // Pulls committed brain state down from git — no session-scoped state involved. push_devsmind_branch
+  // is NOT exempt: it's a real write (commit + push), same bar as commit_changes/workflow_add_step.
+  'pull_devsmind_branch'
 ]);
 
 /**
@@ -474,7 +541,8 @@ export function createMcpServer(): Server {
           inputSchema: {
             type: 'object',
             properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              scratchpad: { type: 'string', description: 'Advanced: only pass this if add_repo told you to. Selects a scoped indexing session (e.g. the one add_repo started) instead of the default whole-workspace one.' }
             },
             required: ['devmind_path']
           }
@@ -486,7 +554,8 @@ export function createMcpServer(): Server {
           inputSchema: {
             type: 'object',
             properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              scratchpad: { type: 'string', description: 'Advanced: only pass this if add_repo told you to. Selects a scoped indexing session (e.g. the one add_repo started) instead of the default whole-workspace one.' }
             },
             required: ['devmind_path']
           }
@@ -498,7 +567,22 @@ export function createMcpServer(): Server {
           inputSchema: {
             type: 'object',
             properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              scratchpad: { type: 'string', description: 'Advanced: only pass this if add_repo told you to. Selects a scoped indexing session (e.g. the one add_repo started) instead of the default whole-workspace one.' }
+            },
+            required: ['devmind_path']
+          }
+        },
+        {
+          name: 'add_repo',
+          description:
+            'Standalone mode only: add ONE new repo to this brain and index just that repo — the graph-scoping equivalent of index_start, but scoped to a single repo instead of the whole workspace. Registers the repo in config.json/.env, then extracts its structure locally (no LLM) and hands back a first batch of nodes to describe, same as index_start. Continue with index_continue / index_complete exactly as you would for a normal index, but ALWAYS pass the same scratchpad value this call returns — omitting it targets the unrelated whole-workspace session instead. Resumable: if a previous add_repo call is still mid-index, call this again with NO name/path and it tells you which repo and scratchpad to continue with, rather than starting over. Refuses with a clear error in embedded mode (an embedded brain already covers exactly the one repo it lives inside).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              name: { type: 'string', description: 'New repo name. Omit (along with path) to resume a previous add_repo call that has not finished indexing yet.' },
+              path: { type: 'string', description: 'Absolute local path to the repo on this machine. Required together with name on a fresh call.' }
             },
             required: ['devmind_path']
           }
@@ -994,7 +1078,7 @@ export function createMcpServer(): Server {
         },
         {
           name: 'workflow_add_step',
-          description: 'Record ONE step on a workflow, with the docs behind it, in the same call. You do NOT need this for ordinary code work — commit_changes already adds a step automatically whenever the session is bound. Call it for the thing a commit cannot express: A DECISION OR RESEARCH FINDING THAT CHANGED NO CODE (e.g. "evaluated Razorpay, no split settlements, going with Stripe"). That is the one kind of knowledge nothing else in DevsMind keeps — git has the diff and history has the per-node reasoning, but neither records what was considered and rejected. Attach the docs it came from via doc_paths.',
+          description: 'Record ONE step on a workflow, with the docs behind it, in the same call. You do NOT need this for ordinary code work — commit_changes already adds a step automatically whenever the session is bound. Call it for the thing a commit cannot express: A DECISION OR RESEARCH FINDING THAT CHANGED NO CODE (e.g. "evaluated Razorpay, no split settlements, going with Stripe"). That is the one kind of knowledge nothing else in DevsMind keeps — git has the diff and history has the per-node reasoning, but neither records what was considered and rejected. Attach the docs it came from three ways: doc_paths (reference a file that already exists in a configured repo, no copy), doc_uploads (COPY an existing file on disk — any type, PDF/docx/image included — into DevsMind\'s own storage; use this for a doc outside any repo, or one you want to survive its source being deleted), or doc_content (paste text you have in hand but that isn\'t a file at all, or no longer is).',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1003,7 +1087,24 @@ export function createMcpServer(): Server {
               summary: { type: 'string', description: 'One line: what was decided or found' },
               reasoning: { type: 'string', description: 'The why behind it — what was considered, what was rejected, and on what grounds. This is the part nobody can reconstruct later from the code that survived.' },
               node_ids: { type: 'array', items: { type: 'string' }, description: 'Optional node ids this step relates to. Leave empty for a pure research/decision step.' },
-              doc_paths: { type: 'array', items: { type: 'string' }, description: 'Optional paths to research/spec docs behind this step, relative to the repo. Stored as PATHS, never copies, so they stay current and are already shared with your team — a path outside the configured repos is rejected, since it would not exist for anyone else.' }
+              doc_paths: { type: 'array', items: { type: 'string' }, description: 'Optional paths to research/spec docs behind this step, relative to the repo. Stored as PATHS, never copies, so they stay current and are already shared with your team — a path outside the configured repos is rejected, since it would not exist for anyone else.' },
+              doc_content: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string', description: 'File name for this doc, e.g. "interest-caveat.md" — sanitized before use.' },
+                    content: { type: 'string', description: `The doc's full text (max ${DOC_CONTENT_CAP.toLocaleString()} chars).` }
+                  },
+                  required: ['name', 'content']
+                },
+                description: `Optional: up to ${DOC_CONTENT_MAX_COUNT} docs whose CONTENT (not just a path) should be copied into DevsMind's own storage under .devmind/workflows/. Use this instead of doc_paths when the doc has no on-repo home, or when it must keep existing after its source file is deleted. Content is stored on disk, not inlined into future responses — workflow_get_context returns each artifact's file_path, and you read it from there.`
+              },
+              doc_uploads: {
+                type: 'array',
+                items: { type: 'string' },
+                description: `Optional: up to ${DOC_UPLOAD_MAX_COUNT} absolute paths to files (any type; max ${(DOC_UPLOAD_MAX_BYTES / (1024 * 1024)).toFixed(0)}MB each) to COPY into DevsMind's own storage under .devmind/workflows/ — the actual bytes, not just the path. Unlike doc_paths there's no configured-repo restriction, since the point is capturing a doc that may not live in one (or won't stay on disk at all). Use this — not doc_content — whenever the doc already exists as a file; it's simpler and works for binary files doc_content can't hold as text.`
+              }
             },
             required: ['devmind_path', 'summary']
           }
@@ -1046,6 +1147,29 @@ export function createMcpServer(): Server {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
               folder_path: { type: 'string', description: 'Folder to import every .md file from (one workflow per file)' },
               file_path: { type: 'string', description: 'A single .md file to import instead of a folder' }
+            },
+            required: ['devmind_path']
+          }
+        },
+        {
+          name: 'push_devsmind_branch',
+          description: `Commit graph/history/vectors/workflows onto the dedicated '${DEVSMIND_BRANCH}' branch and push it. UNLIKE commit_changes, this DOES run real git commands (commit + push) — but only ever on the '${DEVSMIND_BRANCH}' branch, via a throwaway worktree, so the developer's actual checked-out branch is never touched, moved, or committed to. This exists so a PR diff shows only real code changes, not the hundreds of graph/history files DevsMind itself writes. Only call this when the developer has asked you to push, not as a routine follow-up to commit_changes. Requires a commit message.`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              message: { type: 'string', description: `Commit message for this snapshot on the '${DEVSMIND_BRANCH}' branch.` }
+            },
+            required: ['devmind_path', 'message']
+          }
+        },
+        {
+          name: 'pull_devsmind_branch',
+          description: `Read-only counterpart to push_devsmind_branch: copies graph/history/vectors/workflows down from the '${DEVSMIND_BRANCH}' branch (remote-tracking ref preferred when a remote exists) into .devsmind/ on disk and re-syncs brain.db. Useful after a teammate has pushed — a plain git pull on the code branch no longer brings this data in once it lives on '${DEVSMIND_BRANCH}' instead.`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
             },
             required: ['devmind_path']
           }
@@ -1471,7 +1595,8 @@ export function createMcpServer(): Server {
 
         case 'index_checkpoint': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const pad = readScratchpad(devmindPath);
+          const scratchpadFile = args.scratchpad ? String(args.scratchpad) : undefined;
+          const pad = readScratchpad(devmindPath, scratchpadFile);
           if (!pad) {
             return {
               content: [{ type: 'text', text: JSON.stringify({ error: 'No indexing session found. Call index_start first.' }) }]
@@ -1499,7 +1624,8 @@ export function createMcpServer(): Server {
         case 'index_continue': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const pad = readScratchpad(devmindPath);
+          const scratchpadFile = args.scratchpad ? String(args.scratchpad) : undefined;
+          const pad = readScratchpad(devmindPath, scratchpadFile);
           if (!pad) {
             return {
               content: [{ type: 'text', text: JSON.stringify({ error: 'No indexing session found. Call index_start first.' }) }]
@@ -1522,8 +1648,7 @@ export function createMcpServer(): Server {
           ];
 
           if (pad.phase === 1) {
-            const { repos } = scanRepoFiles(devmindPath);
-            const allFiles = repos.flatMap(r => r.files);
+            const { files: allFiles } = scopedRepoFiles(devmindPath, scratchpadFile, pad);
             const startIdx = pad.last_file_indexed ? allFiles.findIndex(f => f === pad.last_file_indexed) + 1 : 0;
             const remainingFiles = allFiles.slice(startIdx);
 
@@ -1532,7 +1657,7 @@ export function createMcpServer(): Server {
               pad.files_done += batch.filesExtracted.length;
               pad.last_file_indexed = batch.cursor;
               pad.nodes_created += batch.nodesCreated;
-              writeScratchpad(devmindPath, pad);
+              writeScratchpad(devmindPath, pad, scratchpadFile);
 
               return {
                 content: [{
@@ -1549,7 +1674,7 @@ export function createMcpServer(): Server {
             }
 
             pad.phase = 2;
-            writeScratchpad(devmindPath, pad);
+            writeScratchpad(devmindPath, pad, scratchpadFile);
           }
 
           return {
@@ -1570,7 +1695,8 @@ export function createMcpServer(): Server {
         case 'index_complete': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const pad = readScratchpad(devmindPath);
+          const scratchpadFile = args.scratchpad ? String(args.scratchpad) : undefined;
+          const pad = readScratchpad(devmindPath, scratchpadFile);
           if (!pad) {
             return {
               content: [{ type: 'text', text: JSON.stringify({ error: 'No indexing session found. Call index_start first.' }) }]
@@ -1581,7 +1707,11 @@ export function createMcpServer(): Server {
               content: [{ type: 'text', text: JSON.stringify({ status: 'complete', message: 'Indexing already completed.', scratchpad: pad }, null, 2) }]
             };
           }
-          const { total_files } = scanRepoFiles(devmindPath);
+          // Phase 1 completeness is checked against the SAME scope index_continue used to fill
+          // it — the whole workspace for the default session, just this repo's files for a
+          // scoped one (a scoped scratchpad's files_total never covers every other repo, so
+          // comparing it against the unscoped total would report "incomplete" forever).
+          const { totalFiles: total_files } = scopedRepoFiles(devmindPath, scratchpadFile, pad);
           if (pad.phase === 1 && pad.files_done < total_files) {
             return {
               isError: true,
@@ -1610,7 +1740,7 @@ export function createMcpServer(): Server {
             };
           }
 
-          const finalPad = completeScratchpad(devmindPath);
+          const finalPad = completeScratchpad(devmindPath, scratchpadFile);
           db.vacuum();
           const undescribedCount = db.getAllNodes().filter(n => !n.deprecated && !n.description).length;
 
@@ -1632,6 +1762,103 @@ export function createMcpServer(): Server {
                   ? `${undescribedCount} node(s) still have no description — run "devsmind describe" to backfill them, or describe them now with add_description.`
                   : undefined,
                 next_step: 'recheck_graph — prunes any spurious, built-in, or orphaned nodes.'
+              }, null, 2)
+            }]
+          };
+        }
+
+        case 'add_repo': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const ctx = loadProjectContext(devmindPath);
+          if (!isStandaloneMode(ctx.config)) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: 'add_repo is only available in standalone mode — an embedded brain already covers exactly the one repo it lives inside.' }) }]
+            };
+          }
+
+          const existingPad = readScratchpad(devmindPath, ADD_REPO_MCP_SCRATCHPAD);
+          if (existingPad && existingPad.status === 'in_progress' && existingPad.current_repo) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'resuming',
+                  message: `An add_repo session for "${existingPad.current_repo}" is already in progress. Do NOT call add_repo again for it — call index_continue (or index_checkpoint to see where it stands) with scratchpad: "${ADD_REPO_MCP_SCRATCHPAD}".`,
+                  repo_name: existingPad.current_repo,
+                  scratchpad: existingPad
+                }, null, 2)
+              }]
+            };
+          }
+
+          const name = args.name ? String(args.name).trim() : '';
+          const repoPath = args.path ? String(args.path).trim() : '';
+          if (!name || !repoPath) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: 'add_repo: both name and path are required to add a new repo (omit both only to resume a previous in-progress add_repo call — none was found).' }) }]
+            };
+          }
+          if (ctx.config.repos.some(r => r.name === name)) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: `add_repo: a repo named "${name}" already exists in this brain.` }) }]
+            };
+          }
+          if (!fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: `add_repo: path does not exist or is not a directory: ${repoPath}` }) }]
+            };
+          }
+
+          const pathKey = `REPO_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+          const configPath = path.join(devmindPath, 'config.json');
+          ctx.config.repos.push({ name, path_key: pathKey } as StandaloneRepoConfig);
+          fs.writeFileSync(configPath, JSON.stringify(ctx.config, null, 2) + '\n', 'utf-8');
+
+          const envPath = path.join(devmindPath, '.env');
+          const envLines = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8').split('\n').filter(l => l.trim()) : [];
+          envLines.push(`${pathKey}=${repoPath}`);
+          fs.writeFileSync(envPath, envLines.join('\n') + '\n', 'utf-8');
+
+          // A DB instance already cached by an earlier call THIS session (e.g. start_session)
+          // would still be working from the config.repos snapshot it took at construction time —
+          // see invalidateDatabase's doc comment. Evict it so node ids for the new repo's files
+          // resolve to `{name}/...`, not a fallback `../name/...` relative path.
+          invalidateDatabase(devmindPath);
+
+          // index_start's own pattern, scoped to just this one repo.
+          const db = getDatabase(devmindPath);
+          const { repos } = scanRepoFiles(devmindPath);
+          const scopedRepo = repos.find(r => r.repo_name === name);
+          const allFiles = scopedRepo ? scopedRepo.files : [];
+
+          const pad = createScratchpad(devmindPath, allFiles.length, ADD_REPO_MCP_SCRATCHPAD);
+          pad.current_repo = name; // scopedRepoFiles relies on this to keep index_continue/index_complete scoped to just this repo
+          const batch = extractFilesIntoGraph(db, allFiles);
+          pad.files_done = batch.filesExtracted.length;
+          pad.last_file_indexed = batch.cursor;
+          pad.nodes_created = batch.nodesCreated;
+          writeScratchpad(devmindPath, pad, ADD_REPO_MCP_SCRATCHPAD);
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                status: 'started',
+                message: `Repo "${name}" added to config.json/.env. Indexing started (structure only, no LLM) — describe every node in batch.nodes with ONE add_description call, then call index_continue for the next batch.`,
+                repo_name: name,
+                scratchpad: pad,
+                batch: { files: batch.filesExtracted, nodes: batch.nodes, file_imports: batch.fileImports },
+                instructions: [
+                  `Every index_continue / index_checkpoint / index_complete call for this repo MUST include scratchpad: "${ADD_REPO_MCP_SCRATCHPAD}" — omitting it targets the unrelated whole-workspace session instead.`,
+                  'Describe every node in `batch.nodes` with ONE add_description call.',
+                  'Then call index_continue (with the scratchpad param) for the next batch. Repeat until it reports no files remain.',
+                  'Once every node is described, call index_complete (with the scratchpad param).',
+                  'NEVER write or execute external scripts to index files.'
+                ]
               }, null, 2)
             }]
           };
@@ -2889,6 +3116,68 @@ export function createMcpServer(): Server {
             docPaths.push(db.toRepoRelativePath(abs));
           }
 
+          // `doc_content` is the copy-in counterpart to doc_paths: for text that has no on-repo
+          // home (or won't stay there), store the bytes in DevsMind itself via the same
+          // workflow_artifacts mechanism workflow_import uses, rather than a path that can dangle.
+          const rawDocContent = Array.isArray(args.doc_content) ? args.doc_content : [];
+          if (rawDocContent.length > DOC_CONTENT_MAX_COUNT) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: `doc_content accepts at most ${DOC_CONTENT_MAX_COUNT} docs per step, got ${rawDocContent.length}.` }) }]
+            };
+          }
+          const docContent: { name: string; content: string }[] = [];
+          for (const raw of rawDocContent) {
+            if (!raw || typeof raw !== 'object' || typeof raw.name !== 'string' || typeof raw.content !== 'string') {
+              return {
+                isError: true,
+                content: [{ type: 'text', text: JSON.stringify({ error: 'Each doc_content entry needs a string `name` and a string `content`.' }) }]
+              };
+            }
+            if (raw.content.length > DOC_CONTENT_CAP) {
+              return {
+                isError: true,
+                content: [{ type: 'text', text: JSON.stringify({ error: `doc_content entry "${raw.name}" is ${raw.content.length} chars, over the ${DOC_CONTENT_CAP} cap.` }) }]
+              };
+            }
+            docContent.push({ name: raw.name, content: raw.content });
+          }
+
+          // `doc_uploads` copies an existing file's bytes in — binary-safe, and no configured-repo
+          // restriction (that restriction exists for doc_paths because a rejected reference is
+          // useless to teammates; a copy has no such dependency on where the source lives).
+          const rawDocUploads = Array.isArray(args.doc_uploads) ? args.doc_uploads.map(String) : [];
+          if (rawDocUploads.length > DOC_UPLOAD_MAX_COUNT) {
+            return {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: `doc_uploads accepts at most ${DOC_UPLOAD_MAX_COUNT} files per step, got ${rawDocUploads.length}.` }) }]
+            };
+          }
+          const docUploads: string[] = [];
+          for (const raw of rawDocUploads) {
+            const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(path.dirname(devmindPath), raw);
+            if (!fs.existsSync(abs)) {
+              return {
+                isError: true,
+                content: [{ type: 'text', text: JSON.stringify({ error: `doc_upload does not exist on disk: ${raw}` }) }]
+              };
+            }
+            const stat = fs.statSync(abs);
+            if (!stat.isFile()) {
+              return {
+                isError: true,
+                content: [{ type: 'text', text: JSON.stringify({ error: `doc_upload is not a file: ${raw}` }) }]
+              };
+            }
+            if (stat.size > DOC_UPLOAD_MAX_BYTES) {
+              return {
+                isError: true,
+                content: [{ type: 'text', text: JSON.stringify({ error: `doc_upload "${raw}" is ${stat.size} bytes, over the ${DOC_UPLOAD_MAX_BYTES} cap.` }) }]
+              };
+            }
+            docUploads.push(abs);
+          }
+
           const step = db.addWorkflowStep(workflowId, {
             summary: requireStr(args, 'summary', 'workflow_add_step'),
             reasoning: args.reasoning ? String(args.reasoning).slice(0, STEP_REASONING_CAP) : undefined,
@@ -2896,7 +3185,24 @@ export function createMcpServer(): Server {
             docPaths: docPaths.length ? docPaths : undefined,
             sessionId
           });
-          return { content: [{ type: 'text', text: JSON.stringify({ status: 'added', step }, null, 2) }] };
+
+          const artifacts = [
+            ...docContent.map(doc =>
+              db.addWorkflowArtifact(workflowId, { stepId: step.id, type: 'step_doc', sourceName: doc.name, content: doc.content })
+            ),
+            ...docUploads.map(sourcePath =>
+              db.addWorkflowArtifactFromFile(workflowId, { stepId: step.id, type: 'step_doc', sourcePath })
+            )
+          ];
+
+          return {
+            content: [{
+              type: 'text',
+              // Artifact CONTENT is deliberately not echoed back — same reasoning as
+              // getWorkflowContext (database.ts): the file_path is enough, and content just went in.
+              text: JSON.stringify({ status: 'added', step, artifacts: artifacts.length ? artifacts : undefined }, null, 2)
+            }]
+          };
         }
 
         case 'workflow_bind': {
@@ -3126,6 +3432,34 @@ export function createMcpServer(): Server {
           const db = getDatabase(devmindPath);
           const result = importWorkflowDocs(db, args.folder_path ? String(args.folder_path) : undefined, args.file_path ? String(args.file_path) : undefined);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+
+        case 'push_devsmind_branch': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const message = requireStr(args, 'message', 'push_devsmind_branch');
+          const result = pushDevsmindBranch(devmindPath, message);
+          const status = !result.committed && !result.pushed
+            ? 'nothing_to_push'
+            : result.pushed
+              ? (result.committed ? 'pushed' : 'pushed_prior_commit')
+              : 'committed_local_only';
+          return { content: [{ type: 'text', text: JSON.stringify({ status, ...result }, null, 2) }] };
+        }
+
+        case 'pull_devsmind_branch': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const result = pullDevsmindBranch(devmindPath);
+          if (!result.found) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({ status: 'not_found', message: `No '${DEVSMIND_BRANCH}' branch found locally or on the remote yet — run push_devsmind_branch first.`, ...result }, null, 2)
+              }]
+            };
+          }
+          const db = getDatabase(devmindPath);
+          db.syncFromDisk();
+          return { content: [{ type: 'text', text: JSON.stringify({ status: 'pulled', ...result, counts: db.getCounts() }, null, 2) }] };
         }
 
         // NOTE: `workflow_pause` and `workflow_resume` are retained as thin aliases for

@@ -74,14 +74,14 @@ export function updateScratchpad(
   return updated;
 }
 
-export function completeScratchpad(devmindPath: string): IndexScratchpad {
-  const existing = readScratchpad(devmindPath);
+export function completeScratchpad(devmindPath: string, fileName?: string): IndexScratchpad {
+  const existing = readScratchpad(devmindPath, fileName);
   if (!existing) throw new Error('No indexing session found. Call index_start first.');
   const completed: IndexScratchpad = {
     ...existing,
     status: 'complete',
     updated_at: new Date().toISOString()
   };
-  writeScratchpad(devmindPath, completed);
+  writeScratchpad(devmindPath, completed, fileName);
   return completed;
 }

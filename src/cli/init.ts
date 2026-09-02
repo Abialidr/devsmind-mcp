@@ -13,9 +13,10 @@ import {
   BRAIN_DIR_NAME,
   BRAIN_DIR_NAMES,
   resolveBrainDir,
-  LEGACY_BRAIN_DIR_NAME
+  LEGACY_BRAIN_DIR_NAME,
+  findMissingStandaloneRepoPaths
 } from '../utils/config';
-import { pickDirectory, CancelledError } from './integrations/prompt';
+import { browseForDir } from './integrations/prompt';
 import { normalizeIgnoreEntry } from '../db/activity';
 
 // ─── Detection Helpers ─────────────────────────────────────────────────────
@@ -24,15 +25,6 @@ import { normalizeIgnoreEntry } from '../db/activity';
  * Interactive folder picker for init. Returns the chosen absolute directory, or
  * null if the user cancelled (so callers can abort init cleanly).
  */
-async function browseForDir(message: string, startDir: string): Promise<string | null> {
-  try {
-    return await pickDirectory(startDir, message);
-  } catch (err) {
-    if (err instanceof CancelledError) return null;
-    throw err;
-  }
-}
-
 /** Read a global git config value (user.name, user.email, etc.) */
 function readGitConfig(key: string): string {
   try {
@@ -539,20 +531,9 @@ async function handleExistingInit(
   } else {
     console.log(`🌐 Standalone mode — checking repository paths in .env...`);
 
-    const missingKeys: RepoConfig[] = [];
-    const invalidPaths: { repo: RepoConfig; currentPath: string }[] = [];
-
-    for (const repo of config.repos) {
-      if ('path_key' in repo && repo.path_key) {
-        const currentPath = envConfig[repo.path_key];
-        if (!currentPath) {
-          missingKeys.push(repo);
-        } else if (!fs.existsSync(path.resolve(currentPath))) {
-          invalidPaths.push({ repo, currentPath });
-        } else {
-          envLines.push(`${repo.path_key}=${currentPath}`);
-        }
-      }
+    const { ok, missing: missingKeys, invalid: invalidPaths } = findMissingStandaloneRepoPaths(config, envConfig);
+    for (const { repo, currentPath } of ok) {
+      envLines.push(`${repo.path_key}=${currentPath}`);
     }
 
     // Keep unaffected existing keys (not repo paths, not dev info)

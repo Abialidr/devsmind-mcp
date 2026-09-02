@@ -1,11 +1,80 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
-import { resolveDevmindDir } from '../utils/config';
+import { resolveDevmindDir, loadProjectContext, findMissingStandaloneRepoPaths } from '../utils/config';
 import { DevMindDatabase } from '../db/database';
 import { runAnalysis } from '../db/analyze';
 import { printReport } from './analyze';
 import { renderSyncProgress, clearSyncProgressLine } from './sync-progress';
+import { browseForDir, confirmPrompt, CancelledError } from './integrations/prompt';
+import { handleRule } from './rule';
+import { handleSkill } from './integrations/skill';
+
+/**
+ * Standalone mode only: `config.json` may now name a repo this machine's `.env` has no path
+ * for yet — a teammate ran `devsmind add-repo` (or `init`) and pushed the change, but nothing
+ * updates `.env`/rule/skill files on ITS OWN just because a pull brought that in. Detected here
+ * so `devsmind sync`/`devsmind pull` catch it rather than leaving rule/skill silently describing
+ * a smaller repo set than what's actually configured.
+ *
+ * Interactive only — a non-TTY run (CI, a script) prints a warning and skips straight to the
+ * sync itself rather than hanging on a prompt that can't be answered; the missing repo(s) just
+ * won't sync until someone runs this from a real terminal.
+ */
+export async function reconcileRepoPaths(devmindDir: string): Promise<void> {
+  const ctx = loadProjectContext(devmindDir);
+  const { ok, missing, invalid } = findMissingStandaloneRepoPaths(ctx.config, ctx.env);
+  if (missing.length === 0 && invalid.length === 0) return;
+
+  const needsPath = [...missing, ...invalid.map(i => i.repo)];
+  console.log(`\n🔍 DevsMind — Repo list changed since this machine last synced`);
+  console.log(`   ${needsPath.length} repo(s) need a local path here (likely "devsmind add-repo" ran elsewhere): ${needsPath.map(r => r.name).join(', ')}`);
+
+  if (!process.stdout.isTTY) {
+    console.log(`   ⚠️  Non-interactive session — skipping the path prompt. Add ${needsPath.map(r => r.path_key).join('/')} to .env manually, or re-run this from a terminal.\n`);
+    return;
+  }
+
+  // Rebuild .env from KNOWN-good state — the already-valid repo paths (`ok`) plus every
+  // non-repo-path key untouched — rather than filtering the raw file line by line, so a stale
+  // `invalid` entry's old line can't survive alongside the freshly-resolved replacement for the
+  // same key (same rebuild-not-patch approach devsmind init's existing-brain repair step uses).
+  const envLines: string[] = [];
+  for (const { repo, currentPath } of ok) envLines.push(`${repo.path_key}=${currentPath}`);
+  const repoPathKeys = new Set(ctx.config.repos.map(r => 'path_key' in r ? r.path_key : undefined).filter(Boolean));
+  for (const [key, value] of Object.entries(ctx.env)) {
+    if (!repoPathKeys.has(key)) envLines.push(`${key}=${value}`);
+  }
+
+  for (const repo of needsPath) {
+    if (!repo.path_key) continue;
+    const invalidEntry = invalid.find(i => i.repo.name === repo.name);
+    const localPath = await browseForDir(
+      `Select the local folder for repo "${repo.name}" (${repo.path_key})`,
+      invalidEntry?.currentPath || process.cwd()
+    );
+    if (localPath === null) { console.log('\nCancelled.'); throw new CancelledError(); }
+    envLines.push(`${repo.path_key}=${localPath}`);
+  }
+  const envPath = path.join(devmindDir, '.env');
+  fs.writeFileSync(envPath, envLines.join('\n') + '\n', 'utf-8');
+  console.log(`   💾 Updated ${envPath.replace(/\\/g, '/')}`);
+
+  // The repo list just grew — rule/skill were generated against the OLD, shorter list. Walk
+  // through refreshing them, one tool at a time, looping so more than one can be updated.
+  console.log(`\n📋 Your devsmind rule/skill files may now be stale — they don't mention the new repo yet.`);
+  let addRule = await confirmPrompt('Update devsmind rule for a tool now?', true);
+  while (addRule) {
+    await handleRule({ path: devmindDir });
+    addRule = await confirmPrompt('Update the rule for another tool too?', false);
+  }
+  let addSkill = await confirmPrompt('Update devsmind skill for a tool now?', true);
+  while (addSkill) {
+    await handleSkill({ path: devmindDir });
+    addSkill = await confirmPrompt('Update the skill for another tool too?', false);
+  }
+  console.log(`\nℹ️  If your tool has its own memory feature, run "devsmind memory" too — the repo list it should mention just changed.\n`);
+}
 
 /**
  * `devsmind sync` — force the on-disk graph (`graph/**`), history (`history/*.json`),
@@ -22,6 +91,10 @@ import { renderSyncProgress, clearSyncProgressLine } from './sync-progress';
  * per process. So after a `git pull` the committed graph changes never reach the
  * local DB without a restart. This command applies them on demand.
  *
+ * Starts with {@link reconcileRepoPaths} — standalone mode only, and a no-op the vast
+ * majority of runs (nothing missing), so this stays exactly as fast as before whenever
+ * there's nothing to reconcile.
+ *
  * `--analyze` (optionally with `--fix`) runs `devsmind analyze` immediately after,
  * on the same connection — the natural place to catch drift a teammate's changes
  * introduced, right when you pull them in.
@@ -35,6 +108,13 @@ export async function handleSync(opts: { path?: string; analyze?: boolean; fix?:
       `   Run from inside a DevsMind brain folder, or pass --path <devmind_path>.`
     );
     process.exit(1);
+  }
+
+  try {
+    await reconcileRepoPaths(devmindDir);
+  } catch (err) {
+    if (err instanceof CancelledError) return;
+    throw err;
   }
 
   const dbPath = path.join(devmindDir, 'brain.db');
