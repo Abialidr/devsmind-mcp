@@ -200,4 +200,31 @@ describe('devsmind-branch — push/pull over real git', () => {
     expect(files).not.toMatch('brain.db');
     expect(files).not.toMatch('local/');
   });
+
+  // Regression coverage for a real incident: `devsmind push` ran inside an IDE-embedded terminal
+  // with no real TTY for a credential prompt to attach to, and hung indefinitely with no error —
+  // `spawnSync('git', ...)` had no GIT_TERMINAL_PROMPT=0, no stdin detach, and no timeout, so a
+  // `push`/`fetch` that wanted to prompt for credentials just blocked forever instead of failing.
+  // Reproducing the hang itself isn't practical here (it needs a host that actually reaches
+  // credential negotiation, which isn't available offline/in CI) — this instead proves the three
+  // concrete measures are in place on every git invocation this module makes, which is what
+  // actually prevents the hang regardless of which git operation would have triggered it.
+  it('spawns every git call with prompt suppression, detached stdin, and a timeout — so a hung credential prompt fails fast instead of hanging forever', () => {
+    const spawnSyncSpy = jest.spyOn(require('child_process'), 'spawnSync');
+    jest.resetModules();
+    const { pushDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', { a: 1 });
+
+    pushDevsmindBranch(devA, 'spawn-options check');
+
+    expect(spawnSyncSpy).toHaveBeenCalled();
+    for (const call of spawnSyncSpy.mock.calls) {
+      const [cmd, , opts] = call as [string, string[], Record<string, unknown>];
+      if (cmd !== 'git') continue;
+      expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+      expect(opts.timeout).toBeGreaterThan(0);
+      expect((opts.env as Record<string, string>).GIT_TERMINAL_PROMPT).toBe('0');
+    }
+    spawnSyncSpy.mockRestore();
+  });
 });

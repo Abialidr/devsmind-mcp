@@ -56,11 +56,44 @@ interface GitResult {
   stderr: string;
 }
 
+/** Hard ceiling on any single git call. Push/fetch are the only ones that touch the network,
+ *  but every call gets this — a stuck call is a stuck call regardless of which one it is, and
+ *  this exists as the last-resort net under the two prompt-suppression measures below, not as
+ *  the primary defense against a slow network. */
+const GIT_TIMEOUT_MS = 60_000;
+
 /** Runs `git <args>` via argv (never a shell string) — the commit message and paths passed
  *  through this module can be arbitrary text, so nothing here may go through `execSync`'s
- *  shell interpolation. Never throws; callers check `.ok`. */
+ *  shell interpolation. Never throws; callers check `.ok`.
+ *
+ *  Three measures against `git push`/`fetch` hanging forever waiting on a credential or
+ *  host-key prompt nothing can answer — the exact failure a `devsmind push` run inside an
+ *  IDE-embedded terminal (no real TTY for a GUI credential prompt to attach to) hit in
+ *  practice, silently, with no error and no way out short of killing the process:
+ *  `GIT_TERMINAL_PROMPT=0` is git's own documented switch to fail fast instead of prompting;
+ *  `stdio: ['ignore', ...]` detaches stdin so there is no path to read a response from even if
+ *  something ignored that env var; and `timeout` is the backstop for a stall that isn't a
+ *  prompt at all (a dead network) but still isn't self-resolving. */
 function git(cwd: string, args: string[]): GitResult {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf-8' });
+  const res = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  if (res.error) {
+    // spawnSync sets this on a timeout kill (or the git binary not being found) rather than a
+    // normal non-zero exit — surfaced through the same shape everything else here already checks.
+    const timedOut = (res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || res.signal === 'SIGTERM';
+    return {
+      ok: false,
+      stdout: (res.stdout || '').toString().trim(),
+      stderr: timedOut
+        ? `git ${args[0]} timed out after ${GIT_TIMEOUT_MS / 1000}s — likely waiting on a credential prompt with nothing to answer it. Configure a credential helper (git config credential.helper) or an SSH key with no passphrase prompt, then retry.`
+        : res.error.message,
+    };
+  }
   return { ok: res.status === 0, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim() };
 }
 
