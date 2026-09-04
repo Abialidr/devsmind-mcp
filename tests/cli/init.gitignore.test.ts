@@ -56,6 +56,35 @@ describe('ensureDevmindGitignore', () => {
     expect(entries()).toEqual(DEVMIND_GITIGNORE_ENTRIES);
   });
 
+  // The four shared-brain directories are the reason this list stopped being purely "local
+  // state". They ARE committed — on the `devsmind` branch, which carries its own .gitignore
+  // without them — and must be invisible on the branch the developer actually works from, or
+  // every sync drags thousands of brain files into their pull request.
+  it.each(['graph/', 'history/', 'vectors/', 'workflows/'])(
+    'ignores %p, so brain data never lands in a working branch commit',
+    dirEntry => {
+      ensureDevmindGitignore(dir);
+
+      expect(entries()).toContain(dirEntry);
+    }
+  );
+
+  it('adds the brain directories to a brain created before they were ignored', () => {
+    // Exactly what a pre-existing brain's file looks like: the old local-only list, written when
+    // graph/ and friends were still meant to be committed alongside the code.
+    fs.writeFileSync(
+      path.join(dir, '.gitignore'),
+      '.env\nbrain.db\nbrain.db-journal\nbrain.db-wal\nbrain.db-shm\nindex_scratchpad.json\nhistory_scratchpad.json\nlocal/\n',
+      'utf-8'
+    );
+
+    const result = ensureDevmindGitignore(dir);
+
+    expect(result.changed).toBe(true);
+    expect(result.added).toEqual(['graph/', 'history/', 'vectors/', 'workflows/']);
+    expect(entries()).toEqual(DEVMIND_GITIGNORE_ENTRIES);
+  });
+
   // The bug this function had: matching was raw string equality, so a hand-written `local`
   // never counted as covering `local/`, and every run appended another one underneath.
   it.each(['local', '/local', '/local/', 'local/'])(
@@ -125,10 +154,15 @@ describe('ensureDevmindGitignore', () => {
     for (const required of ['.env', 'brain.db', 'index_scratchpad.json', 'history_scratchpad.json', 'local/']) {
       expect(DEVMIND_GITIGNORE_ENTRIES).toContain(required);
     }
-    // ...and must NOT ignore what the team is meant to share.
-    for (const shared of ['config.json', 'graph', 'history', 'vectors', 'workflows']) {
-      expect(DEVMIND_GITIGNORE_ENTRIES.map(normalizeIgnoreEntry)).not.toContain(shared);
-    }
+    // ...and must NOT ignore config.json, which is shared on the developer's own branch — it is
+    // the repo list, and a teammate cloning the code needs it before any brain sync can run.
+    //
+    // graph/history/vectors/workflows were once listed here too, on the reasoning that anything
+    // shared must be tracked wherever the developer stands. That stopped being true when the
+    // `devsmind` branch arrived to hold them: they are still shared, just from one branch instead
+    // of every branch, and tracking them here as well is what put thousands of brain files into
+    // ordinary pull requests.
+    expect(DEVMIND_GITIGNORE_ENTRIES.map(normalizeIgnoreEntry)).not.toContain('config.json');
   });
 });
 

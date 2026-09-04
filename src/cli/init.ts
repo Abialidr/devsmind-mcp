@@ -112,12 +112,32 @@ function aggregateIgnoredPaths(repoPaths: string[]): string[] {
 }
 
 /**
- * Everything under `.devmind/` that is local-machine/local-developer state and must never be
- * committed: the credentials file, the SQLite brain (plus its transient sidecar files — rollback
- * journal is what actually appears since we run in SQLite's default journal mode, not WAL, but
- * -wal/-shm are kept too in case that ever changes), the two in-progress scratchpads, and
- * `local/` (per-developer activity/feedback logs — see activity.ts's `localDir`). Everything
- * else under `.devmind/` (config.json, graph/, history/, vectors/) is meant to be committed.
+ * Everything under `.devmind/` that the developer's OWN branch must not track. Two different
+ * reasons, both landing in the same list:
+ *
+ * - **Local-machine state, committed nowhere at all**: the credentials file, the SQLite brain
+ *   (plus its transient sidecars — `-wal` and `-shm` are the ones that actually appear now that
+ *   the brain opens in WAL mode, with `-journal` kept for any brain still on the old rollback
+ *   mode), the two in-progress scratchpads, and `local/` (per-developer activity/feedback logs —
+ *   see activity.ts's `localDir`).
+ * - **Shared brain data that belongs to the `devsmind` branch instead**: `graph/`, `history/`,
+ *   `vectors/`, `workflows/`. These ARE committed and shared with the team — but only on the
+ *   `devsmind` branch, which carries its own `.gitignore` without these four entries and so
+ *   tracks them normally. `devsmind git-sync` moves them between the two.
+ *
+ * That second group is why this list exists in its current form. It predates the `devsmind`
+ * branch, and used to say those four were "meant to be committed" — true when a brain lived on
+ * `main` alongside the code, and the direct cause of a working branch showing thousands of brain
+ * files as pending changes and dragging them into every pull request. The files still sit on disk
+ * exactly as before, and the brain still reads them; only the developer's branch stops watching.
+ *
+ * Note this cannot retroactively untrack a brain whose graph/ etc. were already committed to a
+ * code branch by an older DevsMind — git keeps tracking what it already tracks. Such a repo needs
+ * a one-time `git rm -r --cached .devmind/graph …` (which leaves every file on disk).
+ *
+ * The three brain.db sidecars were listed here BEFORE WAL was enabled, which is why turning it on
+ * needed no gitignore change — worth preserving as the reason all three stay listed regardless of
+ * the mode any given brain happens to be in.
  */
 export const DEVMIND_GITIGNORE_ENTRIES = [
   '.env',
@@ -127,7 +147,12 @@ export const DEVMIND_GITIGNORE_ENTRIES = [
   'brain.db-shm',
   'index_scratchpad.json',
   'history_scratchpad.json',
-  'local/'
+  'local/',
+  // Tracked on the `devsmind` branch, never on the branch you work from.
+  'graph/',
+  'history/',
+  'vectors/',
+  'workflows/'
 ];
 
 /**
@@ -536,11 +561,6 @@ async function handleExistingInit(
     for (const { repo, currentPath } of ok) {
       envLines.push(`${repo.path_key}=${currentPath}`);
     }
-    // A skipped repo needs no prompt, ever — but its marker must survive this rewrite or the
-    // next run would treat it as freshly missing and ask again.
-    for (const repo of skipped) {
-      envLines.push(`${repo.path_key}=${SKIPPED_REPO_MARKER}`);
-    }
 
     // Keep unaffected existing keys (not repo paths, not dev info)
     for (const [key, value] of Object.entries(envConfig)) {
@@ -551,26 +571,45 @@ async function handleExistingInit(
       }
     }
 
+    // Skipped repos ARE re-offered here, unlike in `devsmind sync`. The point of the skip marker
+    // is that a routine reconcile never nags — a developer with one repo out of a dozen would
+    // otherwise answer the same eleven prompts on every sync. But `init` is the command you run
+    // deliberately when your setup has changed, and "I cloned that repo since" is exactly the
+    // change it exists to capture. Skipping again is one keypress, and the choice re-writes the
+    // same marker, so re-running costs nothing.
     if (skipped.length) {
-      console.log(`⏭️  ${skipped.length} repo(s) marked as not on this machine: ${skipped.map(r => r.name).join(', ')} (change with "devsmind add-repo" or by editing .env)`);
+      console.log(`⏭️  ${skipped.length} repo(s) previously marked as not on this machine: ${skipped.map(r => r.name).join(', ')}`);
+      console.log(`   Asking again in case that changed — skip again to keep them as they are.`);
     }
-    if (missingKeys.length === 0 && invalidPaths.length === 0) {
+    const reposToPrompt = [...missingKeys, ...invalidPaths.map(ip => ip.repo), ...skipped];
+    if (reposToPrompt.length === 0) {
       console.log(`✅ All repo paths are configured and valid.`);
     } else {
       console.log(`📝 Please configure paths for your repositories on this machine:`);
-      const reposToPrompt = [...missingKeys, ...invalidPaths.map(ip => ip.repo)];
 
+      const skippedKeys = new Set(skipped.map(r => r.path_key));
       for (const repo of reposToPrompt) {
         if ('path_key' in repo && repo.path_key) {
+          // A repo the developer already chose to skip defaults BACK to skip, so keeping that
+          // answer is one keypress rather than a decision to re-make. Only a repo that has never
+          // been answered for defaults to browsing.
+          const wasSkipped = skippedKeys.has(repo.path_key);
           let choice: 'browse' | 'skip';
           try {
             choice = await selectPrompt(
-              `Repo "${repo.name}" (${repo.path_key})`,
+              wasSkipped
+                ? `Repo "${repo.name}" (${repo.path_key}) — currently skipped`
+                : `Repo "${repo.name}" (${repo.path_key})`,
               [
                 { title: '📂 Browse for its local folder', value: 'browse' as const },
-                { title: `⏭️  Skip — not on this machine`, value: 'skip' as const },
+                {
+                  title: wasSkipped
+                    ? `⏭️  Keep skipping — still not on this machine`
+                    : `⏭️  Skip — not on this machine`,
+                  value: 'skip' as const
+                },
               ],
-              0
+              wasSkipped ? 1 : 0
             );
           } catch (err) {
             if (err instanceof CancelledError) { console.log('❌ Initialization cancelled.'); return; }
@@ -582,7 +621,9 @@ async function handleExistingInit(
             continue;
           }
 
-          const initialPath = envConfig[repo.path_key] || process.cwd();
+          // The browser must never open at the skip sentinel — it is a marker, not a path.
+          const previous = envConfig[repo.path_key];
+          const initialPath = previous && previous !== SKIPPED_REPO_MARKER ? previous : process.cwd();
           const localPath = await browseForDir(
             `Select the local folder for repo "${repo.name}" (${repo.path_key})`,
             initialPath

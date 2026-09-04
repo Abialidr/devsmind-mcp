@@ -65,14 +65,14 @@ Running `devsmind init` creates a `.devsmind/` directory in your workspace. This
 
 ```
 .devsmind/
-  ├── .gitignore              ← Written by init; ignores everything marked LOCAL below
+  ├── .gitignore              ← Written by init; ignores LOCAL and BRANCH entries below
   ├── config.json             ← Project metadata & repository mapping        (COMMITTED)
-  ├── graph/                  ← Distributed graph structure JSON             (COMMITTED)
+  ├── graph/                  ← Distributed graph structure JSON               (BRANCH)
   │     └── [repo_name]/[path].json
-  ├── history/                ← Change logs, code snapshots, reasoning       (COMMITTED)
+  ├── history/                ← Change logs, code snapshots, reasoning         (BRANCH)
   │     └── [id].json
-  ├── vectors/                ← Semantic embeddings from `devsmind embed`    (COMMITTED)
-  ├── workflows/              ← Feature timelines: steps + reasoning         (COMMITTED)
+  ├── vectors/                ← Semantic embeddings from `devsmind embed`      (BRANCH)
+  ├── workflows/              ← Feature timelines: steps + reasoning           (BRANCH)
   │     └── [id]/workflow.json + v2.json
   ├── .env                    ← This machine's developer name + repo paths       (LOCAL)
   ├── brain.db                ← SQLite cache, rebuilt from the JSON above       (LOCAL)
@@ -84,9 +84,15 @@ Running `devsmind init` creates a `.devsmind/` directory in your workspace. This
         └── feedback*.jsonl
 ```
 
-**COMMITTED vs LOCAL is the whole storage design.** Committed is the *team's* shared brain — graph, reasoning, feature timelines. Local is either derivable (`brain.db` is a cache; delete it and `devsmind sync` rebuilds it) or genuinely personal (`local/` holds your verbatim requests and revert backups, which only mean anything on the machine that wrote them).
+**Those three labels are the whole storage design.**
 
-> **COMMITTED, but not necessarily to your code branch as of 4.3.0.** By default `graph/`/`history/`/`vectors/`/`workflows/` still commit onto whatever branch you're on. Run `devsmind push` and they move to a dedicated `devsmind` branch instead, so a PR diff isn't drowned in graph/history churn — `devsmind pull` brings them back down. `config.json` always stays on your code branch; see [Other commands](#-other-commands-cheat-sheet).
+- **COMMITTED** — on your code branch, like any other file. Only `config.json`: it is the repo list, and a teammate needs it before a brain sync can run at all.
+- **BRANCH** — the team's shared brain: graph, reasoning, feature timelines. Shared, but from a dedicated `devsmind` branch rather than from yours. They sit in `.devsmind/` on your disk exactly as before and the brain reads them from there; your working branch simply doesn't track them.
+- **LOCAL** — never committed anywhere. Either derivable (`brain.db` is a cache; delete it and `devsmind sync` rebuilds it) or genuinely personal (`local/` holds your verbatim requests and revert backups, which only mean anything on the machine that wrote them).
+
+> **BRANCH is new in 4.4.0, and it is why `.gitignore` now lists those four directories.** Before, they committed onto whatever branch you happened to be on — so an ordinary feature PR arrived carrying thousands of graph and history files alongside three lines of real code, and two teammates conflicted on files neither had opened. Now one branch owns them. Ask your agent to sync (the `devsmind_git_sync` tool) and it moves them there and brings teammates' work back down; see [MCP tools](#-mcp-tools-grouped-by-purpose).
+>
+> A brain created before 4.4.0 already has those directories tracked on a code branch, and git keeps tracking what it already tracks — topping the `.gitignore` up cannot undo that. **`devsmind git-sync` detects it and untracks them for you**, leaving every file on disk. It stops one step short of committing, because that would be a commit on *your* branch: run `git commit` on the staged result yourself, or a later merge will discard it and the files will come back.
 
 ### Flexibility: Where should the brain live?
 
@@ -311,6 +317,7 @@ Rough benchmark (~1,080-file repo, informal): local Ollama model took ~15h at ~5
 |---|---|
 | `devsmind start [--stdio] [-p <port>]` | Run the MCP server |
 | `devsmind sync [--analyze] [--fix]` | Pull committed graph changes into your local cache. *(4.3.0)* Also catches a repo added elsewhere first — standalone mode, no-op when nothing's missing |
+| `devsmind git-status` | *(4.4.0)* How much of this brain hasn't reached the shared `devsmind` branch yet — per directory, counting **modified** files, not just added/deleted. Read-only. Useful precisely because those directories are gitignored on your own branch, so plain `git status` says nothing about the brain |
 | `devsmind describe [--provider …] [--key …] [--dry-run]` | Backfill natural-language descriptions for nodes that have none — what `search_nodes` needs to match a plain-English query. `--dry-run` lists the backlog without an API key. Safe to re-run |
 | `devsmind embed [--force] [--dry-run]` | Turn those descriptions into semantic vectors, **fully local** — on-device ONNX, no credentials, no network. `--force` re-embeds everything after a model upgrade. Safe to re-run |
 | `devsmind feedback [--since <days>] [--all]` | Read what your agent reported via `commit_changes` — graph problems, product feedback, indexer-rule candidates. Local, never pushed |
@@ -322,15 +329,15 @@ Rough benchmark (~1,080-file repo, informal): local Ollama model took ~15h at ~5
 | `devsmind prune` | Interactive review + permanent delete of nodes/history |
 | `devsmind workflow` | Interactive view of multi-day feature workflows |
 | `devsmind workflow-import <path>` | Import existing flow docs as resumable workflows |
-| `devsmind push [-m <message>]` | *(4.3.0)* Commit `graph/history/vectors/workflows` onto a dedicated `devsmind` branch and push — keeps that churn out of your code branch's PR diff. Your checked-out branch is never touched |
-| `devsmind pull` | *(4.3.0)* Sync `graph/history/vectors/workflows` down from the `devsmind` branch into `.devsmind/` and re-sync `brain.db` — the read side of `push`. Runs the same repo-added-elsewhere check `sync` does |
 | `devsmind add-repo` | *(4.3.0, standalone mode)* Add ONE repo to an existing brain and index just that repo, without re-running `init`. Resumable if interrupted |
+
+> **`devsmind push`/`devsmind pull` were removed in 4.3.2.** Sharing the brain is now one AI-driven operation — just ask your agent to sync, and it calls `devsmind_git_sync` (see below). The old pair couldn't survive a teammate pushing between your pull and your push: the push was rejected, and the pull it told you to run then *overwrote* your unpushed work, because it never merged.
 
 ---
 
 ## 🔌 MCP tools, grouped by purpose
 
-DevsMind exposes 39 tools to the agent. The ones you'll see referenced most:
+DevsMind exposes 38 tools to the agent. The ones you'll see referenced most:
 
 | Group | Tools |
 |---|---|
@@ -340,7 +347,7 @@ DevsMind exposes 39 tools to the agent. The ones you'll see referenced most:
 | **Write (the important one)** | `edit_node` — the write path to use, for every file. Edits any file, traces what changed, and **returns the red/green diff of what it changed** so you see it in the session — all in one call. `stage_change` catches up when a file already got edited WITHOUT `edit_node` — same shape, but it locates `new_string` already on disk instead of writing it. `commit_changes` flushes everything staged and takes the one `reasoning` (why/goal) that gets recorded against all of it — **not git**, despite the name: it never runs a git command, it only writes into DevsMind's own local graph. Your actual `git commit`/`git push` is still a separate step you (or your agent, if you ask it to) do yourself. |
 | **Maintenance** | `analyze_graph` (zero-token health check), `recheck_graph`, `rename_node`/`deprecate_node`, and the feedback loop: `read_graph_feedback` → fix → `mark_graph_feedback_processed` |
 | **Multi-day workflows** | `workflow_create`, `workflow_bind` (per session, local to you), `workflow_list`, `workflow_get_context`, `workflow_add_step`, `workflow_remove_step` (undo a step added by mistake), `workflow_sync`, `workflow_archive`, `workflow_import` |
-| **The `devsmind` branch** *(4.3.0)* | `push_devsmind_branch` — **unlike `commit_changes`, this one DOES run real git** (commit + push), but only ever on the dedicated `devsmind` branch; your checked-out branch is never touched. `pull_devsmind_branch` reads it back down and re-syncs `brain.db` |
+| **The `devsmind` branch** *(4.3.2)* | `devsmind_git_sync` — one call does it all: flush `brain.db` to disk, commit onto the dedicated `devsmind` branch, **3-way merge** whatever teammates pushed, push the result. **Unlike `commit_changes`, this one DOES run real git** (commit + merge + push), but only ever on the `devsmind` branch, via a throwaway worktree — your checked-out branch is never touched. Genuine conflicts come back for the agent to resolve, and a resolution that would drop an entry is rejected |
 | **Adding a repo** *(4.3.0, standalone mode)* | `add_repo` — registers one new repo and indexes it, same local extraction `index_start` uses, scoped to just that repo. Continue with `index_continue`/`index_complete`, passing the `scratchpad` value it returns |
 
 Full descriptions and token-cost notes: see [detailExplanation.md § MCP Tool Reference](detailExplanation.md#-mcp-tool-reference).
@@ -353,7 +360,9 @@ The server also declares the MCP **`prompts`** capability, separate from tools: 
 
 The layout is up top under [Architecture](#-architecture-the-devsmind-directory). What matters about it:
 
-**The JSON is the source of truth, not the database.** `graph/`, `history/`, `vectors/` and `workflows/` are line-oriented JSON — git-mergeable, reviewable in a PR. `brain.db` is a disposable local cache rebuilt from them by `devsmind sync` or on server start, which is why it's gitignored: sharing a SQLite binary would conflict on every merge.
+**The JSON is the source of truth, not the database.** `graph/`, `history/`, `vectors/` and `workflows/` are line-oriented JSON, so git can 3-way merge them — which is what lets two teammates edit the same graph file and both keep their work. `brain.db` is a disposable local cache rebuilt from them by `devsmind sync` or on server start, which is why it's gitignored: sharing a SQLite binary would conflict on every merge.
+
+**They are reviewed on the `devsmind` branch, not in your PR.** Same JSON, same mergeability — just tracked from one branch instead of every branch, so a three-line code change doesn't arrive as a three-thousand-file diff.
 
 **`local/` is the one thing nothing can regenerate.** Your requests, revert backups and feedback exist only there, on your machine, by design.
 

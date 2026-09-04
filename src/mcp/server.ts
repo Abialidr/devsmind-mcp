@@ -12,7 +12,8 @@ import {
   SearchNodesResult, CompactSearchNodesResult
 } from '../db/database';
 import { loadProjectContext, findBrainDir, brainDirOrDefault, isStandaloneMode, StandaloneRepoConfig } from '../utils/config';
-import { pushDevsmindBranch, pullDevsmindBranch, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
+import { gitSyncDevsmindBranch, repairBrainTracking, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
+import { ensureDevmindGitignore } from '../cli/init';
 import { getViewHtml, ASSETS_DIR, DEVSMIND_TOKEN } from './visualizer';
 import { diffEdits, renderUnifiedDiff, diffSnapshots } from '../utils/diff';
 import { revertLastEdit } from '../db/revert';
@@ -417,10 +418,10 @@ const SESSION_EXEMPT_READ_TOOLS = new Set<string>([
   // are gone, so they no longer belong here. `workflow_list` is NOT exempt any more either: it
   // reports `bound_workflow_id`, which is a per-session fact — without a session_id it could only
   // ever answer null, which reads as "you are on nothing" rather than "I cannot tell".
-  'get_activity_log',
-  // Pulls committed brain state down from git — no session-scoped state involved. push_devsmind_branch
-  // is NOT exempt: it's a real write (commit + push), same bar as commit_changes/workflow_add_step.
-  'pull_devsmind_branch'
+  'get_activity_log'
+  // `devsmind_git_sync` is deliberately NOT exempt: it's a real write (commit + merge + push),
+  // same bar as commit_changes/workflow_add_step. The old read-only `pull_devsmind_branch` was
+  // exempt, but it no longer exists — syncing is now one operation that always writes.
 ]);
 
 /**
@@ -1165,26 +1166,21 @@ export function createMcpServer(): Server {
           }
         },
         {
-          name: 'push_devsmind_branch',
-          description: `Commit graph/history/vectors/workflows onto the dedicated '${DEVSMIND_BRANCH}' branch and push it. UNLIKE commit_changes, this DOES run real git commands (commit + push) — but only ever on the '${DEVSMIND_BRANCH}' branch, via a throwaway worktree, so the developer's actual checked-out branch is never touched, moved, or committed to. This exists so a PR diff shows only real code changes, not the hundreds of graph/history files DevsMind itself writes. Only call this when the developer has asked you to push, not as a routine follow-up to commit_changes. Requires a commit message.`,
+          name: 'devsmind_git_sync',
+          description: `Share the brain with the team: flush brain.db to disk, commit graph/history/vectors/workflows onto the dedicated '${DEVSMIND_BRANCH}' branch, 3-way MERGE whatever teammates pushed, and push the result — one operation, in that order. UNLIKE commit_changes, this DOES run real git commands (commit + merge + push), but only ever on the '${DEVSMIND_BRANCH}' branch via a throwaway worktree, so the developer's actual checked-out branch is never touched, moved, or committed to. This is the ONLY tool for sharing the brain — there is no separate push or pull; syncing is always this one call, because a pull that overwrites cannot be safely composed with a push that can be rejected. Only call it when the developer has asked to sync/push, not as a routine follow-up to commit_changes. Requires a commit message.
+
+IF THE RESULT IS status:"conflicted": git could not merge some files on its own, and you must resolve them. Each entry in "conflicts" gives the file's "path" (relative to "worktree"), its "content" with <<<<<<< / ======= / >>>>>>> markers, and "ours"/"theirs" showing each side cleanly. These are STRUCTURED JSON files — write each one back to <worktree>/<path> as VALID JSON with no markers left, then call this tool again with the same "worktree" plus resolved:true. A merge may add or change entries but must NEVER drop one: every node id, vector key and workflow step id present in EITHER "ours" or "theirs" has to survive into your resolved file, or the result is rejected (status:"invalid_resolution") and nothing is pushed.
+
+IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/vectors/workflows still tracked on the developer's OWN branch (a brain predating 4.4.0, or a teammate on an older version re-committing them) and fixed what it safely could — topping up .gitignore, and running "git rm --cached" so git stops tracking them. Every file stays on disk and the brain is unaffected. TELL THE DEVELOPER when "needsCommit" is true, and do NOT commit it for them: the untracking is STAGED on their branch and nothing more. Staged deletions are discarded by the next merge or checkout, so if they leave it the brain files simply come back — they need to commit it themselves (e.g. git commit -m "chore: stop tracking devsmind brain files") and push, which fixes it for every teammate on their next pull.`,
           inputSchema: {
             type: 'object',
             properties: {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              message: { type: 'string', description: `Commit message for this snapshot on the '${DEVSMIND_BRANCH}' branch.` }
+              message: { type: 'string', description: `Commit message for this snapshot on the '${DEVSMIND_BRANCH}' branch.` },
+              worktree: { type: 'string', description: 'Only when resuming after resolving a conflict: the exact "worktree" path a previous conflicted response returned.' },
+              resolved: { type: 'boolean', description: 'Set true (with "worktree") to continue after you have written the resolved files to disk in that worktree.' }
             },
             required: ['devmind_path', 'message']
-          }
-        },
-        {
-          name: 'pull_devsmind_branch',
-          description: `Read-only counterpart to push_devsmind_branch: copies graph/history/vectors/workflows down from the '${DEVSMIND_BRANCH}' branch (remote-tracking ref preferred when a remote exists) into .devsmind/ on disk and re-syncs brain.db. Useful after a teammate has pushed — a plain git pull on the code branch no longer brings this data in once it lives on '${DEVSMIND_BRANCH}' instead.`,
-          inputSchema: {
-            type: 'object',
-            properties: {
-              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' }
-            },
-            required: ['devmind_path']
           }
         }
     ];
@@ -3457,32 +3453,88 @@ export function createMcpServer(): Server {
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
-        case 'push_devsmind_branch': {
+        case 'devsmind_git_sync': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
-          const message = requireStr(args, 'message', 'push_devsmind_branch');
-          const result = pushDevsmindBranch(devmindPath, message);
-          const status = !result.committed && !result.pushed
-            ? 'nothing_to_push'
-            : result.pushed
-              ? (result.committed ? 'pushed' : 'pushed_prior_commit')
-              : 'committed_local_only';
-          return { content: [{ type: 'text', text: JSON.stringify({ status, ...result }, null, 2) }] };
-        }
-
-        case 'pull_devsmind_branch': {
-          const devmindPath = resolveDevmindPath(args.devmind_path);
-          const result = pullDevsmindBranch(devmindPath);
-          if (!result.found) {
-            return {
-              content: [{
-                type: 'text',
-                text: JSON.stringify({ status: 'not_found', message: `No '${DEVSMIND_BRANCH}' branch found locally or on the remote yet — run push_devsmind_branch first.`, ...result }, null, 2)
-              }]
-            };
-          }
+          const message = requireStr(args, 'message', 'devsmind_git_sync');
+          const resuming = args.resolved === true && !!args.worktree;
           const db = getDatabase(devmindPath);
+
+          // Stage-by-stage progress on stderr (safe in stdio mode — it never touches the protocol
+          // stream). This is a genuinely long operation on a large brain: the DB flush below
+          // rewrites a graph AND vectors JSON for every file path it knows about, which is
+          // thousands of files before git is even involved. Without these lines the whole thing
+          // is silent for minutes and indistinguishable from a hang, which is exactly how it was
+          // reported. Each line names the stage and, where known, the size of the work.
+          const startedAt = Date.now();
+          const stage = (msg: string) => console.error(`[DevsMind git-sync] ${msg} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+
+          // Anything the sync had to fix about the repo itself, rather than about the brain's
+          // contents. Returned alongside the sync result so the agent can tell the developer —
+          // `needsCommit` especially, since staged-but-uncommitted deletions are silently
+          // discarded by the next merge or checkout and the problem simply comes back.
+          const repair: {
+            gitignoreAdded?: string[];
+            untrackedFiles?: number;
+            untrackedSubdirs?: string[];
+            needsCommit?: boolean;
+            untrackError?: string;
+          } = {};
+
+          // Flush brain.db OUT to disk before the branch work: syncToDisk is what actually
+          // materializes the DB into graph/vectors/workflows JSON, and gitSyncDevsmindBranch
+          // reads those files off disk. Skipping this (as the old push_devsmind_branch did)
+          // meant anything committed to the graph but not yet written out never got shared.
+          // Not on the resume leg — the files there are the caller's own resolution, and
+          // re-flushing would overwrite it.
+          if (!resuming) {
+            const counts = db.getCounts();
+            stage(`flushing brain.db to disk — ${counts.nodes} nodes, ${counts.workflows} workflows; this is the slow part on a large brain`);
+            db.syncFromDisk();
+            db.syncToDisk();
+            stage('flush complete, starting git work');
+
+            // Self-repair for a brain predating 4.4.0, or one a teammate on an older version keeps
+            // re-committing: the four shared-brain directories must be ignored on the developer's
+            // own branch and tracked only on `devsmind`. Both halves are needed and neither is
+            // sufficient alone — an ignore rule is never consulted for an already-tracked file, and
+            // untracking without the ignore rule just lets the next sync re-add them.
+            const ignoreFix = ensureDevmindGitignore(devmindPath);
+            if (ignoreFix.changed) {
+              stage(`.gitignore repaired — added ${ignoreFix.added.join(', ')}`);
+              repair.gitignoreAdded = ignoreFix.added;
+            }
+            const trackingFix = repairBrainTracking(devmindPath);
+            if (trackingFix?.error) {
+              stage(`could not untrack brain files: ${trackingFix.error}`);
+              repair.untrackError = trackingFix.error;
+            } else if (trackingFix) {
+              stage(`untracked ${trackingFix.filesUntracked} brain file(s) from your branch — STAGED, not committed`);
+              repair.untrackedFiles = trackingFix.filesUntracked;
+              repair.untrackedSubdirs = trackingFix.untracked;
+              repair.needsCommit = true;
+            }
+          } else {
+            stage('resuming after conflict resolution');
+          }
+
+          const result = gitSyncDevsmindBranch(devmindPath, message, {
+            worktree: args.worktree ? String(args.worktree) : undefined,
+            resolved: args.resolved === true
+          });
+
+          const withRepair = <T extends object>(payload: T) =>
+            Object.keys(repair).length ? { ...payload, repo_repair: repair } : payload;
+
+          if (result.status === 'conflicted' || result.status === 'invalid_resolution') {
+            stage(`stopped: ${result.status}`);
+            return { content: [{ type: 'text', text: JSON.stringify(withRepair(result), null, 2) }] };
+          }
+
+          stage(`git work done (${result.status}), re-syncing brain.db`);
+          // Pull whatever the merge brought in from teammates back into brain.db.
           db.syncFromDisk();
-          return { content: [{ type: 'text', text: JSON.stringify({ status: 'pulled', ...result, counts: db.getCounts() }, null, 2) }] };
+          stage('finished');
+          return { content: [{ type: 'text', text: JSON.stringify(withRepair({ ...result, counts: db.getCounts() }), null, 2) }] };
         }
 
         // NOTE: `workflow_pause` and `workflow_resume` are retained as thin aliases for

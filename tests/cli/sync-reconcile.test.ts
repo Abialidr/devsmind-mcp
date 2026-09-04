@@ -197,6 +197,26 @@ describe('reconcileRepoPaths', () => {
     }
   });
 
+  // The counterpart to `devsmind init`, which DOES re-offer a skipped repo. Sync must not: it
+  // runs routinely, and a developer working in one repo out of a dozen would answer eleven
+  // prompts on every single sync — the exact friction the marker exists to remove.
+  it('never re-prompts for a repo already marked skipped, however many times it runs', async () => {
+    const devmindDir = writeStandaloneBrain(
+      [{ name: 'mobile-only', path_key: 'REPO_MOBILE_ONLY' }],
+      { REPO_MOBILE_ONLY: '__skip__' }
+    );
+    try {
+      await reconcileRepoPaths(devmindDir);
+
+      // Nothing was asked at all — not the path, not rule, not skill.
+      expect(ask).not.toHaveBeenCalled();
+      // ...and the marker survived the run rather than being dropped as "missing".
+      expect(fs.readFileSync(path.join(devmindDir, '.env'), 'utf-8')).toMatch(/REPO_MOBILE_ONLY=__skip__/);
+    } finally {
+      fs.rmSync(devmindDir, { recursive: true, force: true });
+    }
+  });
+
   it('choosing "skip" writes the marker and never invokes the folder browser', async () => {
     const devmindDir = writeStandaloneBrain([{ name: 'mobile-only', path_key: 'REPO_MOBILE_ONLY' }], {});
     try {

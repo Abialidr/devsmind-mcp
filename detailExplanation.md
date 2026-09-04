@@ -73,14 +73,14 @@ Running `devsmind init` creates a `.devsmind/` directory in your workspace. This
 
 ```
 .devsmind/
-  ├── .gitignore              ← Written by init; ignores everything marked LOCAL below
+  ├── .gitignore              ← Written by init; ignores LOCAL and BRANCH entries
   ├── config.json             ← Project metadata & repository mapping        (COMMITTED)
-  ├── graph/                  ← Distributed graph structure JSON             (COMMITTED)
+  ├── graph/                  ← Distributed graph structure JSON               (BRANCH)
   │     └── [repo_name]/[path].json
-  ├── history/                ← Change logs, code snapshots, reasoning       (COMMITTED)
+  ├── history/                ← Change logs, code snapshots, reasoning         (BRANCH)
   │     └── [id].json
-  ├── vectors/                ← Semantic embeddings from `devsmind embed`    (COMMITTED)
-  ├── workflows/              ← Feature timelines: steps + reasoning         (COMMITTED)
+  ├── vectors/                ← Semantic embeddings from `devsmind embed`      (BRANCH)
+  ├── workflows/              ← Feature timelines: steps + reasoning           (BRANCH)
   │     └── [id]/workflow.json + v2.json
   ├── .env                    ← This machine's developer name + repo paths       (LOCAL)
   ├── brain.db                ← SQLite cache, rebuilt from the JSON above       (LOCAL)
@@ -92,11 +92,13 @@ Running `devsmind init` creates a `.devsmind/` directory in your workspace. This
         └── feedback*.jsonl
 ```
 
-**The committed/local split is the whole storage design.** Everything committed is the *team's* shared brain — the graph, the reasoning, the feature timelines. Everything local is either derivable (`brain.db` is a cache; delete it and it rebuilds) or genuinely personal (`local/` holds your verbatim requests and your revert backups, which are only meaningful on the machine that wrote them).
+**Those three labels are the whole storage design.** COMMITTED is `config.json` alone — the repo list, which travels with your code branch because a teammate needs it before a brain sync can run at all. BRANCH is the team's shared brain: the graph, the reasoning, the feature timelines, shared from one dedicated branch rather than from every branch. LOCAL is either derivable (`brain.db` is a cache; delete it and it rebuilds) or genuinely personal (`local/` holds your verbatim requests and your revert backups, which are only meaningful on the machine that wrote them).
 
-> **COMMITTED, but not necessarily to your code branch as of 4.3.0.** By default `graph/`, `history/`, `vectors/`, `workflows/` still commit onto whatever branch you're on, exactly as always. Run `devsmind push` and they move to a dedicated `devsmind` branch instead — decoupled from your code branches, so a PR diff isn't drowned in graph/history churn. `config.json` never moves; it's what lets a fresh clone still recognize the brain before anyone has pulled that branch. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) and [Other CLI Commands](#-other-cli-commands) below.
+> **BRANCH replaced COMMITTED for those four directories in 4.4.0, which is why `.gitignore` now lists them.** They still sit in `.devsmind/` on your disk and the brain still reads them from there — your working branch simply stops tracking them. Before this, they committed onto whatever branch you happened to be on: an ordinary feature PR arrived carrying thousands of graph and history files alongside a few lines of real code, and two teammates conflicted on files neither had opened. Ask your agent to sync (`devsmind_git_sync`) and it moves them to the `devsmind` branch and brings teammates' work back down. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) for the branch itself and [4.3.2](#432--one-devsmind_git_sync-tool-replaces-devsmind-pushpull) for the one-tool sync that replaced `devsmind push`/`pull`.
+>
+> **A brain created before 4.4.0 is repaired by `devsmind git-sync` itself.** Git keeps tracking what it already tracks, so topping up `.gitignore` cannot undo it — the sync therefore also runs `git rm --cached` over the four directories, leaving every file on disk. It deliberately stops before committing: that would be a commit on the developer's own branch, which this tool does nowhere else. The staged result is yours to commit, and worth doing promptly — a merge or checkout discards staged deletions silently and the files come straight back.
 
-`devsmind init` writes `.devsmind/.gitignore` covering every LOCAL entry, and repairs it on every re-run so a brain from an older version — or a teammate's checkout that predates an entry — can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive, and it matches entries the way git reads them (`local`, `/local` and `local/` are one entry, not three). As a backstop, the activity log checks the same file on its first write, since a brain where nobody ever re-runs `init` would otherwise never pick the line up.
+`devsmind init` writes `.devsmind/.gitignore` covering every LOCAL and BRANCH entry, and repairs it on every re-run so a brain from an older version — or a teammate's checkout that predates an entry — can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive, and it matches entries the way git reads them (`local`, `/local` and `local/` are one entry, not three). As a backstop, the activity log checks the same file on its first write, since a brain where nobody ever re-runs `init` would otherwise never pick the line up.
 
 ### Flexibility: Where should the brain live?
 
@@ -191,29 +193,34 @@ git add .devsmind && git commit -m "Add DevsMind brain"
 
 ### 🔄 B) Joining / resuming an existing brain (teammate already set it up)
 
-The `.devsmind/` folder is already in the repo — **no fresh setup, no indexing.** The committed `config.json` + `graph/` + `history/` are shared, but the `.env` (your developer identity, and in standalone mode your machine's local repo paths) is gitignored, so you still run `devsmind init` once to set up your local side:
+The brain already exists — **no fresh setup, no indexing.** It arrives in two pieces, because as of 4.4.0 it lives in two places: `config.json` comes down with your code branch like any other file, and the graph/history/vectors/workflows come from the `devsmind` branch via one sync. Your `.env` (your developer identity, and in standalone mode your machine's local repo paths) is gitignored and never shared, so you run `devsmind init` once to set up your local side:
 
 ```bash
-# 1. Get the committed brain.
+# 1. Get the code and config.json.
 git pull        # or: git clone <repo>
 
-# 2. Set up your machine-local .env. `init` detects the existing brain and,
+# 2. Get the brain data itself, off the devsmind branch. Ask your agent to sync
+#    (the devsmind_git_sync tool) — it fetches that branch, writes graph/,
+#    history/, vectors/ and workflows/ into your .devsmind/, and loads them into
+#    brain.db. Nothing checks out; your own branch never moves.
+
+# 3. Set up your machine-local .env. `init` detects the existing brain and,
 #    instead of creating a new one, just configures this machine: your
 #    developer name/email, and (standalone mode) the local paths to each repo.
 #    It does NOT re-create config or re-index the graph.
 devsmind init
 
-# 3. Connect your IDE / CLI (same guided command as above).
+# 4. Connect your IDE / CLI (same guided command as above).
 devsmind mcp
 
-# 4. Place the workspace rule for your tool.
+# 5. Place the workspace rule for your tool.
 devsmind rule
 
-# 5. (Optional) Print the "remember this" prompt again (see why below).
+# 6. (Optional) Print the "remember this" prompt again (see why below).
 #    Nothing to sync here — it never wrote anything in the first place.
 devsmind memory
 
-# 6. (Optional) Re-run the skill file too — same reasoning as the memory
+# 7. (Optional) Re-run the skill file too — same reasoning as the memory
 #    step above. Idempotent: regenerates the same content every time.
 devsmind skill
 
@@ -263,7 +270,7 @@ devsmind sync --analyze          # also run devsmind analyze right after, on the
 devsmind sync --analyze --fix    # ...and apply the safe automatic fixes too
 ```
 
-*(4.3.0, standalone mode)* Before any of that, `sync` (and `devsmind pull`) first check whether `config.json` names a repo your `.env` has no path for yet — a teammate's `devsmind add-repo` catching up to this machine. Nothing missing is a silent no-op; something missing prompts for the path, then offers to refresh `devsmind rule`/`devsmind skill` too, since those were generated against the shorter repo list. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in).
+*(4.3.0, standalone mode)* Before any of that, `sync` first checks whether `config.json` names a repo your `.env` has no path for yet — a teammate's `devsmind add-repo` catching up to this machine. (`devsmind pull` ran the same check until 4.3.2 removed that command, so `sync` is now the only place it runs.) Nothing missing is a silent no-op; something missing prompts for the path, then offers to refresh `devsmind rule`/`devsmind skill` too, since those were generated against the shorter repo list. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in).
 
 `devsmind start` can do the same before it launches the server — useful so a fresh `--stdio` process (or a restarted HTTP one) always starts from a synced, health-checked graph instead of you remembering to run `sync`/`analyze` separately first:
 
@@ -574,9 +581,9 @@ Nothing detects drift onto a different topic — asking an AI to notice "this is
     Pass `--fix` to auto-apply only the *safe, reversible* fixes: soft-deprecate orphaned/spurious/missing-file nodes (history is preserved, never hard-deleted) and delete dangling edges, and cascade-migrate detected renames. Everything else (god entities, cycles, duplicate ids, missing developer attribution, empty snapshots, untracked files) is **report-only** — these need a human or AI to decide what to do, not a mechanical fixer.
 *   **`devsmind workflow [-p, --path <devmind_path>]`** — interactive terminal view of your workflows: list them (newest-touched first, archived ones hidden until you ask), read a workflow's full timeline (steps in order, each with its reasoning, the nodes it touched, and any document paths), and archive/unarchive. Day-to-day creation and step-recording happens through the `workflow_*` MCP tools the agent calls — this is a visibility/manual-override surface, not the primary way workflows get built. There is no pause/resume here any more: binding is per session and lives on the agent side.
 *   **`devsmind workflow-import <path> [-p, --path <devmind_path>]`** — imports a folder of `.md` flow/architecture docs (one workflow per file), or a single file. Expects the common `# Title` / `## Summary` structure (falls back to the filename / first paragraph if a file doesn't follow it) — the workflow gets one seed step recording where it came from, pointing at the source document by **path** rather than copying it, so it can't go stale. Re-running the import on the same file updates that workflow in place instead of duplicating it, so it's safe to re-import after the source docs change.
-*   **`devsmind push [-p, --path <devmind_path>] [-m, --message <text>]`** *(4.3.0)* — commits `graph/history/vectors/workflows` onto the dedicated `devsmind` branch and pushes it, via a throwaway `git worktree` that never touches your actual checked-out branch. Prompts for a commit message interactively if `-m` is omitted; a non-interactive shell without `-m` exits `1`. A run with nothing new to commit is a clean no-op — except a previously-committed-but-unpushed commit (an earlier push whose `git push` step failed) still gets pushed even then, rather than being silently stranded. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in).
-*   **`devsmind pull [-p, --path <devmind_path>]`** *(4.3.0)* — the read side of `push`: copies `graph/history/vectors/workflows` down from the `devsmind` branch (the remote-tracking ref when a remote exists, else the local branch) into `.devsmind/` on disk, replacing each subdir wholesale so deletions propagate, then re-syncs `brain.db` and reports the resulting Nodes/Connections/History/Vectors/Workflows counts. Reports cleanly (not an error) when no `devsmind` branch exists anywhere yet. Starts with the same repo-path reconciliation check `sync` does — see below.
 *   **`devsmind add-repo [-p, --path] [--provider …] [--key …] [--chunk-size …] …`** *(4.3.0, standalone mode only)* — adds ONE repo to an existing brain (prompts for name + local path) and indexes just that repo, reusing `index --run`'s own flags/credentials for the indexing step. Resumable: an interrupted run continues automatically on the next `add-repo` call, with no re-prompt. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) above.
+
+> **`devsmind push` and `devsmind pull` were removed in 4.3.2**, replaced by the single `devsmind_git_sync` MCP tool — sharing the brain is an AI-driven operation now, not a terminal one. See [4.3.2](#432--one-devsmind_git_sync-tool-replaces-devsmind-pushpull) for why the old pair could not be fixed in place.
 
 ---
 
@@ -810,10 +817,11 @@ A named, backward-looking log of how one piece of functionality grew across many
 
 > Removed in 3.0.0: `workflow_pause`/`workflow_resume` (→ `workflow_bind`), `workflow_get_steps` (→ `workflow_get_context`, which is paged), `workflow_search` (→ `workflow_list`'s `query` — the old one scanned step summaries and artifact names but never the workflow's own name, so looking one up by name returned nothing), `workflow_add_artifact`/`workflow_read_artifact` (→ `doc_paths`), and `workflow_sync_retroactive` (→ `workflow_sync`, which actually reads something).
 
-### 🌿 Category 7: The `devsmind` branch *(4.3.0)*
-Moves the churny part of the brain (`graph`/`history`/`vectors`/`workflows`) onto its own git branch, out of your code branch's diff. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) for why, and [`devsmind push`/`devsmind pull`](#-other-cli-commands) for the CLI equivalents these tools share an implementation with.
-*   `push_devsmind_branch`: Commits + pushes. **Unlike `commit_changes`, this DOES run real git commands** — but only ever on the `devsmind` branch, via a throwaway worktree, so your actual checked-out branch is never touched. Only call it when the developer has asked you to push, not as a routine follow-up to `commit_changes`. Requires a `message`.
-*   `pull_devsmind_branch`: Read-only counterpart — copies the branch's content down into `.devsmind/` and re-syncs `brain.db`. Session-exempt, same as other read tools. Reports `status: 'not_found'` (not an error) when the branch doesn't exist anywhere yet.
+### 🌿 Category 7: The `devsmind` branch *(4.3.0, one tool since 4.3.2)*
+Moves the churny part of the brain (`graph`/`history`/`vectors`/`workflows`) onto its own git branch, out of your code branch's diff. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) for why the branch exists, [4.3.2](#432--one-devsmind_git_sync-tool-replaces-devsmind-pushpull) for why sharing it is now one tool instead of two, and [4.4.0](#440--brain-data-leaves-your-pull-requests-and-sync-gets-4x-faster) for the `.gitignore` half that was missing — until then the four directories were tracked on the `devsmind` branch *and* on your own, so the churn never actually left your diff.
+*   `devsmind_git_sync`: The whole cycle in one call — flush `brain.db` to disk, commit onto the `devsmind` branch, **3-way merge** whatever teammates pushed, push the result. **Unlike `commit_changes`, this DOES run real git commands** (commit + merge + push) — but only ever on the `devsmind` branch, via a throwaway worktree, so your actual checked-out branch is never touched. Requires a `message`, and a `session_id` like any other write. Only call it when the developer has asked to sync, not as a routine follow-up to `commit_changes`.
+    *   On `status: "conflicted"`, git couldn't merge some files by itself. Each entry carries the file's `path` (relative to the returned `worktree`), its marker-bearing `content`, and `ours`/`theirs` showing both sides cleanly. Write each file back as valid JSON with no markers, then call again with the same `worktree` plus `resolved: true`.
+    *   A resolution is **validated before anything is committed**: it must parse, keep the right shape for its tree, and retain every node/vector/step id present on *either* side. A resolution that drops one comes back as `status: "invalid_resolution"` and nothing is pushed — because `syncFromDisk` deletes a graph file's DB nodes before reinserting from the JSON, so a dropped id would be a silently deleted node in the shared brain.
 
 ---
 
@@ -865,6 +873,135 @@ Nor is `local/` — your requests, your revert backups, your feedback. That stay
 
 ## Changelog
 
+### 4.4.0 — brain data leaves your pull requests, and sync gets ~4x faster
+
+**One manual step if your brain predates this release** (below). Nothing else to do.
+
+#### The brain was being tracked on two branches at once
+
+4.3.0 introduced the `devsmind` branch so the shared brain would have a home of its own, away from code review. It worked — the branch was created, the data was pushed there, teammates merged through it. What was never done was the other half: telling the *developer's own* branch to stop tracking the same four directories.
+
+So both were true simultaneously. `graph/`, `history/`, `vectors/` and `workflows/` lived on the `devsmind` branch **and** on `main`, on `xyz`, on every feature branch anyone happened to be standing on when a sync ran. Every sync wrote into `.devsmind/`, that folder sits inside the repo, and `.devsmind/.gitignore` listed only local-machine state — the credentials file, `brain.db`, the scratchpads, `local/`. The four data directories were absent from it, carried forward from the design that predated the branch, where committing them alongside the code was the whole point.
+
+The result was a working branch permanently showing thousands of pending brain files, an ordinary three-line feature PR arriving as a three-thousand-file diff, and two teammates conflicting on graph files neither of them had opened.
+
+**The fix is those four entries in `.gitignore`.** They remain shared, 3-way merged and reviewable — from one branch instead of every branch. The `devsmind` branch carries its own copy of that file, without these entries, so it goes on tracking them normally; this is ordinary per-branch gitignore behaviour, not a special case. The files themselves never move: they stay in `.devsmind/` on disk and the brain reads them from there exactly as before.
+
+Worth stating plainly, because "gitignore" reads as *throw away*: nothing is deleted and nothing stops being shared. Only which branch watches the folder changes.
+
+**Existing brains need one command.** Git keeps tracking what it already tracks, so topping up `.gitignore` — which `init` does automatically on every re-run — cannot untrack a directory that was already committed. Run once, and commit:
+
+```bash
+git rm -r --cached .devsmind/graph .devsmind/history .devsmind/vectors .devsmind/workflows
+```
+
+`--cached` removes them from git's index and leaves every file on disk; the brain keeps working throughout. Use `.devmind` for a brain created before 4.2.0. Skip this and the directories keep appearing in pull requests exactly as before, because from git's point of view nothing changed.
+
+#### Sync copied all 10,000 files to carry twenty
+
+The copy step mirrored a directory by deleting the target outright and writing the whole source back. Correct, and free of edge cases — every sync paid for a complete rewrite of the brain regardless of how little had changed, and paid it twice, since a sync copies brain → worktree on the way out and merged worktree → brain on the way back. On a brain of ten thousand files carrying a day's twenty edits, essentially all of that work was wasted.
+
+It now compares first and copies only what differs. **Comparison is by content, never mtime**, and that distinction is what makes it work at all: `syncToDisk` rewrites every JSON file unconditionally on every run, so every mtime is fresh every time and a timestamp check would mark all ten thousand as changed — reproducing exactly the cost being removed. Size is checked before bytes, which rejects most differing files without reading either one.
+
+**Deletions still propagate**, explicitly now. The old mirror got that for free: wiping the target meant a locally-deleted file simply never came back. A copy that only touches changed files has to walk the target and remove what the source no longer has, or a deleted node would live on in the shared brain forever — silent data resurrection rather than a visible failure. That case has its own regression test.
+
+#### A sync took four minutes, and none of the obvious causes were it
+
+Flushing a 14,000-node brain to disk took 228 seconds, of which 0.6 were CPU. Everything about that says filesystem, and it was not.
+
+The first guess was the writing itself — `syncToDisk` re-serializes every file path on every run and rewrote each one unconditionally, identical bytes included. Skipping unchanged writes is worth doing on its own (it also stops every mtime being freshened on every sync, which is why nothing downstream could ever use timestamps to tell what changed) but it bought 13%.
+
+The second was the node lookup, which `EXPLAIN QUERY PLAN` reported as `SCAN nodes` across 14,445 rows, twice per file path. The brain turned out to carry a genuinely broken index: an older build had created `idx_nodes_file_path` as `REPLACE(LOWER(file_path), '', '/')`, the backslash lost somewhere in escaping. An expression index is consulted only for a query whose expression matches it *textually*, so a one-character difference does not degrade it — it makes it inert, maintained on every write and used by nothing. Repairing that was worth doing too, and for more than sync: every `getNodesByFilePath` in the codebase was scanning, including on `get_node_code`'s hot path. It bought another 13%.
+
+Neither was the answer, because the query could not have used any index in any case. It was shaped:
+
+```sql
+WHERE REPLACE(LOWER(file_path), '', '/') = ?    -- indexed
+   OR LOWER(file_path) LIKE ? ESCAPE ''         -- and this discards the index
+   OR LOWER(file_path) LIKE ? ESCAPE ''
+   OR LOWER(file_path) LIKE ? ESCAPE ''
+```
+
+SQLite cannot satisfy `A = ? OR B LIKE ?` from one index — a single scan is the only plan that answers all the alternatives — so it scans, no matter how good the index on the first arm is. Measured on the same connection: the equality alone is an index seek at 0.05ms; add the three `LIKE` arms and it is `SCAN nodes` at 22ms. Multiplied by 1,881 file paths and two calls each, that is essentially the whole of the four minutes.
+
+Those `LIKE` arms exist for a real case — a node whose `file_path` is a ", "-joined list of several files — but as a separate query rather than three `OR` arms, so the common path stays an index seek. That second query is skipped entirely unless the brain actually contains such a node, which is answered once and cached; the profiled brain had 0 of 14,445. The result is 228 seconds down to 58.
+
+Worth recording how easily this hid: every benchmark run against "the indexed query" still had the `LIKE` arms attached, so it was measuring a scan and reporting it as an index hit. Only `EXPLAIN QUERY PLAN` on the exact four-arm form showed it. And the correctness check was not the test suite — it was re-deriving every file with the *original* query and comparing node id sets: 14,445 rows both ways across 1,881 paths, identical.
+
+#### `devsmind git-status`, and why a new command was needed at all
+
+Ignoring the four directories on the developer's own branch has one cost: `git status` stops mentioning the brain entirely. That is the point — but it also means "do I have anything worth sharing?" had no answer short of running a full sync and watching what it did.
+
+`devsmind git-status` answers it directly, per directory, and counts **modified** files rather than only added and deleted ones. That distinction is the whole reason it does not read `local/last-synced-files.json`: that manifest records file NAMES, so it sees a file appear or vanish and is blind to a hundred edited in place — which is the ordinary case and precisely what the command exists to report. Instead each file's git blob id is computed and compared against the id recorded in the branch's tree. It flushes `brain.db` to disk first (otherwise it would be reporting the previous sync's files as current) and fetches, but commits, merges and pushes nothing.
+
+Building it surfaced two bugs that had been sitting in every git call this module makes.
+
+**Output above 1 MB was being silently truncated.** Node's `spawnSync` caps captured stdout at 1 MB by default and, on exceeding it, neither throws nor prints anything — it truncates and reports failure. A `ls-tree -r` over a 16,000-entry history is about 1.8 MB, so the branch listing came back empty and every file already shared looked brand new: the first run of this command reported 16,234 new files for a brain whose real figure was a few dozen. The same truncation would have made the sync's own deletion guard see an empty branch and conclude there was nothing to protect, which is the more dangerous half.
+
+**Every file looked modified on Windows.** With `core.autocrlf=true` — the Windows default — git stores LF in the repository while the working copy holds CRLF, so hashing a file's raw bytes disagrees with git about every text file in the brain. Unfixed, the command would have confidently reported a whole brain as pending on every run, which is worse than reporting nothing at all.
+
+#### git-sync repairs a brain still tracked on the developer's own branch
+
+The `.gitignore` change only governs files git is not already tracking. A brain created before 4.4.0 — or one a teammate on an older version keeps re-committing — has all four directories in the index, where no ignore rule is ever consulted. Left alone, that brain keeps putting thousands of files into every pull request no matter how correct the ignore file is.
+
+So `git-sync` now checks, and fixes both halves: it tops up `.gitignore`, and runs `git rm --cached` so git stops tracking the directories. Every file stays on disk throughout; the brain never notices.
+
+It deliberately stops before committing. `git rm --cached` stages a deletion of every brain file on the developer's *own* branch, and committing that is a change to their history rather than DevsMind's — the same line this tool holds everywhere else (`commit_changes` runs no git at all). The result is reported back in a `repo_repair` block with `needsCommit: true`, and the tool description instructs the agent to say so rather than quietly commit.
+
+That choice has a real cost, worth stating plainly: staged deletions are fragile. A merge or a checkout discards them without a word and the files return. That is not hypothetical — it happened on the brain this was written for, between the untrack and the commit. Hence the emphasis on committing promptly rather than a note buried in output.
+
+#### Writing that removal pass exposed a much worse bug, older than this release
+
+Making deletion explicit forced the question the wholesale mirror had been answering wrong all along without anyone noticing: *which* files is a sync entitled to delete?
+
+A file the branch holds and `.devsmind/graph/` does not means one of two opposite things — "I deleted this node" or "a teammate added this node and my brain has never seen it." On disk they are identical. And our side is committed **before** the merge runs, so choosing wrong is not recoverable: git sees a deliberate delete on one side against no change on the other, honors it without raising a conflict, and a teammate's work is gone from the shared brain with nothing to review. The worst case is the most ordinary one — a developer's *first* sync, whose brain holds their own file and none of the team's, wiping everyone else's graph.
+
+Nothing in git can answer it. The branch tip cannot: a fresh clone's worktree checkout holds every teammate's file while its brain holds none of them, which is exactly the case that does the damage. The merge-base cannot either, and fails in a more misleading way — for a brain that has never synced it *is* the remote tip, so it reports "you had all of this" about a brain that had none of it. Both were tried, and both were caught by the regression test rather than by review.
+
+The question is about this brain's own history, so this brain has to record the answer. Each successful sync now writes what it holds to `local/last-synced-files.json` (gitignored, per-machine, meaningless to anyone else), and only files listed there may be deleted from the branch. A brain that has received nothing can delete nothing. A genuine local deletion still propagates, one sync later than before — the cost is a deletion arriving late, which is recoverable, against a teammate's work vanishing, which is not.
+
+One consequence worth knowing: the same reasoning explains why both call sites copy the four subdirectories rather than `.devsmind/` itself. Copying the brain folder wholesale would carry `.gitignore` into the worktree, applying the developer's ignore rules on the `devsmind` branch — where `git add -A` would then skip the very files the branch exists to hold, and push an empty commit while reporting success.
+
+### 4.3.2 — one `devsmind_git_sync` tool replaces `devsmind push`/`pull`
+
+**Breaking.** `devsmind push` and `devsmind pull` are gone as CLI commands, and `push_devsmind_branch`/`pull_devsmind_branch` are gone as MCP tools. One tool, `devsmind_git_sync`, replaces all four. Re-run `devsmind rule`/`devsmind skill` after upgrading.
+
+#### The bug that forced a redesign rather than a fix
+
+The old pair could not survive the most ordinary sequence on a team: you pull, you work, a teammate pushes, then you push.
+
+`pushDevsmindBranch` built a fresh commit from disk and fast-forwarded. Once the remote had moved, git rejected that push — correctly — and the error text told you to run `devsmind pull` and try again. But `pullDevsmindBranch` never merged anything. It checked out the remote tip into a worktree and called `replaceDir` to overwrite your local `graph/`, `history/`, `vectors/`, `workflows/` wholesale. So the documented recovery path *was itself* the data loss: your unpushed work vanished from disk, with no conflict, no prompt, no warning. Worse than a conflict, because a conflict at least announces that something needs attention.
+
+That is not a bug you patch — the two commands were the wrong shape. A pull that overwrites can never be safely composed with a push that can be rejected.
+
+#### Why 3-way merge, and why not "newest wins"
+
+The obvious-sounding fix — compare timestamps, keep the newer file — fails twice over.
+
+It is **unimplementable**: `writeGraphToDisk` and `writeVectorsToDisk` emit no timestamp fields at all. `nodes.created_at` exists as a column but is deliberately not serialized, and is reset on every re-sync anyway. The only recency signal available is filesystem mtime, which git rewrites on every checkout, so it cannot compare your copy against a teammate's.
+
+It is also **wrong on the merits**, which matters more. Say a teammate sets `deprecated: 1` on a node and your copy still says `0`. A file-level timestamp cannot tell "I deliberately un-deprecated this" apart from "I never saw their change" — and if you touched that file for any unrelated reason (appending history, say), your file is now newer and newest-wins silently erases their decision.
+
+Git's 3-way merge resolves that case correctly and with no interaction, because it compares both sides against their **common ancestor**: only one side moved `deprecated`, so that side wins. A conflict is raised only when both sides moved the *same* thing to *different* values, which is genuinely ambiguous and genuinely needs a decision.
+
+The one thing that made this possible is committing your own state to the branch **first**. Without that commit there is no ancestor, which is precisely why the old pull could only overwrite — it had nothing to merge against.
+
+#### Sequencing, which had to be exactly right
+
+`syncToDisk` is a file-*generating* step: it writes a graph JSON and a vectors JSON per distinct `file_path` in the DB plus a workflow JSON per workflow — thousands of files on a real brain — and it writes them into the **real** `.devsmind/`, never a worktree. So the order is: flush `brain.db` to disk first (this is the step the old `push` skipped entirely, meaning anything committed to the graph but not yet written out was never shared at all), then worktree, then commit our side, then merge theirs, then push, then copy the merged result back and re-sync the DB so teammates' changes land in `brain.db`.
+
+One subtlety worth recording: `replaceDir` treats an absent source as "delete the target", which was right for the old push (a straight mirror) but catastrophic here — a teammate syncing for the very first time has no local `graph/` yet, and mirroring that absence would commit a deletion of everyone else's graph before the merge ever ran. Subdirs the local brain doesn't have are now skipped; a real deletion *inside* a subdir still propagates, because that subdir exists and is replaced wholesale.
+
+#### Conflicts, and validating what comes back
+
+Genuine conflicts return `status: "conflicted"` with each file's merged content plus `ours`/`theirs` separately (parsing marker soup back apart is exactly the kind of busywork to hand over pre-done), and the worktree is **retained** — it is the quarantined place holding the files to fix, and keeping half-merged JSON out of the real `.devsmind/` is not optional: `syncFromDisk` deletes every DB node for a graph file before reinserting from that file, so a file that no longer parses means the delete lands with no reinsert. Nodes disappear silently.
+
+That same hazard is why a resolution is never trusted. Before anything is committed, every resolved file must parse, keep the right shape for its tree, and — the check that matters — retain **every** node id, vector key and workflow step id present on either side of the conflict. A merge may add and may change, but it may never lose; an id that vanished comes back as `status: "invalid_resolution"` naming exactly what went missing, nothing is pushed, and the worktree is kept for another attempt.
+
+#### Why the terminal commands went away entirely
+
+Sharing the brain is something you ask an agent to do, in the same breath as the edits it just made — and the conflict round-trip needs a resolver that can read JSON and decide, which is the agent, not a prompt in a terminal. Keeping a CLI copy would have meant a second entry point into a flow whose interesting path (resolve, validate, resume) has no terminal-shaped answer. `devsmind sync` — the local `brain.db` command — is untouched and keeps its name.
+
 ### 4.3.1 — remove a mistaken workflow step, and skip repos you'll never touch
 
 No breaking changes. Nothing here runs automatically until you use one of the two new pieces.
@@ -881,7 +1018,9 @@ This is intentionally the odd one out among the workflow tools, and the tool des
 
 A standalone-mode brain lists every repo the *team* has ever registered in the one shared `config.json` — but a given developer's machine often only has some of them checked out. Before this release, `devsmind init`/`sync`/`pull`'s repo-path reconciliation (`findMissingStandaloneRepoPaths`, `reconcileRepoPaths`) treated "no `.env` entry for this repo" as something to fix *right now*, every time it was detected — there was no way to say "I will never have this one, stop asking." A developer working on a single repo in a brain that also tracks a dozen backend services (a mobile app, say) hit this on every `sync`.
 
-New `SKIPPED_REPO_MARKER` (`__skip__`) in `utils/config.ts` is a fourth outcome alongside `ok`/`missing`/`invalid` in `findMissingStandaloneRepoPaths`'s scan — an `.env` entry whose value is the literal marker string, not a path. The path-reconciliation prompt (now identical in `init.ts`'s existing-brain repair loop and `sync.ts`'s `reconcileRepoPaths`, which `devsmind pull` shares) offers "Skip — not on this machine" alongside the existing folder browser for any repo that still needs an answer; choosing it writes the marker instead of a path. A repo already marked skipped is carried forward on every future `.env` rewrite without being re-prompted — the same treatment `ok` repos already got.
+New `SKIPPED_REPO_MARKER` (`__skip__`) in `utils/config.ts` is a fourth outcome alongside `ok`/`missing`/`invalid` in `findMissingStandaloneRepoPaths`'s scan — an `.env` entry whose value is the literal marker string, not a path. The path-reconciliation prompt (now identical in `init.ts`'s existing-brain repair loop and `sync.ts`'s `reconcileRepoPaths`, which `devsmind pull` shares) offers "Skip — not on this machine" alongside the existing folder browser for any repo that still needs an answer; choosing it writes the marker instead of a path. A repo already marked skipped is carried forward on every future `.env` rewrite — the same treatment `ok` repos already got — and `sync` never asks about it again, which is the entire point: a developer who works in one repo out of a dozen would otherwise answer eleven prompts on every sync.
+
+`devsmind init` is the exception, as of 4.4.0. It re-offers skipped repos, defaulting the choice back to "keep skipping" so preserving the answer is one keypress. The asymmetry is deliberate: `sync` runs routinely and must stay silent, while `init` is the command you run *because* your setup changed — "I cloned that repo since" is exactly what it exists to capture. Before this, nothing ever asked again, and the printed advice ("change with `devsmind add-repo`") did not work either, since `add-repo` refuses a name already in `config.json` and a skipped repo is already there; hand-editing `.env` was the only real route.
 
 `resolveRepoPath` treats the marker exactly like "not configured": it returns `null` rather than resolving to a bogus literal path (`cwd()/__skip__`, say). Every caller downstream — `utils/scanner.ts`'s per-repo file walk, `db/analyze.ts`'s renamed/changed-file scan, the indexer — already treated a `null` repo path as "unavailable, skip silently," since that's exactly what a `missing` repo has always resolved to. So the marker slots into an existing degrade-gracefully path rather than requiring changes at every consumer; the only place that needed a real code change was `resolveRepoPath` itself, to stop the sentinel string from being handed out as if it were a real directory.
 

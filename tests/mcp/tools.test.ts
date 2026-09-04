@@ -97,7 +97,10 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     const SESSION_EXEMPT_READS = [
       'list_nodes', 'get_node_code', 'get_node_history', 'get_node_graph', 'search_nodes',
       'search_decisions', 'get_orphaned_nodes', 'get_visualizer_url', 'read_graph_feedback',
-      'workflow_get_context', 'get_activity_log', 'pull_devsmind_branch'
+      'workflow_get_context', 'get_activity_log'
+      // `devsmind_git_sync` is NOT here: it commits, merges and pushes, so it's a write and
+      // carries the same session_id bar as commit_changes. The old read-only
+      // `pull_devsmind_branch` was exempt, but syncing is one always-writing operation now.
     ];
 
     it('write tools require session_id; read-only tools do not', async () => {
@@ -1887,7 +1890,7 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     });
   });
 
-  describe('push_devsmind_branch / pull_devsmind_branch', () => {
+  describe('devsmind_git_sync', () => {
     // fx.root (parent of .devmind) is a plain temp dir with no git repo by default — real git
     // integration, initialized only in the tests that need it, same style as tests/utils/git.test.ts.
     function gitInitFixtureRoot(): void {
@@ -1899,59 +1902,42 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       execSync('git commit -q -m init', { cwd: fx.root });
     }
 
-    it('push_devsmind_branch requires session_id and surfaces a clear error when .devsmind is not inside a git repo', async () => {
+    it('requires session_id and surfaces a clear error when .devsmind is not inside a git repo', async () => {
       const { parsed: session } = await callToolJson(harness.client, 'start_session', { devmind_path: fx.devmindPath }) as { parsed: { session_id: string } };
-      const { isError, textBlocks } = await callTool(harness.client, 'push_devsmind_branch', {
+      const { isError, textBlocks } = await callTool(harness.client, 'devsmind_git_sync', {
         devmind_path: fx.devmindPath, session_id: session.session_id, message: 'test'
       });
       expect(isError).toBe(true);
       expect(textBlocks.join(' ')).toMatch(/not inside a git repository/);
     });
 
-    it('pull_devsmind_branch needs no session_id and reports not_found when no devsmind branch exists yet', async () => {
-      gitInitFixtureRoot();
-      const { isError, parsed } = await callToolJson(harness.client, 'pull_devsmind_branch', {
-        devmind_path: fx.devmindPath
-      }) as { isError: boolean; parsed: { status: string; found: boolean } };
-      expect(isError).toBe(false);
-      expect(parsed.status).toBe('not_found');
-      expect(parsed.found).toBe(false);
-    });
-
-    it('push commits graph/history onto the devsmind branch; pull reads it back and re-syncs brain.db', async () => {
+    it('flushes brain.db to disk, commits onto the devsmind branch, and is a clean no-op on a second run', async () => {
       gitInitFixtureRoot();
       await stageAndCommit(fx, [{ node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: 'export function greet() { return 1; }', name: 'greet', type: 'function' }]);
       const { parsed: session } = await callToolJson(harness.client, 'start_session', { devmind_path: fx.devmindPath }) as { parsed: { session_id: string } };
 
-      const pushRes = await callToolJson(harness.client, 'push_devsmind_branch', {
-        devmind_path: fx.devmindPath, session_id: session.session_id, message: 'first push'
-      }) as { isError: boolean; parsed: { status: string; committed: boolean; pushed: boolean; branch: string } };
-      expect(pushRes.isError).toBe(false);
-      expect(pushRes.parsed.status).toBe('committed_local_only'); // no remote configured in this fixture
-      expect(pushRes.parsed.committed).toBe(true);
-      expect(pushRes.parsed.branch).toBe('devsmind');
+      const first = await callToolJson(harness.client, 'devsmind_git_sync', {
+        devmind_path: fx.devmindPath, session_id: session.session_id, message: 'first sync'
+      }) as { isError: boolean; parsed: { status: string; branch: string; counts: { nodes: number } } };
+      expect(first.isError).toBe(false);
+      expect(first.parsed.status).toBe('committed_local_only'); // no remote configured in this fixture
+      expect(first.parsed.branch).toBe('devsmind');
+      expect(first.parsed.counts.nodes).toBeGreaterThan(0);
 
-      // A second push with nothing new is a clean no-op, not an error.
-      const secondPush = await callToolJson(harness.client, 'push_devsmind_branch', {
+      // The graph the DB held actually reached the branch — the gap the old push_devsmind_branch
+      // had, since it never ran syncToDisk before copying files. Asserted under the fixture's OWN
+      // brain directory name (`.devmind`, the pre-4.2.0 name this fixture happens to use) rather
+      // than a hardcoded `.devsmind`: committing under the wrong name is precisely the bug that
+      // staged a legacy brain's every file as a deletion.
+      const brainDirName = path.basename(fx.devmindPath);
+      const onBranch = execSync('git ls-tree -r --name-only devsmind', { cwd: fx.root, encoding: 'utf-8' });
+      expect(onBranch).toMatch(`${brainDirName}/graph/`);
+
+      const second = await callToolJson(harness.client, 'devsmind_git_sync', {
         devmind_path: fx.devmindPath, session_id: session.session_id, message: 'nothing changed'
       }) as { isError: boolean; parsed: { status: string } };
-      expect(secondPush.isError).toBe(false);
-      expect(secondPush.parsed.status).toBe('nothing_to_push');
-
-      // Simulate a fresh checkout that never had the graph/history DevsMind just committed.
-      fs.rmSync(path.join(fx.devmindPath, 'graph'), { recursive: true, force: true });
-      fs.rmSync(path.join(fx.devmindPath, 'history'), { recursive: true, force: true });
-
-      const pullRes = await callToolJson(harness.client, 'pull_devsmind_branch', {
-        devmind_path: fx.devmindPath
-      }) as { isError: boolean; parsed: { status: string; found: boolean; counts: { nodes: number; history: number } } };
-      expect(pullRes.isError).toBe(false);
-      expect(pullRes.parsed.status).toBe('pulled');
-      expect(pullRes.parsed.found).toBe(true);
-      expect(pullRes.parsed.counts.nodes).toBeGreaterThan(0);
-      expect(pullRes.parsed.counts.history).toBeGreaterThan(0);
-      expect(fs.existsSync(path.join(fx.devmindPath, 'graph'))).toBe(true);
-      expect(fs.existsSync(path.join(fx.devmindPath, 'history'))).toBe(true);
+      expect(second.isError).toBe(false);
+      expect(second.parsed.status).toBe('nothing_to_do');
     });
   });
 });

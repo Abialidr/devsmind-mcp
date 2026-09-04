@@ -60,7 +60,13 @@ const TOOLS_REFERENCED = [
  * mention invisible. This is the assertion that catches it. (`stage_change` is NOT here — see
  * the note on `TOOLS_REFERENCED` above; it's a live tool again, with different semantics.)
  */
-const RETIRED_TOOL_NAMES: string[] = [];
+const RETIRED_TOOL_NAMES: string[] = [
+  // Removed in 4.3.2, folded into the single `devsmind_git_sync`. The pair could not survive a
+  // teammate pushing between your pull and your push: push was rejected, and the pull it told
+  // you to run then overwrote your unpushed work, because it never merged.
+  'push_devsmind_branch',
+  'pull_devsmind_branch',
+];
 
 describe('generated rule + memory stay in sync with the MCP server', () => {
   let harness: McpTestHarness;

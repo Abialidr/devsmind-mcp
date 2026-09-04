@@ -370,6 +370,120 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
       }
     });
 
+    // syncToDisk re-serializes EVERY file_path on every run, so on a real brain the overwhelming
+    // majority of its writes reproduce bytes that are already there. Measured on a ~19,000-file
+    // brain that was 228 seconds of almost pure filesystem wait. Rewriting an unchanged file is
+    // also what keeps every mtime permanently fresh, which is why nothing downstream can use
+    // timestamps to tell what actually changed.
+    // A node whose file_path is a ", "-joined list of several files is the one case the fast path
+    // cannot answer: the indexed equality arm matches only an exact path, so a second LIKE query
+    // covers these. That query is SKIPPED entirely on a brain with no such node — which is the
+    // optimization — so this proves it still runs when one exists.
+    it('still writes a node whose file_path is a ", "-joined list of files', async () => {
+      const fx = makeFixture();
+      try {
+        const a = repoFile(fx, 'a.ts');
+        const b = repoFile(fx, 'b.ts');
+        fx.db.upsertNode({
+          id: '{app}/a.ts#shared', type: 'function', name: 'shared',
+          file_path: `${a}, ${b}`, description: 'Spans two files.'
+        });
+
+        fx.db.syncToDisk();
+
+        // It belongs to BOTH files, and must appear under each.
+        const underA = JSON.parse(fs.readFileSync(path.join(fx.devmindPath, 'graph', 'app', 'a.json'), 'utf-8'));
+        const underB = JSON.parse(fs.readFileSync(path.join(fx.devmindPath, 'graph', 'app', 'b.json'), 'utf-8'));
+        expect(underA.nodes.map((n: any) => n.id)).toContain('{app}/a.ts#shared');
+        expect(underB.nodes.map((n: any) => n.id)).toContain('{app}/a.ts#shared');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    // The multi-file query is gated on a cached "does this brain have any such node" answer. A
+    // brain that had none when the cache was filled and then gains one must start running it, or
+    // the node silently never reaches disk until the process restarts.
+    it('picks up the first multi-file node added after the cache was warmed', async () => {
+      const fx = makeFixture();
+      try {
+        const a = repoFile(fx, 'a.ts');
+        const b = repoFile(fx, 'b.ts');
+        // Warm the cache on a brain with no multi-file node at all.
+        fx.db.upsertNode({ id: '{app}/a.ts#solo', type: 'function', name: 'solo', file_path: a, description: 'Single file.' });
+        fx.db.syncToDisk();
+
+        fx.db.upsertNode({
+          id: '{app}/a.ts#late', type: 'function', name: 'late',
+          file_path: `${a}, ${b}`, description: 'Added later, spans two files.'
+        });
+        fx.db.syncToDisk();
+
+        const underB = JSON.parse(fs.readFileSync(path.join(fx.devmindPath, 'graph', 'app', 'b.json'), 'utf-8'));
+        expect(underB.nodes.map((n: any) => n.id)).toContain('{app}/a.ts#late');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('leaves a file alone when its content would be identical', async () => {
+      const fx = makeFixture();
+      try {
+        await stageAndCommit(fx, [
+          {
+            node_id: 'greet',
+            file_path: repoFile(fx, 'foo.ts'),
+            code_snapshot: 'export function greet(n: string): string {\n  return n;\n}',
+            name: 'greet',
+            type: 'function',
+            description: 'Greets by name.'
+          }
+        ]);
+        const graphJsonPath = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        const before = fs.statSync(graphJsonPath).mtimeMs;
+
+        // Far enough back that a rewrite could not land on the same timestamp by coincidence.
+        const old = new Date(Date.now() - 60_000);
+        fs.utimesSync(graphJsonPath, old, old);
+        const stamped = fs.statSync(graphJsonPath).mtimeMs;
+
+        fx.db.syncToDisk();
+
+        expect(fs.statSync(graphJsonPath).mtimeMs).toBe(stamped);
+        expect(before).toBeGreaterThan(0);
+        // ...and the content is still correct, not merely untouched.
+        const data = JSON.parse(fs.readFileSync(graphJsonPath, 'utf-8'));
+        expect(data.nodes.map((n: any) => n.id)).toContain('{app}/foo.ts#greet');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('does write when the content genuinely differs', async () => {
+      const fx = makeFixture();
+      try {
+        await stageAndCommit(fx, [
+          {
+            node_id: 'greet',
+            file_path: repoFile(fx, 'foo.ts'),
+            code_snapshot: 'export function greet(n: string): string {\n  return n;\n}',
+            name: 'greet',
+            type: 'function',
+            description: 'Greets by name.'
+          }
+        ]);
+        const graphJsonPath = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        fs.writeFileSync(graphJsonPath, '{"file_path":"stale","nodes":[],"connections":[]}');
+
+        fx.db.syncToDisk();
+
+        const data = JSON.parse(fs.readFileSync(graphJsonPath, 'utf-8'));
+        expect(data.nodes.map((n: any) => n.id)).toContain('{app}/foo.ts#greet');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
     it('also force-writes every node\'s vectors JSON from current DB state, not just graph/workflows', async () => {
       // Regression test: syncToDisk used to only call writeGraphToDisk/writeWorkflowToDisk,
       // silently leaving vectors/*.json stale on a force-resync even though syncFromDisk (the

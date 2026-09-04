@@ -430,9 +430,38 @@ export function parseReasoningBlocksTimed(raw: string, createdAt: string): Timed
   return out;
 }
 
+/**
+ * Writes `content` only when it differs from what the file already holds.
+ *
+ * `syncToDisk` re-serializes EVERY file_path in the database on every run, and on a real brain
+ * that is tens of thousands of files of which a handful actually changed. Rewriting the identical
+ * bytes is not free anywhere, and on Windows it is ruinous: a full flush measured at over thirteen
+ * minutes, essentially all of it filesystem wait rather than work (0.6s of CPU across the whole
+ * run). Reading a file to compare costs far less than writing it, so the common case — unchanged —
+ * becomes a read instead of a write.
+ *
+ * It also keeps mtimes honest. An unconditional rewrite freshens every timestamp on every sync,
+ * which is why nothing downstream can use mtime to tell what changed and the git-sync copy step
+ * has to compare content instead.
+ */
+function writeIfChanged(filePath: string, content: string): void {
+  try {
+    if (fs.readFileSync(filePath, 'utf-8') === content) return;
+  } catch {
+    // Missing or unreadable — fall through and write it.
+  }
+  fs.writeFileSync(filePath, content, 'utf-8');
+}
+
 export class DevMindDatabase {
   private db: Database.Database;
   private dbPath: string;
+  /** Prepared once and reused — see stmtNodesByPath. */
+  private cachedStmtNodesByPath?: Database.Statement;
+  private cachedStmtNodesByPathList?: Database.Statement;
+  /** undefined = not yet determined; see hasMultiFileNodes. Reset by upsertNode, since that is
+   *  where a file_path can first become a ", "-joined list. */
+  private multiFileNodesCache?: boolean;
   private context: ProjectContext | null = null;
 
   /**
@@ -447,6 +476,33 @@ export class DevMindDatabase {
     this.dbPath = dbPath;
     // Open SQLite database
     this.db = new Database(dbPath);
+
+    // ── Concurrency: the two pragmas that stop "database is locked" ──
+    //
+    // `brain.db` is genuinely accessed by several processes at once — a long-lived MCP server, a
+    // `devsmind sync`/`analyze`/`embed` run in a terminal, the `devsmind view` web app, and the
+    // read-only counts connection in cli/sync.ts. SQLite's defaults are hostile to exactly that:
+    //
+    // - Default `journal_mode` (DELETE) takes a whole-database lock for any write, so a reader
+    //   blocks a writer and vice versa. WAL lets readers and one writer proceed concurrently,
+    //   which is the actual shape of this workload.
+    // - Default `busy_timeout` is 0 — a connection that finds the database locked fails
+    //   INSTANTLY with SQLITE_BUSY ("database is locked") rather than waiting for the holder to
+    //   finish. That surfaced as a bare "Error: database is locked" many times a day, on
+    //   contention that would have cleared in milliseconds.
+    //
+    // 10s is chosen to comfortably outlast a normal write burst (a commit, a sync's write-back)
+    // while still failing rather than hanging if something is genuinely stuck holding a lock.
+    //
+    // WAL is best-effort: it needs a real filesystem and is refused on some network shares, where
+    // SQLite keeps the previous mode. That is a graceful degradation (back to today's behavior,
+    // still with the busy timeout, which is the bigger win), not a reason to fail the open.
+    try {
+      this.db.pragma('journal_mode = WAL');
+    } catch {
+      // Network/exotic filesystem — keep whatever mode SQLite could apply.
+    }
+    this.db.pragma('busy_timeout = 10000');
 
     // Enable foreign keys
     this.db.pragma('foreign_keys = ON');
@@ -473,8 +529,48 @@ export class DevMindDatabase {
     return done === total || done % every === 0;
   }
 
+  /**
+   * Recreates `idx_nodes_file_path` when the copy in this brain does not match what the schema
+   * says it should be.
+   *
+   * An older build wrote the index with its backslash lost — `REPLACE(LOWER(file_path), '', '/')`
+   * instead of `REPLACE(LOWER(file_path), '\', '/')`. An expression index is only ever consulted
+   * for a query whose expression matches it TEXTUALLY, so a one-character difference does not
+   * degrade it: it makes it dead weight that is maintained on every write and used by nothing.
+   * Every `getNodesByFilePath` on such a brain silently fell back to a full table scan, measured
+   * at 9.7ms against 14,000 nodes where the working index answers in 0.005ms — and `syncToDisk`
+   * performs two of those lookups for every distinct file path it knows about.
+   *
+   * `CREATE INDEX IF NOT EXISTS` in the schema cannot repair this, since the name exists and the
+   * definition behind it is never examined. Hence comparing the stored SQL and dropping first.
+   */
+  private repairFilePathIndex(): void {
+    try {
+      const row = this.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_file_path'"
+      ).get() as { sql: string | null } | undefined;
+      // The marker of a correct index is the backslash inside REPLACE's second argument. Comparing
+      // whole strings would be brittle across SQLite's own formatting; this is the one character
+      // that actually went missing.
+      if (row?.sql && row.sql.includes("REPLACE(LOWER(file_path), '\\'")) return;
+      /* istanbul ignore next -- INIT_SCHEMA_SQL runs immediately before this and creates the
+         index unconditionally, so a missing row means the CREATE silently did nothing. Kept as a
+         real guard rather than a non-null assertion: the alternative is dropping an index that
+         isn't there and rebuilding one the schema may have had a reason not to make. */
+      if (!row) return;
+      this.db.exec('DROP INDEX IF EXISTS idx_nodes_file_path');
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes (REPLACE(LOWER(file_path), '\\', '/'))");
+    } catch {
+      /* istanbul ignore next -- a DROP/CREATE INDEX failing on a database that just opened
+         successfully needs a filesystem or corruption fault this suite cannot stage honestly.
+         Swallowed deliberately: an unusable index costs speed, never correctness, so it must
+         never stop a brain from opening. */
+    }
+  }
+
   private initSchema() {
     this.db.exec(INIT_SCHEMA_SQL);
+    this.repairFilePathIndex();
     try {
       this.db.exec('ALTER TABLE nodes ADD COLUMN deprecated INTEGER DEFAULT 0');
     } catch {
@@ -549,6 +645,85 @@ export class DevMindDatabase {
    * as an error. There is no index on file_path, so this was already a full scan; normalizing
    * in SQL costs nothing extra.
    */
+  /**
+   * Every node declared in one file, deprecated ones INCLUDED — the disk-write path needs them, so
+   * that a `deprecated: 1` flag survives a `syncFromDisk` restart and reaches teammates through
+   * git, rather than the node's history JSON resurrecting it as active.
+   *
+   * The equality arm is written as exactly the expression `idx_nodes_file_path` is built on, which
+   * is what lets SQLite use that index at all: an expression index is consulted only for a query
+   * whose expression matches it textually, and the previous formulation here (`LOWER(file_path)`
+   * plus three `LIKE` patterns) matched nothing, so every call was a full table scan. On a
+   * 14,000-node brain that measured 9.7ms per lookup against 0.005ms indexed — and `syncToDisk`
+   * runs two of these per distinct file path, which was the dominant cost of a sync.
+   *
+   * The multi-file case — a `file_path` that is a ", "-joined list of several files — is a
+   * SEPARATE query rather than `LIKE` arms `OR`-ed onto this one, and that separation is the
+   * point. SQLite abandons an index entirely when a `WHERE` mixes `indexed_expr = ?` with
+   * `OR ... LIKE`, since no single index can satisfy the alternatives: written as one four-arm
+   * query the plan is `SCAN nodes` however correct the index is, measured at 22ms per call
+   * against 0.05ms for the equality alone. Split in two, the ordinary case is an index seek.
+   */
+  private nodesDeclaredIn(absPath: string): DbNode[] {
+    const rows = this.stmtNodesByPath().all(normalizeFsPath(absPath)) as DbNode[];
+
+    // The scan is only paid for by a brain that actually HAS a multi-file node — none at all on
+    // the brain this was profiled against (0 of 14,445), and the check itself is one cached query.
+    if (this.hasMultiFileNodes()) {
+      const escLower = this.likeEscape(absPath).toLowerCase();
+      const seen = new Set(rows.map(r => r.id));
+      for (const row of this.stmtNodesByPathList().all(
+        `${escLower}, %`, `%, ${escLower}`, `%, ${escLower}, %`
+      ) as DbNode[]) {
+        if (!seen.has(row.id)) rows.push(row);
+      }
+    }
+    return DevMindDatabase.parseNodeRows(rows);
+  }
+
+  /** Cached: `syncToDisk` runs this once per distinct file path — thousands of times per sync,
+   *  where re-preparing identical SQL is pure overhead. */
+  private stmtNodesByPath(): Database.Statement {
+    return (this.cachedStmtNodesByPath ??= this.db.prepare(
+      `SELECT * FROM nodes WHERE REPLACE(LOWER(file_path), '\\', '/') = ?`
+    ));
+  }
+
+  private stmtNodesByPathList(): Database.Statement {
+    return (this.cachedStmtNodesByPathList ??= this.db.prepare(`
+      SELECT * FROM nodes
+      WHERE LOWER(file_path) LIKE ? ESCAPE '\\'
+         OR LOWER(file_path) LIKE ? ESCAPE '\\'
+         OR LOWER(file_path) LIKE ? ESCAPE '\\'
+    `));
+  }
+
+  /**
+   * Whether ANY node's `file_path` is a ", "-joined list of several files — answered once and
+   * remembered, because it gates a full table scan per file written and is false on effectively
+   * every brain.
+   *
+   * Deliberately fails toward "yes": if the check itself cannot run, the extra query runs too, so
+   * a node is never missed because this optimization broke.
+   */
+  private hasMultiFileNodes(): boolean {
+    if (this.multiFileNodesCache === undefined) {
+      try {
+        const row = this.db.prepare(
+          `SELECT EXISTS(SELECT 1 FROM nodes WHERE file_path LIKE '%, %') AS present`
+        ).get() as { present: number } | undefined;
+        this.multiFileNodesCache = !!row?.present;
+      } catch {
+        /* istanbul ignore next -- a plain SELECT over `nodes` failing on an open connection needs
+           a corruption fault this suite cannot stage honestly. Falls back to `true` on purpose:
+           that runs the extra lookup query, so a broken optimization costs speed and never a
+           missing node. */
+        this.multiFileNodesCache = true;
+      }
+    }
+    return this.multiFileNodesCache;
+  }
+
   getNodesByFilePath(filePath: string): DbNode[] {
     const stmt = this.db.prepare(
       `SELECT * FROM nodes WHERE deprecated = 0 AND REPLACE(LOWER(file_path), '\\', '/') = ?`
@@ -669,6 +844,10 @@ export class DevMindDatabase {
 
   upsertNode(node: { id: string; type: string; name: string; file_path: string; signature?: string | null; description?: string | null; aliases?: string[] }) {
     const canonicalFp = canonicalizePath(node.file_path);
+    // A ", "-joined file_path arriving here is the only way a brain acquires its first multi-file
+    // node, and hasMultiFileNodes gates a query that would otherwise never run again for the life
+    // of the process — so the answer has to be re-derived rather than kept from before this write.
+    if (canonicalFp.includes(', ')) this.multiFileNodesCache = undefined;
     const existing = this.getNode(node.id);
     // aliases JSON is only computed when the caller actually passed some — an ordinary
     // edit/re-index of a node that ISN'T alias-bearing must not blank out aliases a prior
@@ -3945,24 +4124,7 @@ export class DevMindDatabase {
       // Deprecated nodes are INCLUDED (and carry deprecated:1 in the JSON) so that deprecation
       // is durable across a syncFromDisk() restart and propagates to teammates via git —
       // otherwise the node's history JSON would resurrect it as active on the next start.
-      const absEsc = this.likeEscape(absPath);
-      const absLower = absPath.toLowerCase();
-      const absEscLower = absEsc.toLowerCase();
-      const stmtNodes = this.db.prepare(`
-        SELECT * FROM nodes
-        WHERE (
-          LOWER(file_path) = ? OR
-          LOWER(file_path) LIKE ? ESCAPE '\\' OR
-          LOWER(file_path) LIKE ? ESCAPE '\\' OR
-          LOWER(file_path) LIKE ? ESCAPE '\\'
-        )
-      `);
-      const nodes = DevMindDatabase.parseNodeRows(stmtNodes.all(
-        absLower,
-        `${absEscLower}, %`,
-        `%, ${absEscLower}`,
-        `%, ${absEscLower}, %`
-      ) as DbNode[]);
+      const nodes = this.nodesDeclaredIn(absPath);
 
       if (nodes.length === 0) {
         // If no nodes left, delete the JSON file if it exists
@@ -4006,7 +4168,7 @@ export class DevMindDatabase {
       };
 
       fs.mkdirSync(path.dirname(graphJsonPath), { recursive: true });
-      fs.writeFileSync(graphJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+      writeIfChanged(graphJsonPath, JSON.stringify(data, null, 2));
     } catch (err) {
       console.warn('⚠️ SQLite warning: Failed to write graph JSON to disk:', err);
     }
@@ -4035,21 +4197,23 @@ export class DevMindDatabase {
         return;
       }
 
-      const absLower = absPath.toLowerCase();
+      // Same index-matching shape as nodesDeclaredIn — see its comment for why the equality arm
+      // has to be written as exactly the expression idx_nodes_file_path is built on.
+      const normalized = normalizeFsPath(absPath);
       const absEscLower = this.likeEscape(absPath).toLowerCase();
       const stmt = this.db.prepare(`
         SELECT nv.node_id AS node_id, nv.description_hash AS description_hash, nv.vector AS vector
         FROM node_vectors nv
         JOIN nodes n ON n.id = nv.node_id
         WHERE n.deprecated = 0 AND (
-          LOWER(n.file_path) = ? OR
+          REPLACE(LOWER(n.file_path), '\\', '/') = ? OR
           LOWER(n.file_path) LIKE ? ESCAPE '\\' OR
           LOWER(n.file_path) LIKE ? ESCAPE '\\' OR
           LOWER(n.file_path) LIKE ? ESCAPE '\\'
         ) AND nv.model_id = ?
       `);
       const rows = stmt.all(
-        absLower, `${absEscLower}, %`, `%, ${absEscLower}`, `%, ${absEscLower}, %`, EMBEDDING_MODEL_ID
+        normalized, `${absEscLower}, %`, `%, ${absEscLower}`, `%, ${absEscLower}, %`, EMBEDDING_MODEL_ID
       ) as { node_id: string; description_hash: string; vector: Buffer }[];
 
       if (rows.length === 0) {
@@ -4064,7 +4228,7 @@ export class DevMindDatabase {
       const data = { file_path: repoRelPath, model_id: EMBEDDING_MODEL_ID, dim: EMBEDDING_DIM, vectors };
 
       fs.mkdirSync(path.dirname(vectorsJsonPath), { recursive: true });
-      fs.writeFileSync(vectorsJsonPath, JSON.stringify(data, null, 2), 'utf-8');
+      writeIfChanged(vectorsJsonPath, JSON.stringify(data, null, 2));
     } catch (err) {
       console.warn('⚠️ SQLite warning: Failed to write vectors JSON to disk:', err);
     }

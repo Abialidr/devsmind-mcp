@@ -6,12 +6,12 @@ import { handleRule } from './rule';
 import { handleView } from './view';
 import { handlePrune } from './prune';
 import { handleSync } from './sync';
+import { handleGitStatus } from './git-status';
 import { handleAnalyze } from './analyze';
 import { handleDiff, handleRevert } from './diff';
 import { handleActivity } from './activity';
 import { handleFeedback } from './feedback';
 import { handleWorkflow, handleWorkflowImport } from './workflow';
-import { handlePush, handlePull } from './branch';
 import { handleAddRepo } from './add-repo';
 import { handleMcp } from './integrations/mcp';
 import { handleMemory } from './integrations/memory';
@@ -161,6 +161,19 @@ program
 
 
 program
+  .command('git-status')
+  .description('Show how much of this brain has not reached the shared devsmind branch yet')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (opts: { path?: string }) => {
+    try {
+      await handleGitStatus(opts);
+    } catch (err) {
+      console.error(`❌ git-status failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
   .command('sync')
   .description('Sync the committed graph + history from disk into the local brain.db')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
@@ -172,33 +185,6 @@ program
       await handleSync(opts);
     } catch (err) {
       console.error(`❌ Sync failed: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('push')
-  .description(`Commit graph/history/vectors/workflows onto the dedicated 'devsmind' branch and push it — your checked-out branch is never touched, so PRs stay to your actual code changes`)
-  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .option('-m, --message <text>', 'Commit message for the devsmind branch (prompted interactively if omitted)')
-  .action(async (opts: { path?: string; message?: string }) => {
-    try {
-      await handlePush(opts);
-    } catch (err) {
-      console.error(`❌ Push failed: ${(err as Error).message}`);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('pull')
-  .description(`Sync graph/history/vectors/workflows down from the 'devsmind' branch into .devsmind/ and re-sync brain.db — the read side of 'devsmind push'`)
-  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .action(async (opts: { path?: string }) => {
-    try {
-      await handlePull(opts);
-    } catch (err) {
-      console.error(`❌ Pull failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });

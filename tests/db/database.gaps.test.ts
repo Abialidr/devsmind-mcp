@@ -22,6 +22,40 @@ function raw(db: DevMindDatabase) {
 }
 
 describe('DevMindDatabase — coverage gaps', () => {
+  describe('concurrency pragmas', () => {
+    // Regression coverage for a bare "Error: database is locked" hitting a real user 10-20 times
+    // a day. brain.db is genuinely opened by several processes at once (a long-lived MCP server,
+    // a `devsmind sync`/`analyze` in a terminal, the view app, the read-only counts connection in
+    // cli/sync.ts), and SQLite's defaults are hostile to that: journal_mode=DELETE makes readers
+    // and writers block each other outright, and busy_timeout=0 means a connection that finds the
+    // database locked fails INSTANTLY rather than waiting out a burst that clears in milliseconds.
+    it('opens in WAL mode with a non-zero busy timeout, so concurrent access waits instead of failing', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        expect(String(raw(fx.db).pragma('journal_mode', { simple: true })).toLowerCase()).toBe('wal');
+        expect(Number(raw(fx.db).pragma('busy_timeout', { simple: true }))).toBeGreaterThan(0);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('lets a second connection read while the first holds the database open', () => {
+      // The concrete symptom: with the old defaults this second open + read could throw
+      // SQLITE_BUSY outright. It must simply succeed.
+      const fx = makeFixture({ skipDefaultFiles: true });
+      let second: import('better-sqlite3').Database | null = null;
+      try {
+        const Database = require('better-sqlite3');
+        second = new Database(path.join(fx.devmindPath, 'brain.db'), { readonly: true });
+        second!.pragma('busy_timeout = 10000');
+        expect(() => second!.prepare('SELECT COUNT(*) AS c FROM nodes').get()).not.toThrow();
+      } finally {
+        if (second) second.close();
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('parseReasoningBlocks (pure function)', () => {
     it('returns [] for empty/non-string input', () => {
       expect(parseReasoningBlocks('')).toEqual([]);
@@ -883,11 +917,73 @@ describe('DevMindDatabase — coverage gaps', () => {
     });
   });
 
+  describe('idx_nodes_file_path self-repair', () => {
+    // An older build created this expression index with its backslash lost — REPLACE(x, '', '/')
+    // rather than REPLACE(x, '\', '/'). An expression index is consulted only for a query whose
+    // expression matches it textually, so the difference does not make lookups slower, it makes
+    // the index entirely unused while still being maintained on every write. Every
+    // getNodesByFilePath on such a brain silently became a full table scan.
+    it('rebuilds the index when the stored definition is the broken one', () => {
+      const fx = makeFixture();
+      try {
+        const sqlite = raw(fx.db);
+        sqlite.exec('DROP INDEX IF EXISTS idx_nodes_file_path');
+        sqlite.exec("CREATE INDEX idx_nodes_file_path ON nodes (REPLACE(LOWER(file_path), '', '/'))");
+        const dbPath = path.join(fx.devmindPath, 'brain.db');
+        fx.db.close();
+
+        const reopened = new DevMindDatabase(dbPath);
+        try {
+          const sql = (raw(reopened).prepare(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_nodes_file_path'"
+          ).get() as { sql: string }).sql;
+          expect(sql).toContain("REPLACE(LOWER(file_path), '\\', '/')");
+          // And it is genuinely usable again, which is the only thing that matters.
+          const plan = raw(reopened).prepare(
+            "EXPLAIN QUERY PLAN SELECT * FROM nodes WHERE REPLACE(LOWER(file_path), '\\', '/') = ?"
+          ).all('x') as { detail: string }[];
+          expect(plan.map(p => p.detail).join(' ')).toContain('idx_nodes_file_path');
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('leaves a correct index alone rather than rebuilding it on every open', () => {
+      const fx = makeFixture();
+      try {
+        const before = (raw(fx.db).prepare(
+          "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_nodes_file_path'"
+        ).get() as { sql: string }).sql;
+        const dbPath = path.join(fx.devmindPath, 'brain.db');
+        fx.db.close();
+
+        const reopened = new DevMindDatabase(dbPath);
+        try {
+          const after = (raw(reopened).prepare(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_nodes_file_path'"
+          ).get() as { sql: string }).sql;
+          expect(after).toBe(before);
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+  });
+
   describe('writeGraphToDisk / writeVectorsToDisk — direct disk failure', () => {
     it('writeGraphToDisk warns and does not throw when the JSON write fails', () => {
       const fx = makeFixture();
       try {
         fx.db.upsertNode({ id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        // upsertNode already wrote this file, and writes are skipped when the bytes would be
+        // identical — so the on-disk copy has to differ for a write to be attempted at all.
+        fs.writeFileSync(path.join(fx.devmindPath, 'graph', 'app', 'foo.json'), '{"stale":true}');
         const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
         const writeSpy = jest.spyOn(fsReal, 'writeFileSync').mockImplementationOnce(() => { throw new Error('disk full (simulated)'); });
         try {
@@ -908,6 +1004,9 @@ describe('DevMindDatabase — coverage gaps', () => {
         const id = '{app}/foo.ts#greet';
         fx.db.upsertNode({ id, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
         fx.db.upsertNodeVector(id, new Int8Array([1, 2, 3, 4]), hashDescription('x'));
+        // Same reasoning as the graph case above: the vector write already happened, and an
+        // identical rewrite is skipped, so the file has to differ for a write to be attempted.
+        fs.writeFileSync(path.join(fx.devmindPath, 'vectors', 'app', 'foo.json'), '{"stale":true}');
 
         const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
         const writeSpy = jest.spyOn(fsReal, 'writeFileSync').mockImplementationOnce(() => { throw new Error('disk full (simulated)'); });

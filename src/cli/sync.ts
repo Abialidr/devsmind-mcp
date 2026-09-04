@@ -41,7 +41,11 @@ export async function reconcileRepoPaths(devmindDir: string): Promise<void> {
   // same key (same rebuild-not-patch approach devsmind init's existing-brain repair step uses).
   const envLines: string[] = [];
   for (const { repo, currentPath } of ok) envLines.push(`${repo.path_key}=${currentPath}`);
-  // Already-skipped repos need no prompt — carry their marker forward untouched, same as `ok`.
+  // Already-skipped repos need no prompt HERE — carry their marker forward untouched, same as
+  // `ok`. This is the difference from `devsmind init`, which does re-offer them: sync runs
+  // routinely and often, so re-asking would mean a developer who works in one repo out of a dozen
+  // answers eleven prompts every time, which is the exact friction the marker was added to remove.
+  // `init` is the deliberate "my setup changed" command, so that is where the question belongs.
   for (const repo of skipped) envLines.push(`${repo.path_key}=${SKIPPED_REPO_MARKER}`);
   const repoPathKeys = new Set(ctx.config.repos.map(r => 'path_key' in r ? r.path_key : undefined).filter(Boolean));
   for (const [key, value] of Object.entries(ctx.env)) {
@@ -194,6 +198,12 @@ function readRawCounts(dbPath: string): { nodes: number; connections: number; hi
   let raw: Database.Database | null = null;
   try {
     raw = new Database(dbPath, { readonly: true });
+    // Same reasoning as DevMindDatabase's constructor: SQLite's default busy_timeout is 0, so a
+    // read that lands while the MCP server (or another command) is mid-write fails instantly with
+    // "database is locked" instead of waiting out a burst that clears in milliseconds. This
+    // connection is especially exposed — it runs at the very start of a sync, exactly when
+    // something else may still be writing.
+    raw.pragma('busy_timeout = 10000');
     // better-sqlite3 opens lazily — a garbage/truncated file doesn't throw until the
     // first real read, so force one here to detect corruption up front rather than
     // letting per-table reads below silently swallow it into a misleading zero.
