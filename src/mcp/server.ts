@@ -1140,6 +1140,18 @@ export function createMcpServer(): Server {
           }
         },
         {
+          name: 'workflow_delete',
+          description: 'Delete a workflow that has NO steps — a mistyped name, a duplicate created because the first one was not found, a thread bound and then abandoned. REFUSES once a workflow has any steps (or any artifacts filed against it), because that record is the whole point of having recorded it and there is no undo: archive those instead. Nothing is deleted silently — you get an error naming what is there.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              workflow_id: { type: 'string', description: 'The empty workflow to delete' }
+            },
+            required: ['devmind_path', 'workflow_id']
+          }
+        },
+        {
           name: 'workflow_archive',
           description: 'Hide a workflow from the default list, or bring it back with archived:false. Deliberately not called "complete" — a feature is never finished, it just stops being worked on, and the old completed/paused status was a lifecycle nobody maintained. Archiving is reversible and keeps every step intact.',
           inputSchema: {
@@ -3300,6 +3312,13 @@ IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/v
             }
           }
           return { content: [{ type: 'text', text }] };
+        }
+
+        case 'workflow_delete': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const db = getDatabase(devmindPath);
+          const result = db.deleteWorkflow(requireStr(args, 'workflow_id', 'workflow_delete'));
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
 
         case 'workflow_archive': {

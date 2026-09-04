@@ -187,7 +187,7 @@ export const MEMORY_TOPICS: MemoryTopic[] = [
       '',
       '**Binding is local to YOUR session.** It never moves, pauses, or steals anyone else\'s, and two sessions can work different workflows — or the same one — at once. There is no project-wide "active workflow" any more; the old one synced through git and let one developer displace everybody else.',
       '',
-      'The rest: `workflow_create`, `workflow_archive` (retire a thread without deleting it), `workflow_remove_step` (delete one step recorded by mistake — a real delete, no undo, unlike archive), `workflow_import` (turns existing flow/architecture `.md` docs into workflows).',
+      'The rest: `workflow_create`, `workflow_archive` (retire a thread without deleting it), `workflow_remove_step` (delete one step recorded by mistake — a real delete, no undo, unlike archive), `workflow_delete` (delete a whole workflow, but ONLY while it has no steps or artifacts — anything with history has to be archived instead), `workflow_import` (turns existing flow/architecture `.md` docs into workflows).',
       '',
       "**Why:** a feature's decision history is invisible to git blame; starting fresh silently loses it. And research is the part nothing else keeps at all — git has the diff, history has the per-node reasoning, but neither records what was evaluated and rejected.",
       '',

@@ -328,6 +328,67 @@ describe('DevMindDatabase — workflow context vault', () => {
     });
   });
 
+  describe('deleteWorkflow', () => {
+    it('deletes an empty workflow, its row and its directory on disk', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Typo in the name', 'created by mistake');
+        const dir = path.join(fx.devmindPath, 'workflows', wf.id);
+        expect(fs.existsSync(dir)).toBe(true);
+
+        const result = fx.db.deleteWorkflow(wf.id);
+
+        expect(result).toEqual({ deleted_workflow_id: wf.id, name: 'Typo in the name' });
+        expect(fx.db.getWorkflow(wf.id)).toBeNull();
+        expect(fs.existsSync(dir)).toBe(false);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    // The guard that lets this exist beside workflow_archive at all. A workflow with steps IS the
+    // team's record of how a feature came to be — there is no undo and nothing to reconstruct it
+    // from, so refusing is the only safe answer.
+    it('refuses a workflow that has steps, and says how many', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Real work', 'has history');
+        fx.db.addWorkflowStep(wf.id, { summary: 'Something that happened' });
+
+        expect(() => fx.db.deleteWorkflow(wf.id)).toThrow(/1 step\(s\) and cannot be deleted/);
+        expect(fx.db.getWorkflow(wf.id)).toBeTruthy();
+        expect(fs.existsSync(path.join(fx.devmindPath, 'workflows', wf.id))).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    // "No steps" does not mean "nothing filed here": addWorkflowArtifact takes a workflow-level
+    // artifact with no step_id, and a document someone attached must not vanish on a cleanup call.
+    it('refuses a workflow with no steps but artifacts filed against it', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Docs only', 'no steps, but a doc');
+        const artifact = fx.db.addWorkflowArtifact(wf.id, { type: 'note', sourceName: 'spec.md', content: 'keep me' });
+
+        expect(() => fx.db.deleteWorkflow(wf.id)).toThrow(/1 artifact\(s\)/);
+        expect(fx.db.getWorkflow(wf.id)).toBeTruthy();
+        expect(fs.existsSync(artifact.file_path)).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('rejects an unknown workflow id rather than silently succeeding', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        expect(() => fx.db.deleteWorkflow('no-such-workflow')).toThrow(/Workflow not found/);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('removeWorkflowStep', () => {
     it('deletes the step and any artifacts filed under it, bytes on disk included, leaving other steps untouched', () => {
       const fx = makeFixture({ skipDefaultFiles: true });

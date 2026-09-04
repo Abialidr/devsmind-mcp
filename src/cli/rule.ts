@@ -148,6 +148,7 @@ export function buildRule(config: DevMindConfig, devmindDir: string, workflowSty
     `* ${bt}workflow_sync${bt} — attaches work you already did onto a workflow, for when you were unbound or on the wrong one. Reads your local activity log and previews first; it only writes when you pass ${bt}confirm:true${bt}, and re-running it is a no-op.`,
     `* ${bt}workflow_archive${bt} — retires a workflow from the list without deleting anything. Deliberately not "complete": a feature is never finished, it just stops being worked on.`,
     `* ${bt}workflow_remove_step${bt} — deletes ONE step that should not have been recorded (a duplicate from a retry, or one on the wrong workflow), and any artifacts filed under it. Unlike ${bt}workflow_archive${bt} this is a real delete with no undo — use it to correct a mistake just made, not to edit settled history.`,
+    `* ${bt}workflow_delete${bt} — deletes an EMPTY workflow (a mistyped name, a duplicate created because the first was not found). Refuses the moment a workflow has any steps or artifacts, since that record is the point of having made it; archive those instead.`,
     `* ${bt}workflow_import${bt} — turns existing flow/architecture docs into workflows.`,
   ];
 

@@ -1846,12 +1846,13 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       }
     });
 
-    it('advertises 8 workflow tools and none of the retired ones', async () => {
+    it('advertises 10 workflow tools and none of the retired ones', async () => {
       const { tools } = await harness.client.listTools();
       const names = tools.map(t => t.name).filter(n => n.startsWith('workflow_')).sort();
       expect(names).toEqual([
         'workflow_add_step', 'workflow_archive', 'workflow_bind', 'workflow_create',
-        'workflow_get_context', 'workflow_import', 'workflow_list', 'workflow_remove_step', 'workflow_sync'
+        'workflow_delete', 'workflow_get_context', 'workflow_import', 'workflow_list',
+        'workflow_remove_step', 'workflow_sync'
       ].sort());
       for (const gone of ['workflow_pause', 'workflow_resume', 'workflow_get_steps', 'workflow_search', 'workflow_add_artifact', 'workflow_read_artifact', 'workflow_sync_retroactive']) {
         expect(names).not.toContain(gone);

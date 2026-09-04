@@ -3279,6 +3279,56 @@ export class DevMindDatabase {
    * identity for no benefit, since pagination in getWorkflowSteps/getWorkflowContext orders by
    * step_index and pages by row count, not by index arithmetic.
    */
+  /**
+   * Deletes a workflow outright — the row, its sidecar, and its directory on disk.
+   *
+   * Refuses when the workflow has any steps. That guard is the whole reason this can exist beside
+   * `workflow_archive`: a workflow with steps IS the team's record of how a feature came to be,
+   * and there is no undo here and no way to reconstruct it. A workflow with none is a mistake —
+   * a typo'd name, a duplicate created because the first one was not found, a thread bound and
+   * immediately abandoned — and archiving those leaves permanent clutter in a list people scan.
+   *
+   * Artifacts are checked too, not just steps. `addWorkflowArtifact` accepts a workflow-level
+   * artifact with no `step_id`, so "no steps" does not imply "nothing filed here", and a document
+   * someone attached is exactly the kind of thing that must not vanish on a cleanup call.
+   */
+  deleteWorkflow(workflowId: string): { deleted_workflow_id: string; name: string } {
+    const workflow = this.getWorkflow(workflowId);
+    if (!workflow) throw new Error(`Workflow not found: ${workflowId}`);
+
+    const stepCount = (this.db.prepare(
+      'SELECT COUNT(*) AS c FROM workflow_steps WHERE workflow_id = ?'
+    ).get(workflowId) as { c: number }).c;
+    if (stepCount > 0) {
+      throw new Error(
+        `Workflow "${workflow.name}" has ${stepCount} step(s) and cannot be deleted — that history is the point of recording it. ` +
+        `Use workflow_archive to hide it from the default listing, or workflow_remove_step to remove individual steps first.`
+      );
+    }
+
+    const artifactCount = (this.db.prepare(
+      'SELECT COUNT(*) AS c FROM workflow_artifacts WHERE workflow_id = ?'
+    ).get(workflowId) as { c: number }).c;
+    if (artifactCount > 0) {
+      throw new Error(
+        `Workflow "${workflow.name}" has no steps but ${artifactCount} artifact(s) filed against it, so deleting it would destroy those documents. ` +
+        `Use workflow_archive instead.`
+      );
+    }
+
+    this.db.prepare('DELETE FROM workflows WHERE id = ?').run(workflowId);
+    // The directory holds workflow.json plus the v2 sidecar; both go with it. Best-effort, because
+    // a brain whose row is gone but whose folder lingers is recoverable, while failing the whole
+    // call after the row is already deleted is not.
+    try {
+      fs.rmSync(path.join(this.workflowsDir(), workflowId), { recursive: true, force: true });
+    } catch {
+      /* istanbul ignore next -- the row is already gone; a leftover directory is cosmetic and is
+         cleaned up by the next sync rather than being worth failing the delete over. */
+    }
+    return { deleted_workflow_id: workflowId, name: workflow.name };
+  }
+
   removeWorkflowStep(workflowId: string, stepId: string): { removed_step_id: string; removed_artifact_ids: string[] } {
     if (!this.getWorkflow(workflowId)) throw new Error(`Workflow not found: ${workflowId}`);
     const step = this.db.prepare('SELECT id FROM workflow_steps WHERE id = ? AND workflow_id = ?').get(stepId, workflowId) as { id: string } | undefined;

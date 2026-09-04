@@ -38,7 +38,11 @@ export async function handleGitStatus(opts: { path?: string }): Promise<void> {
   // they go. The full flush exists for the abnormal case (a JSON tree deleted or corrupted out
   // from under the DB), which is `devsmind sync`'s job, not this one — and `git-sync` runs it
   // before pushing regardless, so nothing can actually be shared unflushed.
-  const status = gitStatusDevsmindBranch(devmindDir);
+  //
+  // Progress is printed per stage because the two slowest steps — reaching the remote, and walking
+  // a brain of tens of thousands of files — produce no output of their own, and several seconds of
+  // silence after a header reads as a hang rather than as work. It was reported as one.
+  const status = gitStatusDevsmindBranch(devmindDir, msg => process.stderr.write(`   ${msg}\n`));
 
   if (status.offline) {
     console.log(`   ⚠️  Could not reach "${status.remote}" — comparing against the last fetched copy, which may be behind.`);

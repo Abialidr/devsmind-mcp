@@ -793,13 +793,18 @@ export interface GitStatusResult {
  * is expected to have flushed `brain.db` to disk first — comparing against unflushed files would
  * report the previous sync's state as if it were current.
  */
-export function gitStatusDevsmindBranch(devmindDir: string): GitStatusResult {
+export function gitStatusDevsmindBranch(
+  devmindDir: string,
+  onProgress: (message: string) => void = () => {}
+): GitStatusResult {
   const repoRoot = findRepoRoot(devmindDir);
   const remote = detectRemote(repoRoot);
   const brainDir = brainDirName(devmindDir);
 
   let offline = false;
   if (remote) {
+    // The one step that leaves the machine, and on a slow link the longest single wait here.
+    onProgress(`fetching ${remote}/${DEVSMIND_BRANCH}...`);
     const fetched = git(repoRoot, ['fetch', remote, DEVSMIND_BRANCH]);
     if (!fetched.ok) offline = true;
   }
@@ -824,9 +829,16 @@ export function gitStatusDevsmindBranch(devmindDir: string): GitStatusResult {
     };
   }
 
-  const normalizeCrlf = repoNormalizesCrlf(repoRoot);
+  // Whether git converted line endings is decided PER SUBDIRECTORY, from a file in that
+  // subdirectory. Deciding it once for the whole brain is wrong and quietly so: these trees are
+  // written by different code paths, and a brain was observed with LF graph files beside history
+  // files that were not — one sample then applied the wrong rule to thousands of files and
+  // reported 14,334 of them as modified when 38 had changed.
+  const autocrlf = repoConvertsLineEndings(repoRoot);
   const perSubdir: SubdirStatus[] = [];
   for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
+    onProgress(`comparing ${sub}/...`);
+    const normalizeCrlf = autocrlf && subdirHasCrlf(path.join(devmindDir, sub));
     perSubdir.push(diffSubdirAgainstBranch(repoRoot, devmindDir, brainDir, sub, ref, normalizeCrlf));
   }
   return {
@@ -869,20 +881,41 @@ function crlfToLf(buf: Buffer): Buffer {
   return out.subarray(0, n);
 }
 
-/**
- * Whether this repo rewrites line endings on the way into git, in which case a file's on-disk bytes
- * are NOT the bytes git hashed and the two have to be compared after normalizing.
- *
- * Windows checkouts default to `core.autocrlf=true`, so the working copy holds CRLF while the blob
- * holds LF. Hashing the raw file there disagrees with git about literally every text file, and a
- * status command would confidently report an entire brain as modified on every run — the single
- * most misleading answer it could give, since it looks like real pending work.
- */
-function repoNormalizesCrlf(repoRoot: string): boolean {
+/** Whether this repo is configured to rewrite line endings at all. Cheap, and false here means no
+ *  subdirectory needs sampling. */
+function repoConvertsLineEndings(repoRoot: string): boolean {
   const cfg = git(repoRoot, ['config', '--get', 'core.autocrlf']);
   if (!cfg.ok) return false;
   const value = cfg.stdout.trim().toLowerCase();
   return value === 'true' || value === 'input';
+}
+
+/**
+ * Whether files in this ONE subdirectory actually carry CRLF, sampled from its first file.
+ *
+ * The config saying git MAY convert is not the same as these files BEING converted, and the
+ * difference is expensive: under conversion a byte length can only be compared one-directionally,
+ * so every same-size file falls through to a full read and hash. That turned a directory of 1,164
+ * small files — 63ms to read and hash outright — into an 11.5-second stage.
+ *
+ * Sampled per subdirectory rather than per brain because the trees are written by different code
+ * paths and do differ: one brain had pure-LF graph files beside history files that were not.
+ * Guessing from a single sample across all four reported 14,334 files as modified when 38 were.
+ *
+ * Unreadable or empty sample means "assume converted", which is merely slower, never wrong.
+ */
+function subdirHasCrlf(dir: string): boolean {
+  const rel = listFilesRelative(dir)[0];
+  if (!rel) return false;
+  try {
+    const buf = fs.readFileSync(path.join(dir, rel));
+    for (let i = 1; i < buf.length; i++) {
+      if (buf[i] === 0x0a && buf[i - 1] === 0x0d) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -1044,4 +1077,5 @@ function countIndexedFiles(repoRoot: string, paths: string[]): number {
   if (!listed.ok || !listed.stdout.trim()) return 0;
   return listed.stdout.split('\n').filter(Boolean).length;
 }
+
 
