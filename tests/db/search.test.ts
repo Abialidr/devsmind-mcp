@@ -2,7 +2,17 @@ import * as fs from 'fs';
 import { makeFixture, stageAndCommit, repoFile, Fixture } from '../helpers/fixture';
 import { RankedNode } from '../../src/db/database';
 
-jest.setTimeout(60000);
+// This suite's beforeAll is the single most load-sensitive setup in the repo: it commits nodes,
+// which embeds their descriptions, which loads the 23MB ONNX model — cold, in this worker, before
+// one assertion runs. It takes 3.5s on an idle machine and blew a 60s ceiling during an
+// `npm publish`, where the release's own tests, a git sync and the packaging step were all
+// competing for the same disk. All 19 tests then "failed" without executing, because a hook
+// timeout fails everything under it.
+//
+// 180s is deliberately far past anything observed rather than a snug fit: the failure mode is a
+// machine that is momentarily busy, and a ceiling tuned to the last bad run just moves the flake.
+// jest.config.js's maxWorkers cap addresses the cause; this is the margin for whatever it misses.
+jest.setTimeout(180000);
 
 describe('DevMindDatabase.searchNodes / searchDecisions / searchCode', () => {
   let fx: Fixture;

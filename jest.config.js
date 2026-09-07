@@ -12,6 +12,18 @@ module.exports = {
   // rather than per-test, since more tests in the same two files are one unlucky run away from
   // the identical flake.
   testTimeout: 45000,
+  // Capped because the contention is real and specific, not general slowness: 17 of these suites
+  // reach code that loads the 23MB ONNX embedding model, the session is cached per PROCESS, and
+  // Jest gives every suite its own worker — so an uncapped run has seventeen workers pulling the
+  // same 23MB off one disk at once. Left alone, `tests/db/search.test.ts` (3.5s on its own) blew
+  // a 60-SECOND beforeAll hook during an `npm publish`, failing all 19 of its tests without
+  // running one of them and taking the release with it.
+  //
+  // Four rather than "half the cores": the ceiling here is disk throughput, not CPU, so scaling
+  // with core count would keep the same starvation on a machine with more of them. The cost is
+  // wall-clock on an idle machine, which is the right thing to trade for a suite that does not
+  // fail because something else happened to be running.
+  maxWorkers: 4,
   collectCoverage: false,
   collectCoverageFrom: [
     'src/utils/tokenize.ts',
