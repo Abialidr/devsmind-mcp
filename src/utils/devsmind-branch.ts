@@ -66,7 +66,8 @@ export type GitSyncStatus =
   | 'committed_local_only'
   | 'nothing_to_do'
   | 'conflicted'
-  | 'invalid_resolution';
+  | 'invalid_resolution'
+  | 'blocked_on_remote_paths';
 
 export interface GitSyncResult {
   status: GitSyncStatus;
@@ -83,6 +84,13 @@ export interface GitSyncResult {
   worktree?: string;
   /** Present on `invalid_resolution` — why each rejected file was rejected. */
   invalid?: { path: string; reason: string }[];
+  /** Present on `blocked_on_remote_paths` — one or more paths already committed on the REMOTE
+   *  devsmind branch that this machine's git/filesystem cannot even read (e.g. a corrupted path
+   *  from another machine exceeding Windows' path-length limit), so the merge failed before it
+   *  could start and there is nothing to resolve in a worktree. The caller (an AI agent) should
+   *  remove these paths from the remote branch directly — they are disposable generated data
+   *  (vectors/history), not source of truth — then retry the sync. */
+  blockedPaths?: string[];
 }
 
 interface GitResult {
@@ -384,6 +392,49 @@ function syncedManifestPath(devmindDir: string): string {
   return path.join(devmindDir, 'local', 'last-synced-files.json');
 }
 
+/** Where explicitly-approved-for-removal paths live. Separate from the last-synced manifest on
+ *  purpose — see {@link deletableOnBranch}'s note on why a file this brain never successfully
+ *  received can never earn a place in that one, no matter how many times it is deleted locally
+ *  and re-synced. */
+function repairedPathsManifestPath(devmindDir: string): string {
+  return path.join(devmindDir, 'local', 'repaired-remote-paths.json');
+}
+
+/**
+ * Records that `paths` (relative to the brain dir, e.g. `vectors/foo.json`) were explicitly
+ * approved for removal via {@link removeRemoteBranchPaths} — a human/agent looked at these exact
+ * paths and confirmed they should go. Read back by {@link deletableOnBranch} so that if one of
+ * them ever reappears (a teammate's stale, not-yet-pulled branch pushes it again before getting
+ * this fix), the NEXT ordinary sync can delete it again immediately, without needing another
+ * manual repair call — the approval, once given, doesn't expire just because the manifest that
+ * gates ordinary deletes was never able to record it.
+ */
+function recordRepairedPaths(devmindDir: string, paths: string[]): void {
+  try {
+    const target = repairedPathsManifestPath(devmindDir);
+    let existing: string[] = [];
+    try {
+      existing = JSON.parse(fs.readFileSync(target, 'utf-8'));
+    } catch {
+      // no prior record — start fresh
+    }
+    const merged = Array.from(new Set([...existing, ...paths]));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify(merged, null, 2));
+  } catch {
+    // best-effort only — worst case a reappearance needs one more manual repair call
+  }
+}
+
+function readRepairedPaths(devmindDir: string): string[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(repairedPathsManifestPath(devmindDir), 'utf-8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The files under `<brainDir>/<sub>` this sync may DELETE from the devsmind branch: the ones this
  * brain actually RECEIVED on its last sync, relative to that subdirectory. Everything else the
@@ -406,16 +457,32 @@ function syncedManifestPath(devmindDir: string): string {
  * No manifest means no sync has completed here yet, so nothing is deletable: a brain that has
  * never received a file cannot have deleted one. A genuine local deletion then propagates from the
  * NEXT sync onward, once there is a recorded state to have deleted it from.
+ *
+ * One deliberate exception, additional to the manifest: paths explicitly approved for removal via
+ * {@link removeRemoteBranchPaths} (recorded by {@link recordRepairedPaths}) are ALWAYS deletable
+ * here, regardless of whether this brain's manifest ever caught up to them. Those paths are, by
+ * construction, ones nobody can legitimately want back — a human/agent already looked at the exact
+ * path and confirmed it was garbage (e.g. a corrupted, too-long filename) — and a file that broken
+ * can keep every ordinary sync failing before it ever reaches a successful `recordSyncedManifest`,
+ * which would otherwise make it permanently undeletable through the normal flow: not present in
+ * the manifest ever, so never distinguishable from "a teammate's file this brain has simply never
+ * seen" no matter how many times it is deleted locally and retried.
  */
 function deletableOnBranch(devmindDir: string, sub: string): ReadonlySet<string> {
+  const deletable = new Set<string>();
   try {
     const raw = fs.readFileSync(syncedManifestPath(devmindDir), 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, string[]>;
-    const files = parsed[sub];
-    return Array.isArray(files) ? new Set(files) : new Set();
+    if (Array.isArray(parsed[sub])) for (const f of parsed[sub]) deletable.add(f);
   } catch {
-    return new Set();
+    // no manifest yet — fine, repaired paths below still apply
   }
+
+  const prefix = `${sub}/`;
+  for (const p of readRepairedPaths(devmindDir)) {
+    if (p.startsWith(prefix)) deletable.add(p.slice(prefix.length));
+  }
+  return deletable;
 }
 
 /** Records what the brain holds after a sync, so the NEXT one can tell a real local deletion from
@@ -562,6 +629,45 @@ function collectConflicts(worktreeDir: string): ConflictedFile[] {
 /** True when the worktree is sitting in the middle of a merge (MERGE_HEAD present). */
 function isMidMerge(worktreeDir: string): boolean {
   return git(worktreeDir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']).ok;
+}
+
+/** Matches git's "unable to access '<path>': Filename too long" lines. Git emits one of these
+ *  for EVERY ancestor directory's `.gitattributes` lookup once a path underneath it is too long
+ *  to stat — e.g. one genuinely long path 5 directories deep prints 5 of these, each naming a
+ *  DIFFERENT (deeper) `.gitattributes` probe, all sharing the same too-long directory as a prefix. */
+const FILENAME_TOO_LONG_RE = /unable to access '([^']+)': Filename too long/g;
+
+/**
+ * A merge can fail not because of a real conflict, but because content already committed on the
+ * REMOTE branch is unreadable by this machine's git/filesystem — most often a corrupted path
+ * (e.g. two absolute paths accidentally concatenated into one filename by a bug elsewhere) that
+ * exceeds Windows' path-length limit. `collectConflicts` finds nothing (no merge ever started),
+ * so without this the caller saw an opaque throw with no way to act on it.
+ *
+ * Extracted here as `blockedPaths` so an agent can decide to remove the offending path(s) from
+ * the remote branch (they're almost always disposable — cached vectors/history, not source of
+ * truth) and retry, instead of the sync being a dead end.
+ *
+ * Each probed path is `<offending-dir-or-file>/.gitattributes` (or similar) — the actual
+ * committed entry is the longest common prefix shared across every probe, since a genuinely long
+ * path is what makes ALL its descendants' probes fail too. We return that shared prefix, not the
+ * individual (fabricated, never-committed) `.gitattributes` probe paths themselves.
+ */
+function collectBlockedRemotePaths(mergeStderr: string): string[] {
+  const probed = [...mergeStderr.matchAll(FILENAME_TOO_LONG_RE)].map(m => m[1]);
+  if (probed.length === 0) return [];
+  // Group probes by their longest shared prefix up to the last '/' before they diverge — in
+  // practice all probes from one bad commit share the single too-long ancestor path verbatim.
+  let common = probed[0];
+  for (const p of probed.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < p.length && common[i] === p[i]) i++;
+    common = common.slice(0, i);
+  }
+  // Trim back to the last complete path segment so we don't return a truncated mid-name prefix.
+  const lastSep = Math.max(common.lastIndexOf('/'), common.lastIndexOf('\\'));
+  const trimmed = lastSep > 0 ? common.slice(0, lastSep) : common;
+  return trimmed ? [trimmed] : [];
 }
 
 function finishAndPush(
@@ -715,17 +821,70 @@ export function gitSyncDevsmindBranch(
       // which would otherwise fire the host repo's pre-commit/commit-msg hooks.
       const merge = git(worktreeDir, ['merge', '--no-edit', '--no-verify', `${remote}/${DEVSMIND_BRANCH}`]);
       if (!merge.ok) {
-        const conflicts = collectConflicts(worktreeDir);
-        if (conflicts.length === 0) {
+        let conflicts = collectConflicts(worktreeDir);
+        let allAutoResolved = false;
+
+        // A path already explicitly approved for removal (see deletableOnBranch / recordRepairedPaths)
+        // reappearing as a genuinely NEW commit on the remote — not just an untouched old one — is a
+        // real modify/delete conflict by git's own rules: our side deleted it (`ours` is null below),
+        // theirs re-added it as different tree content than the merge-base, and delete-vs-modified
+        // never auto-resolves. Re-litigating a path someone already looked at and confirmed was
+        // garbage, every single time it reappears, defeats the point of having approved it once —
+        // so resolve these automatically in favor of the delete, and only surface what's left.
+        if (conflicts.length > 0) {
+          const repaired = new Set(readRepairedPaths(devmindDir).map(p => `${brainDir}/${p}`));
+          const autoResolved = conflicts.filter(c => c.ours === null && repaired.has(c.path));
+          if (autoResolved.length > 0) {
+            gitOrThrow(
+              worktreeDir,
+              ['rm', '-r', '--quiet', '--', ...autoResolved.map(c => c.path)],
+              'devsmind git-sync: could not auto-resolve a previously-repaired path'
+            );
+            conflicts = conflicts.filter(c => !autoResolved.some(a => a.path === c.path));
+            if (conflicts.length === 0 && isMidMerge(worktreeDir)) {
+              gitOrThrow(worktreeDir, COMMIT_ARGS(['--no-edit']), 'devsmind git-sync: could not complete the merge after auto-resolving repaired paths');
+              allAutoResolved = true;
+            }
+          }
+        }
+
+        if (!allAutoResolved && conflicts.length === 0) {
           // Failed for some reason other than conflicts — don't leave a half-merged worktree.
-          gitOrThrow(worktreeDir, ['merge', '--abort'], 'devsmind git-sync: merge failed and could not be aborted');
+          // `merge` can fail WITHOUT ever entering a merge (e.g. it refuses up front), in which
+          // case there is no MERGE_HEAD to abort and `merge --abort` would itself fail, masking
+          // the real error below with an unrelated "no merge to abort" one. Only abort when a
+          // merge is actually in progress.
+          if (isMidMerge(worktreeDir)) {
+            gitOrThrow(worktreeDir, ['merge', '--abort'], 'devsmind git-sync: merge failed and could not be aborted');
+          }
+
+          // A specific, actionable case of "failed with no conflicts": content already committed
+          // on the REMOTE branch (someone else's corrupted path — e.g. two paths accidentally
+          // concatenated into one filename, seen in practice with an absolute path from another
+          // machine) that this machine's git/filesystem cannot even stat, most often because it
+          // exceeds Windows' path-length limit. There is nothing on disk to resolve, so hand the
+          // caller the offending path(s) instead of a dead-end throw — they are disposable
+          // generated data on this branch, safe to remove and retry.
+          const blockedPaths = collectBlockedRemotePaths(merge.stderr);
+          if (blockedPaths.length > 0) {
+            return {
+              status: 'blocked_on_remote_paths', remote, branch: DEVSMIND_BRANCH, commit: null,
+              filesChanged, repoRoot, blockedPaths,
+            };
+          }
+
           throw new Error(`devsmind git-sync: merging ${remote}/${DEVSMIND_BRANCH} failed: ${merge.stderr || merge.stdout}`);
         }
-        keepWorktree = true;
-        return {
-          status: 'conflicted', remote, branch: DEVSMIND_BRANCH, commit: null,
-          filesChanged, repoRoot, worktree: worktreeDir, conflicts,
-        };
+
+        if (!allAutoResolved) {
+          keepWorktree = true;
+          return {
+            status: 'conflicted', remote, branch: DEVSMIND_BRANCH, commit: null,
+            filesChanged, repoRoot, worktree: worktreeDir, conflicts,
+          };
+        }
+        // allAutoResolved: fall through — the merge commit is complete, proceed exactly like a
+        // clean (merge.ok) merge would below.
       }
     }
 
@@ -1076,6 +1235,92 @@ function countIndexedFiles(repoRoot: string, paths: string[]): number {
   const listed = git(repoRoot, ['ls-files', '--', ...paths]);
   if (!listed.ok || !listed.stdout.trim()) return 0;
   return listed.stdout.split('\n').filter(Boolean).length;
+}
+
+export interface RemotePathRemovalResult {
+  /** Paths that were actually found and removed (a prefix passed in may match more than one
+   *  tracked entry, e.g. a directory-like prefix under which several corrupted files live). */
+  removed: string[];
+  /** From `blockedPaths` that matched nothing on the remote branch — already gone, or the
+   *  extracted prefix didn't line up with an actual tracked path. Worth surfacing rather than
+   *  silently ignoring, since it means the merge may still fail for a reason this call didn't fix. */
+  notFound: string[];
+  commit: string;
+}
+
+/**
+ * Removes the given path(s) directly from `<remote>/devsmind`'s tip and pushes — the repair half
+ * of `blocked_on_remote_paths`. These are always disposable generated data (cached vectors/history
+ * JSON), never hand-authored content, so deleting them costs nothing but a re-embed on next index;
+ * the alternative is the branch staying permanently unmergeable for every teammate.
+ *
+ * Runs in its own throwaway worktree on `devsmind` tracking the remote tip directly — deliberately
+ * NOT via `gitSyncDevsmindBranch`, since that path always tries to merge local state in first, and
+ * a blocked merge is exactly the situation this function exists to get out of.
+ */
+export function removeRemoteBranchPaths(devmindDir: string, paths: string[]): RemotePathRemovalResult {
+  if (paths.length === 0) throw new Error('devsmind git-sync: no paths given to remove.');
+  const repoRoot = findRepoRoot(devmindDir);
+  const remote = detectRemote(repoRoot);
+  if (!remote) throw new Error('devsmind git-sync: no remote configured — nothing to repair.');
+  if (!branchExistsOnRemote(repoRoot, remote)) {
+    throw new Error(`devsmind git-sync: ${remote}/${DEVSMIND_BRANCH} does not exist — nothing to repair.`);
+  }
+
+  const worktreeDir = uniqueWorktreeDir();
+  try {
+    gitOrThrow(
+      repoRoot,
+      ['worktree', 'add', '-b', `${DEVSMIND_BRANCH}-repair-${Date.now()}`, worktreeDir, `${remote}/${DEVSMIND_BRANCH}`],
+      'devsmind git-sync: could not check out the remote devsmind branch for repair'
+    );
+
+    // Each entry may be an exact path or a directory-like prefix (blockedPaths from a
+    // Filename-too-long failure can only be recovered as a prefix — see collectBlockedRemotePaths).
+    // `ls-files` with the raw string as a pathspec matches both: git treats a trailing partial
+    // segment as "everything under this prefix" for `ls-files`/`rm` alike.
+    const removed: string[] = [];
+    const notFound: string[] = [];
+    for (const p of paths) {
+      const listed = git(worktreeDir, ['ls-files', '--', p]);
+      const matches = listed.ok && listed.stdout.trim() ? listed.stdout.split('\n').filter(Boolean) : [];
+      if (matches.length === 0) {
+        notFound.push(p);
+        continue;
+      }
+      gitOrThrow(worktreeDir, ['rm', '-r', '--quiet', '--', p], `devsmind git-sync: could not remove "${p}"`);
+      removed.push(...matches);
+    }
+
+    if (removed.length === 0) {
+      throw new Error(
+        `devsmind git-sync: none of the given paths matched anything on ${remote}/${DEVSMIND_BRANCH} — ` +
+        `nothing removed. Not found: ${notFound.join(', ')}`
+      );
+    }
+
+    gitOrThrow(
+      worktreeDir,
+      COMMIT_ARGS(['-m', `Remove ${removed.length} corrupted/unreadable path(s) blocking devsmind branch merges`]),
+      'devsmind git-sync: repair commit failed'
+    );
+    const commit = gitOrThrow(worktreeDir, ['rev-parse', 'HEAD'], 'devsmind git-sync: could not read the repair commit hash');
+    gitOrThrow(worktreeDir, ['push', remote, `HEAD:${DEVSMIND_BRANCH}`], `devsmind git-sync: could not push the repair to ${remote}/${DEVSMIND_BRANCH}`);
+
+    // Record these as explicitly approved for removal — see deletableOnBranch's note on why this
+    // is what lets a future ordinary sync delete the SAME path again on its own, if it ever
+    // reappears (a teammate's stale branch pushing it before pulling this fix), instead of
+    // needing another manual repair call every time.
+    const brainDir = brainDirName(devmindDir);
+    const brainRelative = removed
+      .filter(p => p.startsWith(`${brainDir}/`))
+      .map(p => p.slice(brainDir.length + 1));
+    recordRepairedPaths(devmindDir, brainRelative);
+
+    return { removed, notFound, commit };
+  } finally {
+    removeWorktree(repoRoot, worktreeDir);
+  }
 }
 
 

@@ -1912,6 +1912,22 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       expect(textBlocks.join(' ')).toMatch(/not inside a git repository/);
     });
 
+    // Regression coverage: an agent seeing a raw devsmind_git_sync failure previously just
+    // reported the error back to the developer and stopped, leaving them to ask it to actually
+    // fix things. Any uncaught error from this tool must now carry an explicit "diagnose and
+    // retry yourself" instruction alongside the raw message, not just the raw message alone.
+    it('appends a "diagnose and retry, don\'t just report" instruction to every uncaught devsmind_git_sync error', async () => {
+      const { parsed: session } = await callToolJson(harness.client, 'start_session', { devmind_path: fx.devmindPath }) as { parsed: { session_id: string } };
+      const { isError, textBlocks } = await callTool(harness.client, 'devsmind_git_sync', {
+        devmind_path: fx.devmindPath, session_id: session.session_id, message: 'test'
+      });
+      expect(isError).toBe(true);
+      const text = textBlocks.join(' ');
+      expect(text).toMatch(/not inside a git repository/);
+      expect(text).toMatch(/Do not just report this to the developer and stop/);
+      expect(text).toMatch(/call devsmind_git_sync again/);
+    });
+
     it('flushes brain.db to disk, commits onto the devsmind branch, and is a clean no-op on a second run', async () => {
       gitInitFixtureRoot();
       await stageAndCommit(fx, [{ node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: 'export function greet() { return 1; }', name: 'greet', type: 'function' }]);

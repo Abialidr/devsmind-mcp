@@ -12,7 +12,7 @@ import {
   SearchNodesResult, CompactSearchNodesResult
 } from '../db/database';
 import { loadProjectContext, findBrainDir, brainDirOrDefault, isStandaloneMode, StandaloneRepoConfig } from '../utils/config';
-import { gitSyncDevsmindBranch, repairBrainTracking, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
+import { gitSyncDevsmindBranch, repairBrainTracking, removeRemoteBranchPaths, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
 import { ensureDevmindGitignore } from '../cli/init';
 import { getViewHtml, ASSETS_DIR, DEVSMIND_TOKEN } from './visualizer';
 import { diffEdits, renderUnifiedDiff, diffSnapshots } from '../utils/diff';
@@ -1181,16 +1181,26 @@ export function createMcpServer(): Server {
           name: 'devsmind_git_sync',
           description: `Share the brain with the team: flush brain.db to disk, commit graph/history/vectors/workflows onto the dedicated '${DEVSMIND_BRANCH}' branch, 3-way MERGE whatever teammates pushed, and push the result — one operation, in that order. UNLIKE commit_changes, this DOES run real git commands (commit + merge + push), but only ever on the '${DEVSMIND_BRANCH}' branch via a throwaway worktree, so the developer's actual checked-out branch is never touched, moved, or committed to. This is the ONLY tool for sharing the brain — there is no separate push or pull; syncing is always this one call, because a pull that overwrites cannot be safely composed with a push that can be rejected. Only call it when the developer has asked to sync/push, not as a routine follow-up to commit_changes. Requires a commit message.
 
-IF THE RESULT IS status:"conflicted": git could not merge some files on its own, and you must resolve them. Each entry in "conflicts" gives the file's "path" (relative to "worktree"), its "content" with <<<<<<< / ======= / >>>>>>> markers, and "ours"/"theirs" showing each side cleanly. These are STRUCTURED JSON files — write each one back to <worktree>/<path> as VALID JSON with no markers left, then call this tool again with the same "worktree" plus resolved:true. A merge may add or change entries but must NEVER drop one: every node id, vector key and workflow step id present in EITHER "ours" or "theirs" has to survive into your resolved file, or the result is rejected (status:"invalid_resolution") and nothing is pushed.
+ANY NON-"pushed"/"committed_local_only"/"nothing_to_do" RESULT NEEDS ACTION FROM YOU, NOT JUST A REPORT: read the specific guidance below for the status you got, take the fix it describes, and call this tool again. Do not just paste the error/result back to the developer and stop — that leaves them to ask you to actually fix it, which defeats the point of handing you the structured detail in the first place. The only time to pause and ask first is when the fix itself needs the developer's judgment (removing remote paths, or anything that would force-push/rewrite shared history) — those cases say so explicitly below.
 
-IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/vectors/workflows still tracked on the developer's OWN branch (a brain predating 4.4.0, or a teammate on an older version re-committing them) and fixed what it safely could — topping up .gitignore, and running "git rm --cached" so git stops tracking them. Every file stays on disk and the brain is unaffected. TELL THE DEVELOPER when "needsCommit" is true, and do NOT commit it for them: the untracking is STAGED on their branch and nothing more. Staged deletions are discarded by the next merge or checkout, so if they leave it the brain files simply come back — they need to commit it themselves (e.g. git commit -m "chore: stop tracking devsmind brain files") and push, which fixes it for every teammate on their next pull.`,
+IF THE RESULT IS status:"conflicted": git could not merge some files on its own, and you must resolve them. Each entry in "conflicts" gives the file's "path" (relative to "worktree"), its "content" with <<<<<<< / ======= / >>>>>>> markers, and "ours"/"theirs" showing each side cleanly. These are STRUCTURED JSON files — write each one back to <worktree>/<path> as VALID JSON with no markers left, then call this tool again with the same "worktree" plus resolved:true. A merge may add or change entries but must NEVER drop one: every node id, vector key and workflow step id present in EITHER "ours" or "theirs" has to survive into your resolved file, or the result is rejected (status:"invalid_resolution") and nothing is pushed. Do this resolution yourself now — do not ask the developer to resolve conflict markers.
+
+IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/vectors/workflows still tracked on the developer's OWN branch (a brain predating 4.4.0, or a teammate on an older version re-committing them) and fixed what it safely could — topping up .gitignore, and running "git rm --cached" so git stops tracking them. Every file stays on disk and the brain is unaffected. TELL THE DEVELOPER when "needsCommit" is true, and do NOT commit it for them: the untracking is STAGED on their branch and nothing more. Staged deletions are discarded by the next merge or checkout, so if they leave it the brain files simply come back — they need to commit it themselves (e.g. git commit -m "chore: stop tracking devsmind brain files") and push, which fixes it for every teammate on their next pull.
+
+IF THE RESULT IS status:"blocked_on_remote_paths": the merge failed before it could even start — NOT a real conflict — because content already pushed to the remote '${DEVSMIND_BRANCH}' branch by a teammate is unreadable by this machine's git (most often a corrupted path, e.g. two paths accidentally concatenated into one filename, exceeding Windows' path-length limit). "blockedPaths" names the offending path(s). These are always disposable generated data (cached vectors/history JSON, never hand-authored content). Tell the developer what you found and, once they agree, immediately call this tool again with the SAME "message" plus remove_remote_paths set to that "blockedPaths" array — this removes exactly those paths from the remote branch's tip directly (a real push, on shared state) and then retries the sync in the same call, so a confirmed developer only has to say yes once. Never set remove_remote_paths without the developer's go-ahead first, but once given, complete the fix and retry rather than stopping again.
+
+ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a real, unrecognized git failure. The error result itself carries explicit next-step instructions — follow them: diagnose the actual cause and retry, don't just relay the message.`,
           inputSchema: {
             type: 'object',
             properties: {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
               message: { type: 'string', description: `Commit message for this snapshot on the '${DEVSMIND_BRANCH}' branch.` },
               worktree: { type: 'string', description: 'Only when resuming after resolving a conflict: the exact "worktree" path a previous conflicted response returned.' },
-              resolved: { type: 'boolean', description: 'Set true (with "worktree") to continue after you have written the resolved files to disk in that worktree.' }
+              resolved: { type: 'boolean', description: 'Set true (with "worktree") to continue after you have written the resolved files to disk in that worktree.' },
+              remove_remote_paths: {
+                type: 'array', items: { type: 'string' },
+                description: 'Only after a "blocked_on_remote_paths" result AND the developer has confirmed: the exact "blockedPaths" array from that result. Removes those paths from the remote branch tip and pushes BEFORE the sync runs.'
+              }
             },
             required: ['devmind_path', 'message']
           }
@@ -3487,6 +3497,17 @@ IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/v
           const startedAt = Date.now();
           const stage = (msg: string) => console.error(`[DevsMind git-sync] ${msg} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
 
+          // Repair leg, BEFORE the sync's own flush/merge: the caller confirmed removal of
+          // paths a previous call reported as "blocked_on_remote_paths". This is a real push to
+          // the remote branch's tip, independent of whatever local state this brain has, which
+          // is why it runs through its own function rather than gitSyncDevsmindBranch's merge.
+          if (Array.isArray(args.remove_remote_paths) && args.remove_remote_paths.length > 0) {
+            const toRemove = args.remove_remote_paths.map((p: unknown) => String(p));
+            stage(`removing ${toRemove.length} blocked path(s) from the remote devsmind branch before syncing`);
+            const repairResult = removeRemoteBranchPaths(devmindPath, toRemove);
+            stage(`repair pushed (${repairResult.commit.slice(0, 8)}), continuing with sync`);
+          }
+
           // Anything the sync had to fix about the repo itself, rather than about the brain's
           // contents. Returned alongside the sync result so the agent can tell the developer —
           // `needsCommit` especially, since staged-but-uncommitted deletions are silently
@@ -3544,7 +3565,7 @@ IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/v
           const withRepair = <T extends object>(payload: T) =>
             Object.keys(repair).length ? { ...payload, repo_repair: repair } : payload;
 
-          if (result.status === 'conflicted' || result.status === 'invalid_resolution') {
+          if (result.status === 'conflicted' || result.status === 'invalid_resolution' || result.status === 'blocked_on_remote_paths') {
             stage(`stopped: ${result.status}`);
             return { content: [{ type: 'text', text: JSON.stringify(withRepair(result), null, 2) }] };
           }
@@ -3614,9 +3635,19 @@ IF THE RESULT CONTAINS "repo_repair": the sync found the brain's graph/history/v
       result = await run();
     } catch (err) {
       console.error(`[DevsMind Error] Tool execution failed: ${(err as Error).message}`);
+      // devsmind_git_sync specifically: an uncaught failure here is a real, unrecognized git
+      // problem (not one of the structured statuses the tool already handles), and the
+      // instruction matters — without it, the agent has repeatedly just reported the raw error
+      // back to the developer and stopped, leaving them to ask it to actually fix things. Diagnose
+      // and retry is the default; only fall back to reporting when the fix needs the developer's
+      // own judgment (e.g. it would touch shared history, or the cause genuinely isn't fixable
+      // from here).
+      const nextSteps = name === 'devsmind_git_sync'
+        ? '\n\nDo not just report this to the developer and stop. Investigate the actual cause (read the error text above, inspect the repo/branch state with git commands as needed), fix it if it is fixable from here, and call devsmind_git_sync again. Only stop to ask the developer first if the fix would require force-pushing, rewriting shared history, or another action they need to explicitly approve — otherwise resolve it yourself and retry until it succeeds or you hit a decision that is genuinely theirs to make.'
+        : '';
       result = {
         isError: true,
-        content: [{ type: 'text', text: `Error: ${(err as Error).message}` }]
+        content: [{ type: 'text', text: `Error: ${(err as Error).message}${nextSteps}` }]
       };
     }
 

@@ -496,6 +496,147 @@ describe('devsmind-branch — git-sync over real git', () => {
     spawnSyncSpy.mockRestore();
   });
 
+  // Regression coverage for a real incident: a teammate's machine committed a vector file whose
+  // name embedded a second, absolute filesystem path (a bug elsewhere joined two path
+  // representations of the same file with ", " instead of picking one — see upsertNode's
+  // multi-file-node join in src/db/database.ts). The resulting filename is long enough that
+  // Windows git can't even stat it during a merge, so `git merge` fails OUTRIGHT — no MERGE_HEAD,
+  // no conflict markers, nothing for collectConflicts to find. Before this fix that surfaced as
+  // the abort-masking bug ("no merge to abort") with the real cause invisible; now it must come
+  // back as a structured, actionable result instead of an opaque throw.
+  //
+  // The corrupted commit itself can't be constructed as a fixture on Windows: `git add` refuses a
+  // too-long path outright here (confirmed manually — Linux, where the real incident originated,
+  // has no such limit), so there is no way to get the actual bad state onto disk via real git on
+  // this platform. Instead this stubs `spawnSync` to return the EXACT stderr git produced in the
+  // real incident (captured from the reporting session's logs) only for the one `git merge` call,
+  // letting every other git call run for real — proving the parsing and status-mapping logic
+  // against the real failure text, without needing to reproduce the unreproducible-here fixture.
+  it('reports status:"blocked_on_remote_paths" (not a throw, not the abort-masking error) when a merge fails on an unreadable remote path', () => {
+    const REAL_INCIDENT_STDERR = [
+      "warning: unable to access '.devmind/vectors/harrir-web-admin/app/(admin)/orders/dashboard/_components/dashboard-data.server.ts, /home/propelius-tech/Documents/Harrir/Harrir-Admin-Web/app/.gitattributes': Filename too long",
+      "warning: unable to access '.devmind/vectors/harrir-web-admin/app/(admin)/orders/dashboard/_components/dashboard-data.server.ts, /home/propelius-tech/Documents/Harrir/Harrir-Admin-Web/app/(admin)/.gitattributes': Filename too long",
+      "warning: unable to access '.devmind/vectors/harrir-web-admin/app/(admin)/orders/dashboard/_components/dashboard-data.server.ts, /home/propelius-tech/Documents/Harrir/Harrir-Admin-Web/app/(admin)/orders/.gitattributes': Filename too long",
+    ].join('\n');
+
+    const { spawnSync: realSpawnSync } = require('child_process');
+    const spawnSyncSpy = jest.spyOn(require('child_process'), 'spawnSync')
+      .mockImplementation((...callArgs: unknown[]) => {
+        const [cmd, cmdArgs] = callArgs as [string, string[]];
+        if (cmd === 'git' && cmdArgs[0] === 'merge') {
+          return { status: 1, error: undefined, signal: null, stdout: '', stderr: REAL_INCIDENT_STDERR };
+        }
+        return (realSpawnSync as (...a: unknown[]) => unknown)(...callArgs);
+      });
+    jest.resetModules();
+
+    try {
+      const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+
+      const { devB } = makeRepoB();
+      writeJson(devB, 'graph', 'bar.json', graphFile('{app}/bar.ts', [{ id: 'bar' }]));
+      const result = gitSyncDevsmindBranch(devB, 'B syncs while remote merge is unreadable');
+
+      expect(result.status).toBe('blocked_on_remote_paths');
+      expect(result.blockedPaths.length).toBeGreaterThan(0);
+      expect(result.blockedPaths[0]).toContain('dashboard-data.server.ts');
+      // No worktree left behind for the caller to manage — unlike 'conflicted', there is nothing
+      // on disk to resolve; the problem lives on the remote branch's already-committed content.
+      expect(result.worktree).toBeUndefined();
+      expect(result.conflicts).toBeUndefined();
+    } finally {
+      spawnSyncSpy.mockRestore();
+    }
+  });
+
+  // The repair half, exercised against real git (no mocking): removeRemoteBranchPaths must find
+  // and delete a real path on the remote branch's tip and push, so a blocked sync can proceed.
+  it('removeRemoteBranchPaths deletes the given path(s) from the remote branch tip and pushes, unblocking the next sync', () => {
+    const { gitSyncDevsmindBranch, removeRemoteBranchPaths } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    writeJson(devA, 'vectors', 'stale.json', { file_path: '{app}/stale.ts', vectors: {} });
+    gitSyncDevsmindBranch(devA, 'seed with a disposable vector file');
+
+    const { devB } = makeRepoB();
+
+    const repair = removeRemoteBranchPaths(devA, ['.devsmind/vectors/stale.json']);
+    expect(repair.removed).toEqual(['.devsmind/vectors/stale.json']);
+    expect(repair.notFound).toEqual([]);
+    expect(repair.commit).toMatch(/^[0-9a-f]{40}$/);
+
+    // B, who never had the file locally, still syncs cleanly afterward — proving the push
+    // actually landed on the remote tip and didn't just mutate the throwaway worktree.
+    writeJson(devB, 'graph', 'bar.json', graphFile('{app}/bar.ts', [{ id: 'bar' }]));
+    const result = gitSyncDevsmindBranch(devB, 'B syncs after the repair');
+    expect(result.status).toBe('pushed');
+
+    // Repairing again with the same (now-absent) path finds nothing to remove and throws rather
+    // than silently "succeeding" with an empty push.
+    expect(() => removeRemoteBranchPaths(devB, ['.devsmind/vectors/stale.json'])).toThrow(/none of the given paths matched/);
+  });
+
+  // The gap removeRemoteBranchPaths alone doesn't close: a path removed once can come back if a
+  // teammate's stale, not-yet-pulled branch re-pushes it. Before this, that reintroduced path was
+  // undeletable through the ORDINARY flow forever — deletableOnBranch only allows deleting a path
+  // this brain's last-synced-files.json recorded as received, and a corrupted path that keeps
+  // failing merges can never reach a successful sync to be recorded by. removeRemoteBranchPaths now
+  // records what it removes, so deletableOnBranch treats a REAPPEARANCE of that exact path as
+  // deletable immediately — no second manual repair call needed.
+  it('a path explicitly repaired once stays deletable through an ordinary sync if it reappears', () => {
+    const { gitSyncDevsmindBranch, removeRemoteBranchPaths } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    writeJson(devA, 'vectors', 'bad.json', { file_path: '{app}/bad.ts', vectors: {} });
+    gitSyncDevsmindBranch(devA, 'seed with the eventually-corrupted vector file');
+
+    // A repairs it — this is the case that unblocks A today.
+    removeRemoteBranchPaths(devA, ['.devsmind/vectors/bad.json']);
+    expect(fs.existsSync(path.join(devA, 'local', 'repaired-remote-paths.json'))).toBe(true);
+    const recorded = JSON.parse(fs.readFileSync(path.join(devA, 'local', 'repaired-remote-paths.json'), 'utf-8'));
+    expect(recorded).toEqual(['vectors/bad.json']);
+
+    // A teammate on a stale branch (never pulled the repair) pushes the SAME bad file again,
+    // simulating exactly the reappearance scenario — bypassing gitSyncDevsmindBranch entirely,
+    // since that machine's own merge never succeeded either.
+    const staleClone = fs.mkdtempSync(path.join(os.tmpdir(), 'devsmind-stale-teammate-'));
+    try {
+      sh(root, `git clone -q "${remote}" "${staleClone}"`);
+      sh(staleClone, 'git checkout -q devsmind');
+      fs.mkdirSync(path.join(staleClone, '.devsmind', 'vectors'), { recursive: true });
+      fs.writeFileSync(path.join(staleClone, '.devsmind', 'vectors', 'bad.json'), JSON.stringify({ file_path: '{app}/bad.ts', vectors: {} }));
+      sh(staleClone, 'git add -A .devsmind');
+      sh(staleClone, 'git commit -q -m "stale teammate re-pushes the bad file"');
+      sh(staleClone, 'git push -q origin devsmind');
+    } finally {
+      fs.rmSync(staleClone, { recursive: true, force: true });
+    }
+
+    // A deletes it from disk too (mirroring the real scenario: the developer already removed the
+    // corrupted file locally). This is the exact "branch has it, disk doesn't — was this a delete
+    // or a never-seen file" ambiguity deletableOnBranch exists for. Under the OLD logic A's own
+    // last-synced-files.json never recorded bad.json as received in the first place (this brain's
+    // manifest is written only after gitSyncDevsmindBranch succeeds, and there is no prior
+    // successful call in this test that went through a real merge with it) — so without the
+    // repaired-paths record this delete would be silently ignored forever.
+    //
+    // The reappearance is a genuinely NEW commit on the remote (the stale teammate's own commit
+    // object), not the untouched original — so this is a real modify/delete conflict by git's own
+    // rules (ours: deleted, theirs: re-added with different tree content than the merge-base),
+    // which normally would NOT auto-resolve. gitSyncDevsmindBranch auto-resolves it anyway in
+    // favor of the delete specifically because the path is in repaired-remote-paths.json: no
+    // conflict should reach the caller for a path already explicitly declared garbage once.
+    fs.rmSync(path.join(devA, 'vectors', 'bad.json'));
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }, { id: 'foo2' }]));
+    const result = gitSyncDevsmindBranch(devA, 'A syncs again after the reappearance');
+
+    expect(result.status).toBe('pushed');
+    expect(result.conflicts).toBeUndefined();
+    const onBranch = sh(repoA, 'git ls-tree -r --name-only devsmind');
+    expect(onBranch).not.toMatch('vectors/bad.json');
+    expect(readJson(devA, 'graph', 'foo.json').nodes.map((n: { id: string }) => n.id)).toEqual(['foo', 'foo2']);
+  });
+
   // A brain created before 4.3.3 has graph/history/vectors/workflows COMMITTED on the developer's
   // own branch, and a `.gitignore` that never listed them. Neither half fixes that alone: git
   // consults no ignore rule for a file it already tracks, and untracking without the ignore rule
