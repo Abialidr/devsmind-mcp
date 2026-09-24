@@ -1168,6 +1168,37 @@ describe('DevMindDatabase — coverage gaps', () => {
     });
   });
 
+  // Regression coverage for the real incident this guard exists for: a node id's portable
+  // `{component}/relative/path` form leaking in as file_path instead of a real filesystem path
+  // (the deprecated add_node MCP tool used to accept it unvalidated) got silently spliced onto
+  // the node's already-correct absolute path by the legitimate "multi-file node" join, corrupting
+  // file_path into an ever-growing combined string that then broke every downstream disk write.
+  describe('upsertNode — rejects the portable {component}/path form as file_path', () => {
+    it('throws instead of silently storing it, on both a brand-new node and an existing one', () => {
+      const fx = makeFixture();
+      try {
+        expect(() => fx.db.upsertNode({
+          id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: '{app}/foo.ts'
+        })).toThrow(/looks like a node id's portable \{component\}\/path form/);
+
+        // Also rejected on an UPDATE, not just insert — the exact shape of the real incident: a
+        // node already correctly stored, then re-upserted with the wrong form.
+        fx.db.upsertNode({ id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        expect(() => fx.db.upsertNode({
+          id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: '{app}/foo.ts'
+        })).toThrow(/looks like a node id's portable \{component\}\/path form/);
+
+        // A real absolute path is unaffected — the guard is specific to the `{...}/ ` shape, not
+        // an over-broad rejection of anything unusual.
+        expect(() => fx.db.upsertNode({
+          id: '{app}/bar.ts#format', type: 'function', name: 'format', file_path: repoFile(fx, 'bar.ts')
+        })).not.toThrow();
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('upsertNodeVector — unknown node id', () => {
     it('is a no-op (no throw, nothing stored) when the node does not exist', () => {
       const fx = makeFixture();
