@@ -26,6 +26,23 @@ describe('DevMindDatabase.searchNodes — remaining branches', () => {
     }
   });
 
+  it('surfaces workflows on a real searchNodes result (identifier-hit path) for a node whose workflow step touched it', async () => {
+    const fx = makeFixture();
+    try {
+      await stageAndCommit(fx, [
+        { node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: FOO_SNIPPET, name: 'greet', type: 'function' }
+      ]);
+      const wallet = fx.db.createWorkflow('Wallet Integration', 'Stripe payouts');
+      fx.db.addWorkflowStep(wallet.id, { summary: 'touched greet', nodeIds: ['{app}/foo.ts#greet'] });
+
+      const result = await fx.db.searchNodes('greet');
+      expect(result.nodes[0].matched_via).toBe('identifier');
+      expect(result.nodes[0].workflows).toEqual([{ id: wallet.id, name: 'Wallet Integration' }]);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   it('a pattern-only search (no query) skips the semantic layer and identifier short-circuit, returning code-match nodes', async () => {
     const fx = makeFixture();
     try {
@@ -228,7 +245,8 @@ describe('toCompactSearchResult', () => {
       uses: 2,
       used_by: 7,
       history_count: 3,
-      used_by_note: NO_STATIC_CALLERS_NOTE
+      used_by_note: NO_STATIC_CALLERS_NOTE,
+      workflows: [{ id: 'wf-1', name: 'Wallet Integration' }]
     } as RankedNode],
     files: [{
       file_path: '/repo/styles.css',
@@ -261,6 +279,7 @@ describe('toCompactSearchResult', () => {
     expect(node.used_by).toBe(7);
     expect(node.history_count).toBe(3);
     expect(node.description).toBe('Builds a salutation.');
+    expect(node.workflows).toEqual([{ id: 'wf-1', name: 'Wallet Integration' }]);
 
     // Dropped: bulk with no bearing on which result to open next. `used_by_note` especially —
     // it's ~140 chars of identical boilerplate repeated per zero-caller node.
@@ -287,6 +306,9 @@ describe('toCompactSearchResult', () => {
     expect(out.nodes[0].confidence).toBe('high');
     expect(out.files[0].file_path).toBe('/repo/styles.css');
     expect(out.files[0].total_matches).toBe(9);
+    // workflows survives BOTH tiers, same as the other drill-in hooks — it's exactly the kind of
+    // small, decision-relevant signal compaction is designed to keep, not a bulk field to trim.
+    expect(out.nodes[0].workflows).toEqual([{ id: 'wf-1', name: 'Wallet Integration' }]);
   });
 
   it('never alters a count — a trimmed result must not be mistakable for a complete one', () => {
@@ -314,6 +336,14 @@ describe('toCompactSearchResult', () => {
     const out = toCompactSearchResult({ ...src, nodes: [node as unknown as RankedNode] }, 1);
     expect(out.nodes[0].code_matches).toBeUndefined();
     expect(out.nodes[0].confidence).toBe('high');
+  });
+
+  it('leaves workflows undefined (not an empty array) for a node in no workflow', () => {
+    const src = fullResult();
+    const node = { ...src.nodes[0] } as Record<string, unknown>;
+    delete node.workflows;
+    const out = toCompactSearchResult({ ...src, nodes: [node as unknown as RankedNode] }, 1);
+    expect(out.nodes[0].workflows).toBeUndefined();
   });
 });
 

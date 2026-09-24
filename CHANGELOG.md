@@ -2,6 +2,11 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
+## 4.5.0 — `search_nodes`/`get_node_code` now name which workflow a node already belongs to
+
+- **New `workflows` field on every `search_nodes` and `get_node_code` node result.** Names every non-archived workflow that already has a step touching this node (id + name), derived from the existing `workflow_steps.node_ids` data — no new logging, and nothing changes about `edit_node`/staging/`commit_changes`, which already record this at commit time. Lets the AI notice "this belongs to work already underway" directly from a search/read result instead of a separate workflow search. Omitted entirely (not an empty array) for a node in no workflow, and survives `search_nodes`' compaction at both tiers, alongside the other drill-in hooks.
+- **Both tool descriptions now instruct the AI on what to do with it**, always by asking the developer first, never by binding/unbinding on its own judgment: offer to bind when a result names a workflow and none (or a different one) is currently bound; flag a mismatch when the bound workflow differs from what a result names; offer to unbind when the current work looks unrelated to whatever is bound.
+
 ## 4.4.1 — `devsmind_git_sync` stops masking the real merge failure, and reports it as a repair the agent can act on
 
 - **Fix: a merge failure with no conflicts always came back as `"merge failed and could not be aborted: fatal: There is no merge to abort (MERGE_HEAD missing)"`, hiding the actual error.** `git merge` can fail *before* ever entering a merge (no `MERGE_HEAD` written), which is exactly the case where `collectConflicts` finds nothing — the old code treated that as "leftover mid-merge state" and unconditionally ran `git merge --abort`, which itself failed with that message and threw it instead of the real one. `git merge --abort` now only runs when `isMidMerge()` confirms a merge is actually in progress; every other failure surfaces its real stderr.

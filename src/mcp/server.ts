@@ -266,6 +266,21 @@ const LIST_NODES_DEFAULT_LIMIT = 100;
  * readable in one response, and the full text is always still on the history rows. */
 const STEP_REASONING_CAP = 2000;
 
+/**
+ * Shared across `search_nodes` and `get_node_code`'s tool descriptions — both can return a
+ * `workflows: [{id, name}]` field on a node (see `getWorkflowsForNodes`), and the instruction for
+ * what to DO with it is identical either way, so it is written once here rather than drifting
+ * between two copies. Deliberately steers toward asking the developer, never binding/unbinding on
+ * the AI's own judgment — `workflow_bind` is a cheap, reversible call, but a wrong silent bind
+ * pollutes that workflow's step history with unrelated work, and a wrong silent unbind loses the
+ * "what were we doing" context mid-task.
+ */
+const WORKFLOW_BINDING_HINT_TEXT =
+  'A `workflows` field on a node names every (non-archived) workflow that already has a step touching it — notice "this belongs to work already underway" without a separate workflow search. Three cases, each needs asking the developer before acting, never binding/unbinding on your own judgment:\n' +
+  '1. This node names a workflow, and no workflow (or a DIFFERENT one) is currently bound to this session: ask whether to bind to it via workflow_bind — the current work likely belongs there.\n' +
+  '2. A workflow IS bound, but this node points at a DIFFERENT workflow than the one bound: say so and ask which is actually right before recording anything further — do not silently keep logging under the wrong one.\n' +
+  '3. A workflow is bound, but the current request looks unrelated to it (nothing in play names a workflow, or the topic has clearly moved on): ask whether to unbind (workflow_bind with no workflow_id) before continuing, rather than letting unrelated work accumulate under a stale workflow\'s history.';
+
 /** `add_repo`'s dedicated scratchpad filename — separate from the default whole-workspace one so
  * a scoped single-repo indexing session can never collide with (or be mistaken for) it. Passed as
  * `scratchpad` to index_checkpoint/index_continue/index_complete to keep working with it. */
@@ -498,7 +513,8 @@ export function createMcpServer(): Server {
           description:
             "The ONE node-read call — a single function/class's CURRENT source code plus everything around it that a raw file read used to be the only way to get. Call this instead of reading a file whenever you need one specific entity: reading the raw file instead means the graph never learns you looked at it, AND misses everything this call adds on top of the raw text. The code is current and can be trusted as-is; if the symbol can no longer be found in its file (renamed/moved/deleted, or not a TS/JS file), the last known snapshot is returned instead so you still get something usable. `exists: false` means there is no code on file for this node at all.\n" +
             "ALWAYS included, at no extra cost — do not re-open the file for any of this: `name`/`type`/`signature`/`description`/`deprecated` (the node's own metadata — `description` especially is the highest-signal field there is, a human-written summary of purpose); `imports` (the file's ES `import` lines — does NOT capture `require()`/dynamic `import()`/`export…from` re-exports — what an unqualified identifier resolves to, e.g. is `formatDate` from `date-fns` or a local util); `uses_nodes`/`used_by_nodes` (up to 20 named callees/callers per direction, with `uses`/`used_by` always reporting the TRUE total even when the list is capped — page a hub node's full list with `neighbors_offset`); `file_outline` (up to 40 OTHER declarations in this file — consts, types, sibling helpers, whether or not they're graph nodes — so you can tell 'was this renamed?' or 'what else is nearby' without opening the file); `recent_history` (the last 3 changes' reasoning ONLY, no code, since the code above already IS current).\n" +
-            "Reach further in the SAME call instead of a separate tool: `graph_depth`/`graph_direction` (1-10, default off) walks the TRANSITIVE graph past the always-included direct neighbors — use `graph_direction:\"in\"` before changing this node's signature to see the full blast radius, or `graph_direction:\"out\"` to trace a call flow; add `graph_code:true` to pull that whole flow's source in one round trip. `history:\"full\"` (default `\"recent\"`) returns every revision with diffable before/after edits, pageable with `history_limit`/`history_offset` — this is what used to be a separate get_node_history call. `history:\"none\"` skips history entirely. `file_outline:false` omits the outline. Every capped section says so honestly (`*_truncated`, `*_hint`) — a hint means there is more, reachable in this same call, not a dead end.",
+            "Reach further in the SAME call instead of a separate tool: `graph_depth`/`graph_direction` (1-10, default off) walks the TRANSITIVE graph past the always-included direct neighbors — use `graph_direction:\"in\"` before changing this node's signature to see the full blast radius, or `graph_direction:\"out\"` to trace a call flow; add `graph_code:true` to pull that whole flow's source in one round trip. `history:\"full\"` (default `\"recent\"`) returns every revision with diffable before/after edits, pageable with `history_limit`/`history_offset` — this is what used to be a separate get_node_history call. `history:\"none\"` skips history entirely. `file_outline:false` omits the outline. Every capped section says so honestly (`*_truncated`, `*_hint`) — a hint means there is more, reachable in this same call, not a dead end.\n" +
+            WORKFLOW_BINDING_HINT_TEXT,
           inputSchema: {
             type: 'object',
             properties: {
@@ -789,7 +805,8 @@ export function createMcpServer(): Server {
             'Every `nodes` entry also carries drill-in hooks: `uses`/`used_by` (outgoing/incoming connection counts) and `history_count` (revision count). If you are about to change this node\'s signature or behavior and `used_by` is non-trivial, call `get_node_code` on it FIRST — its `used_by_nodes` already names the direct callers, and `graph_depth`/`graph_direction:"in"` in that same call gets the full transitive blast radius. `used_by: 0` carries a `used_by_note` when the graph could not statically prove any caller (generated bindings, dynamic dispatch) — treat that as "unverified", not "unused".\n' +
             'Lockfiles (package-lock.json, yarn.lock, Podfile.lock, go.sum…) and build artifacts (*.min.js, *.map) are excluded by default, along with anything in this project\'s configured ignored_paths — a lockfile names every dependency in the tree, so it used to match almost any product term and crowd out the real source. `.env`, JSON and config are NOT excluded; those are what the files bucket is for. Scoping `path` straight at an excluded file returns nothing and says so in `scope_note` — read it directly rather than re-querying.\n' +
             'If a response would be too large it is trimmed automatically and a `compacted` field says exactly what was dropped; every COUNT stays exact, so a trimmed result is never mistakable for a complete one. Pass `compact:false` to demand the full payload, or `compact:true` to ask for a lean triage list up front.\n' +
-            'It only surfaces real evidence: a search for something genuinely not in the codebase comes back with empty buckets + a `hint`, not padded guesses. `truncated: true` means the grep walk hit its time budget and results are partial.',
+            'It only surfaces real evidence: a search for something genuinely not in the codebase comes back with empty buckets + a `hint`, not padded guesses. `truncated: true` means the grep walk hit its time budget and results are partial.\n' +
+            WORKFLOW_BINDING_HINT_TEXT,
           inputSchema: {
             type: 'object',
             properties: {
@@ -1364,6 +1381,12 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
             result.uses = connCounts.uses;
             result.used_by = connCounts.usedBy;
             if (connCounts.usedBy === 0) result.used_by_note = NO_STATIC_CALLERS_NOTE;
+
+            // Which (non-archived) workflows already have a step touching this node — see
+            // getWorkflowsForNodes' own doc comment. Omitted entirely when the node belongs to
+            // none, so an empty case never has to be special-cased by a reader.
+            const workflowsForThisNode = db.getWorkflowsForNodes([live.node_id]).get(live.node_id);
+            if (workflowsForThisNode && workflowsForThisNode.length > 0) result.workflows = workflowsForThisNode;
 
             // Named direct neighbors — always on unless explicitly zeroed. This is what turns
             // `used_by: 213` into actual leads, and is exactly what closes the depth-1

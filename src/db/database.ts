@@ -94,6 +94,11 @@ export interface DrillInHooks {
    * generated-binding code (RTK hooks, DI containers) is a false negative, not a real answer. This
    * turns a misleading zero into an honest "unverified" instead of silently asserting "unused". */
   used_by_note?: string;
+  /** Every non-archived workflow with a step already touching this node (see
+   * `getWorkflowsForNodes`) — omitted entirely, not an empty array, when there are none. Lets the
+   * AI notice "this belongs to work already underway" and ask the developer whether to bind,
+   * rather than a separate workflow search. */
+  workflows?: { id: string; name: string }[];
 }
 
 /** A node in the primary `nodes` bucket of {@link DevMindDatabase.searchNodes}. Either an exact
@@ -158,6 +163,8 @@ export interface CompactRankedNode {
   uses: number;
   used_by: number;
   history_count: number;
+  /** Survives compaction alongside the other drill-in hooks — see RankedNode.workflows. */
+  workflows?: { id: string; name: string }[];
   code_matches?: CodeMatchLine[];
 }
 
@@ -203,10 +210,10 @@ const COMPACT_LINE_CAP = 200;
  * the repeated `used_by_note` boilerplate) and thins the rest; only tier 2 gives up the evidence
  * lines entirely and becomes a pure triage list.
  *
- * `confidence`/`relevance`/`found_by` and the `uses`/`used_by`/`history_count` drill-in hooks
- * survive BOTH tiers on purpose. They are a handful of bytes each and they are precisely what a
- * caller uses to decide which result to open next — dropping them would make a compact response
- * smaller and useless at the same time.
+ * `confidence`/`relevance`/`found_by` and the `uses`/`used_by`/`history_count`/`workflows`
+ * drill-in hooks survive BOTH tiers on purpose. They are a handful of bytes each and they are
+ * precisely what a caller uses to decide which result to open next — dropping them would make a
+ * compact response smaller and useless at the same time.
  *
  * Pure: no DB access, no I/O. Kept here rather than in the MCP handler so it is unit-testable
  * directly, and so it sits inside the coverage gate.
@@ -234,6 +241,7 @@ export function toCompactSearchResult(result: SearchNodesResult, tier: 1 | 2): C
         uses: src.uses,
         used_by: src.used_by,
         history_count: src.history_count,
+        workflows: src.workflows,
         code_matches: keepEvidence && src.code_matches ? trimLines(src.code_matches) : undefined
       };
     }),
@@ -2036,6 +2044,7 @@ export class DevMindDatabase {
     const connCounts = this.getConnectionCounts(ids);
     const historyCounts = this.getHistoryCounts(ids);
     const lastUpdated = this.getLastUpdatedMap(ids);
+    const workflowsByNode = this.getWorkflowsForNodes(ids);
     for (const n of nodes) {
       /* istanbul ignore next -- `connCounts` is built from `getConnectionCounts(ids)` on this
          SAME `ids` array a few lines up, and that helper pre-seeds a {uses:0,usedBy:0} entry for
@@ -2052,6 +2061,8 @@ export class DevMindDatabase {
       if (conn.usedBy === 0) {
         n.used_by_note = NO_STATIC_CALLERS_NOTE;
       }
+      const workflows = workflowsByNode.get(n.id);
+      if (workflows && workflows.length > 0) n.workflows = workflows;
     }
     return nodes;
   }
@@ -3121,6 +3132,52 @@ export class DevMindDatabase {
     const { where, params } = this.buildWorkflowFilterSql(opts);
     const row = this.db.prepare(`SELECT COUNT(*) AS c FROM workflows${where}`).get(...params) as { c: number };
     return row.c;
+  }
+
+  /**
+   * For each of `nodeIds`, every NON-ARCHIVED workflow that has a step touching it — so
+   * `search_nodes`/`get_node_code` can surface "this node already belongs to workflow X" and let
+   * the AI ask the developer whether the current work should bind there, instead of the AI having
+   * to separately list/search workflows to find out.
+   *
+   * One query total regardless of how many node ids are asked about: `workflow_steps.node_ids` is
+   * a JSON array per step, not a normalized join column, and `workflow_steps` is small relative to
+   * `nodes` (steps are written by hand, one per commit) — so it is cheaper to read every step once
+   * and index it in memory than to run a `LIKE` per node id. Archived workflows are excluded: a
+   * node's presence in one the developer already tucked away is not a live binding suggestion.
+   */
+  getWorkflowsForNodes(nodeIds: string[]): Map<string, { id: string; name: string }[]> {
+    const result = new Map<string, { id: string; name: string }[]>();
+    if (nodeIds.length === 0) return result;
+    const wanted = new Set(nodeIds);
+
+    const rows = this.db.prepare(`
+      SELECT ws.node_ids AS node_ids, w.id AS workflow_id, w.name AS workflow_name
+      FROM workflow_steps ws
+      JOIN workflows w ON w.id = ws.workflow_id
+      WHERE ws.node_ids IS NOT NULL AND w.archived = 0
+    `).all() as { node_ids: string; workflow_id: string; workflow_name: string }[];
+
+    for (const row of rows) {
+      let touched: string[];
+      try {
+        touched = JSON.parse(row.node_ids);
+      } catch {
+        continue; // corrupted/legacy row — skip rather than throw a lookup that isn't the caller's fault
+      }
+      if (!Array.isArray(touched)) continue;
+      for (const nodeId of touched) {
+        if (!wanted.has(nodeId)) continue;
+        const existing = result.get(nodeId) ?? [];
+        // A node can appear in several steps of the SAME workflow (edited more than once across
+        // its life) — dedupe to one entry per workflow, not one per step.
+        if (!existing.some(w => w.id === row.workflow_id)) {
+          existing.push({ id: row.workflow_id, name: row.workflow_name });
+        }
+        result.set(nodeId, existing);
+      }
+    }
+    return result;
   }
 
   /** Shared WHERE builder, so a page and its `total` can never describe different criteria. */

@@ -469,6 +469,59 @@ describe('DevMindDatabase — coverage gaps', () => {
     });
   });
 
+  describe('getWorkflowsForNodes', () => {
+    it('returns the (deduplicated) workflows whose steps touch each node, and nothing for a node in none', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        fx.db.upsertNode({ id: '{app}/bar.ts#format', type: 'function', name: 'format', file_path: repoFile(fx, 'bar.ts') });
+        fx.db.upsertNode({ id: '{app}/baz.ts#untouched', type: 'function', name: 'untouched', file_path: repoFile(fx, 'baz.ts') });
+
+        const wallet = fx.db.createWorkflow('Wallet Integration', 'Stripe payouts');
+        // Two steps of the SAME workflow both touching greet — must collapse to ONE entry, not two.
+        fx.db.addWorkflowStep(wallet.id, { summary: 'step 1', nodeIds: ['{app}/foo.ts#greet'] });
+        fx.db.addWorkflowStep(wallet.id, { summary: 'step 2', nodeIds: ['{app}/foo.ts#greet', '{app}/bar.ts#format'] });
+        const search = fx.db.createWorkflow('Search Revamp', 'BM25 plus vectors');
+        fx.db.addWorkflowStep(search.id, { summary: 'step 1', nodeIds: ['{app}/bar.ts#format'] });
+
+        const result = fx.db.getWorkflowsForNodes(['{app}/foo.ts#greet', '{app}/bar.ts#format', '{app}/baz.ts#untouched']);
+
+        expect(result.get('{app}/foo.ts#greet')).toEqual([{ id: wallet.id, name: 'Wallet Integration' }]);
+        expect(result.get('{app}/bar.ts#format')?.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+          { id: search.id, name: 'Search Revamp' },
+          { id: wallet.id, name: 'Wallet Integration' }
+        ]);
+        expect(result.get('{app}/baz.ts#untouched')).toBeUndefined();
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('excludes an ARCHIVED workflow — a node in only archived work looks like it belongs to none', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        const old = fx.db.createWorkflow('Old Feature', 'Long done');
+        fx.db.addWorkflowStep(old.id, { summary: 'did a thing', nodeIds: ['{app}/foo.ts#greet'] });
+        fx.db.setWorkflowArchived(old.id, true);
+
+        const result = fx.db.getWorkflowsForNodes(['{app}/foo.ts#greet']);
+        expect(result.get('{app}/foo.ts#greet')).toBeUndefined();
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('returns an empty map for an empty input without querying', () => {
+      const fx = makeFixture();
+      try {
+        expect(fx.db.getWorkflowsForNodes([])).toEqual(new Map());
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('updateHistory — configured developer overrides the AI-supplied one', () => {
     it('always attributes history to .env\'s DEVELOPER_NAME when set', () => {
       const fx = makeFixture({ env: { DEVELOPER_NAME: 'Real Developer' } });
