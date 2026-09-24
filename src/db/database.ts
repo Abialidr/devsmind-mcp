@@ -843,6 +843,22 @@ export class DevMindDatabase {
   // --- Node Operations ---
 
   upsertNode(node: { id: string; type: string; name: string; file_path: string; signature?: string | null; description?: string | null; aliases?: string[] }) {
+    // file_path must be a real absolute filesystem path — every reader (writeGraphToDisk,
+    // nodesDeclaredIn, ...) re-resolves it as one. The portable `{component}/relative/path`
+    // form is a DIFFERENT, display-only convention used for node ids and on-disk JSON — never for
+    // this column — and canonicalizePath (path.resolve) does not reject it: it silently resolves
+    // the literal `{...}` segment against cwd, producing a value that then can never string-match
+    // this same node's real, already-stored absolute path. That mismatch is exactly what the
+    // multi-file-node join two lines down exists to handle for a GENUINE split across files, so a
+    // caller that accidentally passes the portable form (e.g. copied from this node's own id) gets
+    // it silently spliced onto the correct path instead of rejected — corrupting file_path into an
+    // unreadable, ever-growing combined string on every subsequent call. Reject it outright instead.
+    if (/^\{[^}]+\}\//.test(node.file_path)) {
+      throw new Error(
+        `upsertNode: file_path "${node.file_path}" looks like a node id's portable {component}/path form, not a real filesystem path. ` +
+        `Pass an absolute (or workspace-relative) path on disk instead.`
+      );
+    }
     const canonicalFp = canonicalizePath(node.file_path);
     // A ", "-joined file_path arriving here is the only way a brain acquires its first multi-file
     // node, and hasMultiFileNodes gates a query that would otherwise never run again for the life

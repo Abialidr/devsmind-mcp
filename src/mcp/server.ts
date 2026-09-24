@@ -2719,7 +2719,20 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
         case 'add_node': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const rawNodeId = requireStr(args, 'node_id', 'add_node');
-          const filePath = requireStr(args, 'file_path', 'add_node');
+          const rawFilePath = requireStr(args, 'file_path', 'add_node');
+
+          // nodes.file_path is stored and matched everywhere else as a real absolute filesystem
+          // path (see writeGraphToDisk/nodesDeclaredIn) — never the portable `{component}/...`
+          // form a caller might have seen in this same tool's OWN output (a node id, a search
+          // result). edit_node already resolves file_path the same way before it ever reaches
+          // upsertNode; this deprecated/legacy path did not, so a caller passing that portable
+          // form straight through — plausible from an older or non-standard client copying it
+          // out of a node id — stored it verbatim, and upsertNode's own "this node now spans
+          // multiple files" join (a real feature, for a node genuinely split across files) then
+          // spliced it onto the correct absolute path already on file, corrupting file_path into
+          // an unreadable, over-long combined string on the next successful edit_node/sync.
+          const workspaceRoot = path.dirname(devmindPath);
+          const filePath = path.isAbsolute(rawFilePath) ? path.resolve(rawFilePath) : path.resolve(workspaceRoot, rawFilePath);
 
           const db = getDatabase(devmindPath);
           const repoRelPath = db.toRepoRelativePath(filePath);
