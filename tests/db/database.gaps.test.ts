@@ -520,6 +520,39 @@ describe('DevMindDatabase — coverage gaps', () => {
         fx.cleanup();
       }
     });
+
+    it('skips a step whose node_ids is not valid JSON, instead of throwing', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        const wf = fx.db.createWorkflow('Wallet Integration', 'Stripe payouts');
+        const good = fx.db.addWorkflowStep(wf.id, { summary: 'step 1', nodeIds: ['{app}/foo.ts#greet'] });
+        // Force a corrupted node_ids column directly — not reachable through addWorkflowStep's own
+        // API, which always writes valid JSON. Simulates hand-edited/legacy-migrated data.
+        raw(fx.db).prepare('UPDATE workflow_steps SET node_ids = ? WHERE id = ?').run('not json {{{', good.id);
+
+        expect(() => fx.db.getWorkflowsForNodes(['{app}/foo.ts#greet'])).not.toThrow();
+        expect(fx.db.getWorkflowsForNodes(['{app}/foo.ts#greet']).get('{app}/foo.ts#greet')).toBeUndefined();
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('skips a step whose node_ids is valid JSON but not an array', () => {
+      const fx = makeFixture();
+      try {
+        fx.db.upsertNode({ id: '{app}/foo.ts#greet', type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        const wf = fx.db.createWorkflow('Wallet Integration', 'Stripe payouts');
+        const step = fx.db.addWorkflowStep(wf.id, { summary: 'step 1', nodeIds: ['{app}/foo.ts#greet'] });
+        // JSON.parse succeeds here (unlike the malformed-syntax case above) but yields an object,
+        // not an array — a distinct defensive branch from the parse-failure one.
+        raw(fx.db).prepare('UPDATE workflow_steps SET node_ids = ? WHERE id = ?').run('{"not":"an array"}', step.id);
+
+        expect(fx.db.getWorkflowsForNodes(['{app}/foo.ts#greet']).get('{app}/foo.ts#greet')).toBeUndefined();
+      } finally {
+        fx.cleanup();
+      }
+    });
   });
 
   describe('updateHistory — configured developer overrides the AI-supplied one', () => {
