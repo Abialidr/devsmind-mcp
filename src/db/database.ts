@@ -97,8 +97,9 @@ export interface DrillInHooks {
   /** Every non-archived workflow with a step already touching this node (see
    * `getWorkflowsForNodes`) — omitted entirely, not an empty array, when there are none. Lets the
    * AI notice "this belongs to work already underway" and ask the developer whether to bind,
-   * rather than a separate workflow search. */
-  workflows?: { id: string; name: string }[];
+   * rather than a separate workflow search. `description` is included so the AI can judge
+   * relevance to the CURRENT request without a follow-up workflow_list call. */
+  workflows?: { id: string; name: string; description: string }[];
 }
 
 /** A node in the primary `nodes` bucket of {@link DevMindDatabase.searchNodes}. Either an exact
@@ -164,7 +165,7 @@ export interface CompactRankedNode {
   used_by: number;
   history_count: number;
   /** Survives compaction alongside the other drill-in hooks — see RankedNode.workflows. */
-  workflows?: { id: string; name: string }[];
+  workflows?: { id: string; name: string; description: string }[];
   code_matches?: CodeMatchLine[];
 }
 
@@ -3138,7 +3139,9 @@ export class DevMindDatabase {
    * For each of `nodeIds`, every NON-ARCHIVED workflow that has a step touching it — so
    * `search_nodes`/`get_node_code` can surface "this node already belongs to workflow X" and let
    * the AI ask the developer whether the current work should bind there, instead of the AI having
-   * to separately list/search workflows to find out.
+   * to separately list/search workflows to find out. `description` rides along for the same
+   * reason: an id/name pair alone forces yet another workflow_list call before the AI can judge
+   * whether a match is actually relevant to what the developer is doing right now.
    *
    * One query total regardless of how many node ids are asked about: `workflow_steps.node_ids` is
    * a JSON array per step, not a normalized join column, and `workflow_steps` is small relative to
@@ -3146,17 +3149,17 @@ export class DevMindDatabase {
    * and index it in memory than to run a `LIKE` per node id. Archived workflows are excluded: a
    * node's presence in one the developer already tucked away is not a live binding suggestion.
    */
-  getWorkflowsForNodes(nodeIds: string[]): Map<string, { id: string; name: string }[]> {
-    const result = new Map<string, { id: string; name: string }[]>();
+  getWorkflowsForNodes(nodeIds: string[]): Map<string, { id: string; name: string; description: string }[]> {
+    const result = new Map<string, { id: string; name: string; description: string }[]>();
     if (nodeIds.length === 0) return result;
     const wanted = new Set(nodeIds);
 
     const rows = this.db.prepare(`
-      SELECT ws.node_ids AS node_ids, w.id AS workflow_id, w.name AS workflow_name
+      SELECT ws.node_ids AS node_ids, w.id AS workflow_id, w.name AS workflow_name, w.description AS workflow_description
       FROM workflow_steps ws
       JOIN workflows w ON w.id = ws.workflow_id
       WHERE ws.node_ids IS NOT NULL AND w.archived = 0
-    `).all() as { node_ids: string; workflow_id: string; workflow_name: string }[];
+    `).all() as { node_ids: string; workflow_id: string; workflow_name: string; workflow_description: string }[];
 
     for (const row of rows) {
       let touched: string[];
@@ -3172,7 +3175,7 @@ export class DevMindDatabase {
         // A node can appear in several steps of the SAME workflow (edited more than once across
         // its life) — dedupe to one entry per workflow, not one per step.
         if (!existing.some(w => w.id === row.workflow_id)) {
-          existing.push({ id: row.workflow_id, name: row.workflow_name });
+          existing.push({ id: row.workflow_id, name: row.workflow_name, description: row.workflow_description });
         }
         result.set(nodeId, existing);
       }

@@ -486,10 +486,10 @@ describe('DevMindDatabase — coverage gaps', () => {
 
         const result = fx.db.getWorkflowsForNodes(['{app}/foo.ts#greet', '{app}/bar.ts#format', '{app}/baz.ts#untouched']);
 
-        expect(result.get('{app}/foo.ts#greet')).toEqual([{ id: wallet.id, name: 'Wallet Integration' }]);
+        expect(result.get('{app}/foo.ts#greet')).toEqual([{ id: wallet.id, name: 'Wallet Integration', description: 'Stripe payouts' }]);
         expect(result.get('{app}/bar.ts#format')?.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
-          { id: search.id, name: 'Search Revamp' },
-          { id: wallet.id, name: 'Wallet Integration' }
+          { id: search.id, name: 'Search Revamp', description: 'BM25 plus vectors' },
+          { id: wallet.id, name: 'Wallet Integration', description: 'Stripe payouts' }
         ]);
         expect(result.get('{app}/baz.ts#untouched')).toBeUndefined();
       } finally {

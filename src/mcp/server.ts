@@ -268,18 +268,18 @@ const STEP_REASONING_CAP = 2000;
 
 /**
  * Shared across `search_nodes` and `get_node_code`'s tool descriptions — both can return a
- * `workflows: [{id, name}]` field on a node (see `getWorkflowsForNodes`), and the instruction for
- * what to DO with it is identical either way, so it is written once here rather than drifting
- * between two copies. Deliberately steers toward asking the developer, never binding/unbinding on
- * the AI's own judgment — `workflow_bind` is a cheap, reversible call, but a wrong silent bind
- * pollutes that workflow's step history with unrelated work, and a wrong silent unbind loses the
- * "what were we doing" context mid-task.
+ * `workflows: [{id, name, description}]` field on a node (see `getWorkflowsForNodes`), and the
+ * instruction for what to DO with it is identical either way, so it is written once here rather
+ * than drifting between two copies. Deliberately steers toward asking the developer, never
+ * binding/unbinding on the AI's own judgment — `workflow_bind` is a cheap, reversible call, but a
+ * wrong silent bind pollutes that workflow's step history with unrelated work, and a wrong silent
+ * unbind loses the "what were we doing" context mid-task.
  */
 const WORKFLOW_BINDING_HINT_TEXT =
-  'A `workflows` field on a node names every (non-archived) workflow that already has a step touching it — notice "this belongs to work already underway" without a separate workflow search. Three cases, each needs asking the developer before acting, never binding/unbinding on your own judgment:\n' +
-  '1. This node names a workflow, and no workflow (or a DIFFERENT one) is currently bound to this session: ask whether to bind to it via workflow_bind — the current work likely belongs there.\n' +
+  'A `workflows` field on a node names every (non-archived) workflow that already has a step touching it — each entry\'s `description` is what tells you whether it is actually relevant to the CURRENT request, not just a name match; read it before deciding, don\'t assume from the name alone. This is how you notice "this belongs to work already underway" without a separate workflow search. Three cases, each needs asking the developer before acting, never binding/unbinding on your own judgment:\n' +
+  '1. This node names a workflow whose description matches what you\'re doing, and no workflow (or a DIFFERENT one) is currently bound to this session: ask whether to bind to it via workflow_bind — the current work likely belongs there.\n' +
   '2. A workflow IS bound, but this node points at a DIFFERENT workflow than the one bound: say so and ask which is actually right before recording anything further — do not silently keep logging under the wrong one.\n' +
-  '3. A workflow is bound, but the current request looks unrelated to it (nothing in play names a workflow, or the topic has clearly moved on): ask whether to unbind (workflow_bind with no workflow_id) before continuing, rather than letting unrelated work accumulate under a stale workflow\'s history.';
+  '3. A workflow is bound, but the current request looks unrelated to it (nothing in play names a matching workflow, or the topic has clearly moved on): ask whether to unbind (workflow_bind with no workflow_id) before continuing, rather than letting unrelated work accumulate under a stale workflow\'s history.';
 
 /** `add_repo`'s dedicated scratchpad filename — separate from the default whole-workspace one so
  * a scoped single-repo indexing session can never collide with (or be mistaken for) it. Passed as

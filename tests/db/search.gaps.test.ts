@@ -37,7 +37,7 @@ describe('DevMindDatabase.searchNodes — remaining branches', () => {
 
       const result = await fx.db.searchNodes('greet');
       expect(result.nodes[0].matched_via).toBe('identifier');
-      expect(result.nodes[0].workflows).toEqual([{ id: wallet.id, name: 'Wallet Integration' }]);
+      expect(result.nodes[0].workflows).toEqual([{ id: wallet.id, name: 'Wallet Integration', description: 'Stripe payouts' }]);
     } finally {
       fx.cleanup();
     }
@@ -246,7 +246,7 @@ describe('toCompactSearchResult', () => {
       used_by: 7,
       history_count: 3,
       used_by_note: NO_STATIC_CALLERS_NOTE,
-      workflows: [{ id: 'wf-1', name: 'Wallet Integration' }]
+      workflows: [{ id: 'wf-1', name: 'Wallet Integration', description: 'Stripe payouts' }]
     } as RankedNode],
     files: [{
       file_path: '/repo/styles.css',
@@ -279,7 +279,7 @@ describe('toCompactSearchResult', () => {
     expect(node.used_by).toBe(7);
     expect(node.history_count).toBe(3);
     expect(node.description).toBe('Builds a salutation.');
-    expect(node.workflows).toEqual([{ id: 'wf-1', name: 'Wallet Integration' }]);
+    expect(node.workflows).toEqual([{ id: 'wf-1', name: 'Wallet Integration', description: 'Stripe payouts' }]);
 
     // Dropped: bulk with no bearing on which result to open next. `used_by_note` especially —
     // it's ~140 chars of identical boilerplate repeated per zero-caller node.
@@ -308,7 +308,7 @@ describe('toCompactSearchResult', () => {
     expect(out.files[0].total_matches).toBe(9);
     // workflows survives BOTH tiers, same as the other drill-in hooks — it's exactly the kind of
     // small, decision-relevant signal compaction is designed to keep, not a bulk field to trim.
-    expect(out.nodes[0].workflows).toEqual([{ id: 'wf-1', name: 'Wallet Integration' }]);
+    expect(out.nodes[0].workflows).toEqual([{ id: 'wf-1', name: 'Wallet Integration', description: 'Stripe payouts' }]);
   });
 
   it('never alters a count — a trimmed result must not be mistakable for a complete one', () => {
