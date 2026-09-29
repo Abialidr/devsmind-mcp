@@ -49,13 +49,20 @@ export const DEFAULT_FIELD_WEIGHTS: FieldWeights = {
   reasoning: 1.5
 };
 
-export interface FieldMatch {
-  field: TokenField;
+/**
+ * Generic over `field`'s string keys only insofar as `weights[m.field]` is a plain index —
+ * nothing in scoreCandidate's body depends on TokenField's specific members. Defaulted to
+ * TokenField so every existing untyped call site (e.g. `scoreCandidate([])` with no weights arg)
+ * keeps compiling and behaving identically. Loosened rather than duplicated as a parallel
+ * workflow-specific type+function, so the shared BM25 arithmetic can never drift between domains.
+ */
+export interface FieldMatch<F extends string = TokenField> {
+  field: F;
   /** This node's term frequency for the matched token, in this field. */
   tf: number;
   /** How many OTHER nodes also have this token in this field — rarer tokens carry more signal. */
   docFreq: number;
-  /** Total nodes considered, for the IDF calculation. */
+  /** Total documents considered (nodes, workflows, ...), for the IDF calculation. */
   totalNodes: number;
 }
 
@@ -67,7 +74,10 @@ export interface FieldMatch {
  * no need for BM25's document-length normalization term — every "document" here is one node's
  * handful of fields, not a variable-length passage.
  */
-export function scoreCandidate(matches: FieldMatch[], weights: FieldWeights = DEFAULT_FIELD_WEIGHTS): number {
+export function scoreCandidate<F extends string = TokenField>(
+  matches: FieldMatch<F>[],
+  weights: Record<F, number> = DEFAULT_FIELD_WEIGHTS as unknown as Record<F, number>
+): number {
   const K1 = 1.2;
   let score = 0;
   for (const m of matches) {
@@ -103,3 +113,54 @@ export function reciprocalRankFusion(rankings: string[][], k: number = 60): Rank
     .map(([id, score]) => ({ id, score }))
     .sort((a, b) => b.score - a.score);
 }
+
+/**
+ * The searchable surface of a workflow: its own name/description, plus every step's
+ * summary/reasoning folded in (see rebuildWorkflowSearchIndex in database.ts). All four are
+ * prose — none is identifier-shaped the way a node's name/id/path can be — so there is no
+ * tokenizeIdentifier split the way TokenField needs for 'identifier'/'path'.
+ */
+export type WorkflowTokenField = 'name' | 'description' | 'summary' | 'reasoning';
+
+export interface WorkflowTokenRow {
+  token: string;
+  field: WorkflowTokenField;
+  tf: number;
+}
+
+/**
+ * Tokenizes one workflow field's text — always the natural-language tokenizer, since none of
+ * name/description/summary/reasoning is identifier-shaped text. Parallels tokenizeNodeField's
+ * dedupe-and-count contract exactly.
+ */
+export function tokenizeWorkflowField(text: string | null | undefined, field: WorkflowTokenField): WorkflowTokenRow[] {
+  if (!text) return [];
+  const tokens = tokenizeText(text);
+  const counts = new Map<string, number>();
+  for (const t of tokens) counts.set(t, (counts.get(t) || 0) + 1);
+  return Array.from(counts.entries()).map(([token, tf]) => ({ token, field, tf }));
+}
+
+export interface WorkflowFieldWeights {
+  name: number;
+  description: number;
+  summary: number;
+  reasoning: number;
+}
+
+/**
+ * `name`/`description` are the workflow's own self-description, written once and stable — the
+ * strongest signal of "this is the workflow you mean" (the role DEFAULT_FIELD_WEIGHTS gives
+ * `description` for nodes). `summary` is close behind: a step summary is a short, deliberate
+ * human sentence describing one concrete change, so a term match there is real content, not
+ * incidental phrasing — weighted below name/description since it's written once per step rather
+ * than once per workflow. Step `reasoning` explains WHY, not WHAT, so it carries the weakest
+ * signal for "find the workflow that IS about X" — same relative position `reasoning` holds in
+ * DEFAULT_FIELD_WEIGHTS.
+ */
+export const DEFAULT_WORKFLOW_FIELD_WEIGHTS: WorkflowFieldWeights = {
+  name: 4,
+  description: 3.5,
+  summary: 2.5,
+  reasoning: 1.5
+};

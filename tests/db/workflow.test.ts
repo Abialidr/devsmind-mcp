@@ -66,6 +66,7 @@ describe('DevMindDatabase — workflow context vault', () => {
         expect(fx.db.countWorkflows()).toBe(0);
         // Hidden, not deleted — the distinction that makes archiving safe to use freely.
         expect(fx.db.listWorkflows({ includeArchived: true }).map(w => w.id)).toEqual([wf.id]);
+        expect(fx.db.countWorkflows({ includeArchived: true })).toBe(1);
         expect(fx.db.getWorkflowContext(wf.id).steps).toHaveLength(1);
 
         fx.db.setWorkflowArchived(wf.id, false);
@@ -85,36 +86,7 @@ describe('DevMindDatabase — workflow context vault', () => {
     });
   });
 
-  describe('listWorkflows — query and paging', () => {
-    it('matches on name AND description, which the old searchWorkflows never did', () => {
-      // searchWorkflows scanned step summaries and artifact names only, so looking a workflow up
-      // by its own name returned nothing — the one search anybody actually tries.
-      const fx = makeFixture({ skipDefaultFiles: true });
-      try {
-        const wallet = fx.db.createWorkflow('Wallet Integration', 'Stripe payouts');
-        const search = fx.db.createWorkflow('Search Revamp', 'BM25 plus vectors');
-
-        expect(fx.db.listWorkflows({ query: 'wallet' }).map(w => w.id)).toEqual([wallet.id]);
-        expect(fx.db.listWorkflows({ query: 'WALLET' }).map(w => w.id)).toEqual([wallet.id]);
-        expect(fx.db.listWorkflows({ query: 'vectors' }).map(w => w.id)).toEqual([search.id]);
-        expect(fx.db.listWorkflows({ query: 'nothing-matches-this' })).toEqual([]);
-        expect(fx.db.countWorkflows({ query: 'wallet' })).toBe(1);
-      } finally {
-        fx.cleanup();
-      }
-    });
-
-    it('escapes LIKE metacharacters so a literal % or _ is not a wildcard', () => {
-      const fx = makeFixture({ skipDefaultFiles: true });
-      try {
-        fx.db.createWorkflow('Discount 50% Flow', 'percent off');
-        fx.db.createWorkflow('Unrelated', 'nothing here');
-        expect(fx.db.listWorkflows({ query: '%' }).map(w => w.name)).toEqual(['Discount 50% Flow']);
-      } finally {
-        fx.cleanup();
-      }
-    });
-
+  describe('listWorkflows — paging (query moved to rankWorkflows, see workflow-search.test.ts)', () => {
     it('pages with limit/offset while countWorkflows stays exact', () => {
       const fx = makeFixture({ skipDefaultFiles: true });
       try {

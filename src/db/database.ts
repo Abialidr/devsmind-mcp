@@ -6,7 +6,10 @@ import { INIT_SCHEMA_SQL, DbNode, DbHistory, HistoryEdit, DbConnection, DbWorkfl
 import { loadProjectContext, resolveRepoPath, ProjectContext, canonicalizePath } from '../utils/config';
 import { parseNodeId, extractNodeFromFile, normalizeFsPath, locateNodeInFile, isAstParseable } from '../utils/ast';
 import { tokenizeText } from '../utils/tokenize';
-import { tokenizeNodeField, scoreCandidate, TokenField, FieldMatch, DEFAULT_FIELD_WEIGHTS, reciprocalRankFusion } from './search-index';
+import {
+  tokenizeNodeField, scoreCandidate, TokenField, FieldMatch, DEFAULT_FIELD_WEIGHTS, reciprocalRankFusion,
+  tokenizeWorkflowField, WorkflowTokenField, DEFAULT_WORKFLOW_FIELD_WEIGHTS
+} from './search-index';
 import { EMBEDDING_MODEL_ID, EMBEDDING_DIM, hashDescription, cosineInt8, embedTextInt8 } from './embedder';
 import { grepRepos, rankGrepHits, escapeRegExp, isDefaultIgnoredFile, GrepHit, RankedFile } from './grep';
 
@@ -258,6 +261,20 @@ export function toCompactSearchResult(result: SearchNodesResult, tier: 1 | 2): C
     truncated: result.truncated,
     scope_note: result.scope_note
   };
+}
+
+/** A workflow after {@link DevMindDatabase.rankWorkflows} — `DbWorkflow` plus the BM25 evidence
+ * for why it matched. `matched_terms`/`score` are `[]`/`0` on the unranked (empty-query) path,
+ * the same "present but empty, not omitted" contract search's `RankedNode` doesn't need since it
+ * only ever exists on an actual match — `rankWorkflows` always returns every workflow, ranked or
+ * not, so the shape has to be uniform across both cases. */
+export interface RankedWorkflow extends DbWorkflow {
+  matched_terms: string[];
+  score: number;
+  /** Up to 3 of this workflow's OWN steps whose summary/reasoning contains a query term — see
+   * `attachMatchedSteps`. Always `[]` on the unranked path, and possibly `[]` even on a real match
+   * if the match came only from the workflow's own name/description. */
+  matched_steps: { step_id: string; step_index: number; summary: string; matched_terms: string[] }[];
 }
 
 export interface GraphOptions {
@@ -3114,14 +3131,14 @@ export class DevMindDatabase {
    * Live work floats up and abandoned threads sink on their own, so nothing has to be marked
    * "completed" by hand (nobody ever did, and a lifecycle field nobody maintains just lies).
    *
-   * `query` matches name AND description, the search `searchWorkflows` never actually did: it
-   * scanned step summaries and artifact names only, so looking a workflow up by its own name
-   * returned nothing. Paging mirrors `listNodes` — `total` is the true count before the page.
+   * Text search moved to `rankWorkflows` (BM25-ranked, over name/description AND step
+   * summary/reasoning) — this is now a plain list/count with only an archived filter, the same
+   * split `tokenSearchNodes` has from a bare `getNode`-style lookup.
    */
-  listWorkflows(opts?: { query?: string; includeArchived?: boolean; limit?: number; offset?: number }): DbWorkflow[] {
-    const { where, params } = this.buildWorkflowFilterSql(opts);
+  listWorkflows(opts?: { includeArchived?: boolean; limit?: number; offset?: number }): DbWorkflow[] {
+    const where = opts?.includeArchived ? '' : ' WHERE archived = 0';
     let sql = `SELECT * FROM workflows${where} ORDER BY updated_at DESC`;
-    const args = [...params];
+    const args: number[] = [];
     if (opts?.limit !== undefined) {
       sql += ' LIMIT ? OFFSET ?';
       args.push(opts.limit, opts.offset ?? 0);
@@ -3129,9 +3146,9 @@ export class DevMindDatabase {
     return this.db.prepare(sql).all(...args) as DbWorkflow[];
   }
 
-  countWorkflows(opts?: { query?: string; includeArchived?: boolean }): number {
-    const { where, params } = this.buildWorkflowFilterSql(opts);
-    const row = this.db.prepare(`SELECT COUNT(*) AS c FROM workflows${where}`).get(...params) as { c: number };
+  countWorkflows(opts?: { includeArchived?: boolean }): number {
+    const where = opts?.includeArchived ? '' : ' WHERE archived = 0';
+    const row = this.db.prepare(`SELECT COUNT(*) AS c FROM workflows${where}`).get() as { c: number };
     return row.c;
   }
 
@@ -3183,17 +3200,189 @@ export class DevMindDatabase {
     return result;
   }
 
-  /** Shared WHERE builder, so a page and its `total` can never describe different criteria. */
-  private buildWorkflowFilterSql(opts?: { query?: string; includeArchived?: boolean }): { where: string; params: any[] } {
-    let where = ' WHERE 1=1';
-    const params: any[] = [];
-    if (!opts?.includeArchived) where += ' AND archived = 0';
-    if (opts?.query && opts.query.trim()) {
-      where += " AND (LOWER(name) LIKE ? ESCAPE '\\' OR LOWER(description) LIKE ? ESCAPE '\\')";
-      const like = `%${this.likeEscape(opts.query.trim().toLowerCase())}%`;
-      params.push(like, like);
+  /** Cheap "has the workflow corpus changed" signal for `ensureWorkflowSearchIndexFresh` — same
+   *  shape and reasoning as `searchIndexFingerprint`: a count + text-length sum, not a per-row
+   *  `updated_at` comparison (workflow_steps has no single write path that could easily be
+   *  hooked, so a fingerprint checked lazily at query time can't be missed the way a write-path
+   *  invalidation scheme could). A SEPARATE `system_meta` key from the node fingerprint — the two
+   *  track disjoint tables and must invalidate independently. Archived workflows are included
+   *  deliberately: this tracks corpus freshness, not ranking scope (that filter is applied at
+   *  read time in `rankWorkflows`), and an archived workflow's text can still change (e.g. a
+   *  rename just before archiving). The inner `COALESCE` around each step's `LENGTH()` call is
+   *  load-bearing: a bare `LENGTH(summary) + LENGTH(reasoning)` goes NULL for any step whose
+   *  nullable `reasoning` is NULL, silently zeroing that step's contribution to the SUM even
+   *  though `summary` is NOT NULL. */
+  private workflowSearchIndexFingerprint(): string {
+    const wfRow = this.db.prepare(`
+      SELECT COUNT(*) as wf_count, COALESCE(SUM(LENGTH(name) + LENGTH(description)), 0) as text_len_sum
+      FROM workflows
+    `).get() as { wf_count: number; text_len_sum: number };
+    const stepRow = this.db.prepare(`
+      SELECT COUNT(*) as step_count,
+             COALESCE(SUM(COALESCE(LENGTH(summary),0) + COALESCE(LENGTH(reasoning),0)), 0) as step_text_len_sum
+      FROM workflow_steps
+    `).get() as { step_count: number; step_text_len_sum: number };
+    return `${wfRow.wf_count}:${wfRow.text_len_sum}:${stepRow.step_count}:${stepRow.step_text_len_sum}`;
+  }
+
+  /** Rebuilds `workflow_tokens` from scratch: every workflow's own name+description, plus every
+   *  one of its steps' summary and reasoning GROUP_CONCAT'd together — mirroring how
+   *  `rebuildSearchIndex` folds every history row's reasoning into one node's reasoning field,
+   *  for the identical reason (a decision recorded in an early step must stay findable, there
+   *  being no per-step search tool). Keyed by workflow_id, NOT step_id: a word appearing in 3
+   *  different steps' summaries should score HIGHER via accumulated tf than a word appearing
+   *  once — the same "more mentions across the document this corpus entry draws from = stronger
+   *  signal" logic node search already applies. `wf.name`/`wf.description` are read once per
+   *  workflow directly off the row (never joined against steps), so they can never double-count
+   *  regardless of step count — only the GROUP_CONCAT'd fields scale with it, which is intended.
+   *  No merge-by-key dedupe step is needed (unlike the node rebuild's name/id dedupe): each field
+   *  here draws from exactly one source column or one GROUP_CONCAT, never two different columns
+   *  mapped to the same field label. */
+  private rebuildWorkflowSearchIndex(): void {
+    const workflows = this.db.prepare(`
+      SELECT w.*, (
+        SELECT GROUP_CONCAT(ws.summary, ' ') FROM workflow_steps ws WHERE ws.workflow_id = w.id
+      ) AS all_summaries, (
+        SELECT GROUP_CONCAT(ws.reasoning, ' ') FROM workflow_steps ws WHERE ws.workflow_id = w.id AND ws.reasoning IS NOT NULL
+      ) AS all_reasoning
+      FROM workflows w
+    `).all() as (DbWorkflow & { all_summaries: string | null; all_reasoning: string | null })[];
+
+    const deleteStmt = this.db.prepare('DELETE FROM workflow_tokens');
+    const insertStmt = this.db.prepare('INSERT OR REPLACE INTO workflow_tokens (workflow_id, token, field, tf) VALUES (?, ?, ?, ?)');
+
+    const tx = this.db.transaction(() => {
+      deleteStmt.run();
+      for (const wf of workflows) {
+        const rows = [
+          ...tokenizeWorkflowField(wf.name, 'name'),
+          ...tokenizeWorkflowField(wf.description, 'description'),
+          ...tokenizeWorkflowField(wf.all_summaries, 'summary'),
+          ...tokenizeWorkflowField(wf.all_reasoning, 'reasoning')
+        ];
+        for (const r of rows) insertStmt.run(wf.id, r.token, r.field, r.tf);
+      }
+    });
+    tx();
+  }
+
+  /** Compares the current workflow-corpus fingerprint against what `workflow_tokens` was last
+   *  built from, stored in `system_meta` under its own key; rebuilds and updates the stored
+   *  fingerprint only on a mismatch. A momentarily stale index (between a real change and the
+   *  next workflow search) only costs ranking quality on that one call, never correctness. */
+  private ensureWorkflowSearchIndexFresh(): void {
+    const current = this.workflowSearchIndexFingerprint();
+    const row = this.db.prepare(`SELECT value FROM system_meta WHERE key = 'workflow_search_index_fingerprint'`).get() as { value: string } | undefined;
+    if (row && row.value === current) return;
+    this.rebuildWorkflowSearchIndex();
+    this.db.prepare(`INSERT OR REPLACE INTO system_meta (key, value, updated_at) VALUES ('workflow_search_index_fingerprint', ?, CURRENT_TIMESTAMP)`).run(current);
+  }
+
+  /** For each already-BM25-qualified workflow, finds up to 3 of its OWN steps whose summary or
+   *  reasoning contains at least one winning query token, ranked by distinct-token match count
+   *  (ties broken by step_index ascending — earliest first, since an earlier decision is usually
+   *  the more foundational one). Runs only over survivors of the workflow-level BM25 floor, not
+   *  the full corpus — bounded to (qualifying workflows × their own step count). This is
+   *  attribution, not a second ranking gate: a workflow can qualify purely via its
+   *  name/description with zero individually-matching step, in which case matched_steps is
+   *  simply []. */
+  private attachMatchedSteps(workflows: RankedWorkflow[], queryTokens: string[]): void {
+    for (const wf of workflows) {
+      const steps = this.db.prepare(
+        'SELECT id, step_index, summary, reasoning FROM workflow_steps WHERE workflow_id = ? ORDER BY step_index ASC'
+      ).all(wf.id) as { id: string; step_index: number; summary: string; reasoning: string | null }[];
+
+      const candidates = steps.map(s => {
+        const stepTokens = new Set([...tokenizeText(s.summary), ...tokenizeText(s.reasoning || '')]);
+        const matched = queryTokens.filter(t => stepTokens.has(t));
+        return { s, matched };
+      }).filter(c => c.matched.length > 0);
+
+      candidates.sort((a, b) => b.matched.length - a.matched.length || a.s.step_index - b.s.step_index);
+      wf.matched_steps = candidates.slice(0, 3).map(c => ({
+        step_id: c.s.id, step_index: c.s.step_index, summary: c.s.summary, matched_terms: c.matched
+      }));
     }
-    return { where, params };
+  }
+
+  /**
+   * BM25-ranked workflow search — the workflow-domain equivalent of `tokenSearchNodes`, replacing
+   * the old LIKE-based `buildWorkflowFilterSql` query clause entirely. Archived filtering happens
+   * FIRST as a hard SQL predicate (unrelated to relevance), THEN ranking runs only over the
+   * surviving set. Returns the FULL ranked list (unpaged) plus its own true total in one call, so
+   * `workflow_list`'s handler can slice a page and report total from the SAME computation rather
+   * than two independently-executed queries that could disagree — mirrors how `searchNodes`
+   * derives `nodes_total: fused.length` rather than a separate COUNT.
+   */
+  rankWorkflows(query: string, opts?: { includeArchived?: boolean }): { workflows: RankedWorkflow[]; total: number } {
+    const tokens = Array.from(new Set(tokenizeText(query)));
+    const archivedClause = opts?.includeArchived ? '' : 'WHERE archived = 0';
+    if (tokens.length === 0) {
+      const rows = this.db.prepare(`SELECT * FROM workflows ${archivedClause} ORDER BY updated_at DESC`).all() as DbWorkflow[];
+      return { workflows: rows.map(w => ({ ...w, matched_terms: [], score: 0, matched_steps: [] })), total: rows.length };
+    }
+
+    this.ensureWorkflowSearchIndexFresh();
+
+    const totalWfRow = this.db.prepare(`SELECT COUNT(*) as c FROM workflows ${archivedClause}`).get() as { c: number };
+    const totalWorkflows = Math.max(totalWfRow.c, 1);
+
+    const placeholders = tokens.map(() => '?').join(',');
+    const docFreqRows = this.db.prepare(`
+      SELECT token, field, COUNT(DISTINCT workflow_id) AS doc_freq
+      FROM workflow_tokens WHERE token IN (${placeholders}) GROUP BY token, field
+    `).all(...tokens) as { token: string; field: WorkflowTokenField; doc_freq: number }[];
+    const docFreqByKey = new Map<string, number>();
+    for (const r of docFreqRows) docFreqByKey.set(`${r.token} ${r.field}`, r.doc_freq);
+
+    const rows = this.db.prepare(`
+      SELECT workflow_id, token, field, tf FROM workflow_tokens WHERE token IN (${placeholders})
+    `).all(...tokens) as { workflow_id: string; token: string; field: WorkflowTokenField; tf: number }[];
+
+    const byWorkflow = new Map<string, { matches: FieldMatch<WorkflowTokenField>[]; terms: Set<string> }>();
+    for (const row of rows) {
+      const entry = byWorkflow.get(row.workflow_id) || { matches: [], terms: new Set<string>() };
+      /* istanbul ignore next -- `rows` and `docFreqRows` are both filtered from `workflow_tokens`
+         by the exact same `WHERE token IN (...)`, and `docFreqRows` is a `GROUP BY token, field`
+         over that identical row set — so every (token, field) pair appearing in `rows`
+         necessarily has a matching aggregate entry already. The `?? 1` fallback is unreachable in
+         practice, kept only as a defensive default if the two queries are ever edited out of
+         lockstep — mirrors the identical `docFreq ?? 1` fallback on the node path. */
+      const docFreq = docFreqByKey.get(`${row.token} ${row.field}`) ?? 1;
+      entry.matches.push({ field: row.field, tf: row.tf, docFreq, totalNodes: totalWorkflows });
+      entry.terms.add(row.token);
+      byWorkflow.set(row.workflow_id, entry);
+    }
+    if (byWorkflow.size === 0) return { workflows: [], total: 0 };
+
+    // Same two noise floors as tokenSearchNodes, retuned for a much smaller corpus — see
+    // rankWorkflows' own module-level doc/plan notes: MIN_WORKFLOW_BM25_SCORE is a judgment call
+    // (IDF compresses harder as the corpus shrinks, so the node-tuned 0.75 would risk rejecting a
+    // genuinely strong single-field hit purely because there are only dozens of workflows, not
+    // thousands of nodes) — tunable, revisit against real multi-workflow projects.
+    const minCoverage = Math.min(2, tokens.length);
+    const MIN_WORKFLOW_BM25_SCORE = 0.5;
+
+    const wfIds = Array.from(byWorkflow.keys());
+    const wfPlaceholders = wfIds.map(() => '?').join(',');
+    const combinedWhere = opts?.includeArchived
+      ? `id IN (${wfPlaceholders})`
+      : `id IN (${wfPlaceholders}) AND archived = 0`;
+    const wfRows = this.db.prepare(`SELECT * FROM workflows WHERE ${combinedWhere}`).all(...wfIds) as DbWorkflow[];
+
+    const scored: RankedWorkflow[] = [];
+    for (const wf of wfRows) {
+      const entry = byWorkflow.get(wf.id)!;
+      if (entry.terms.size < minCoverage) continue;
+      const score = scoreCandidate(entry.matches, DEFAULT_WORKFLOW_FIELD_WEIGHTS);
+      if (score < MIN_WORKFLOW_BM25_SCORE) continue;
+      scored.push({ ...wf, matched_terms: Array.from(entry.terms), score, matched_steps: [] });
+    }
+    scored.sort((a, b) => b.score - a.score);
+
+    this.attachMatchedSteps(scored, tokens);
+
+    return { workflows: scored, total: scored.length };
   }
 
   /**

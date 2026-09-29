@@ -281,6 +281,15 @@ const WORKFLOW_BINDING_HINT_TEXT =
   '2. A workflow IS bound, but this node points at a DIFFERENT workflow than the one bound: say so and ask which is actually right before recording anything further — do not silently keep logging under the wrong one.\n' +
   '3. A workflow is bound, but the current request looks unrelated to it (nothing in play names a matching workflow, or the topic has clearly moved on): ask whether to unbind (workflow_bind with no workflow_id) before continuing, rather than letting unrelated work accumulate under a stale workflow\'s history.';
 
+/**
+ * Explains how to read `matched_steps` on a ranked `workflow_list` result — defined once here,
+ * same "shared constant across descriptions" pattern as `WORKFLOW_BINDING_HINT_TEXT`, in case a
+ * future tool also returns this shape and needs the identical instruction rather than a drifted
+ * copy.
+ */
+const WORKFLOW_MATCHED_STEPS_HINT_TEXT =
+  'A `matched_steps` array on a ranked workflow names up to 3 of ITS OWN steps whose summary or reasoning actually contains your query terms, best match first — this is usually more useful than the workflow-level score alone, since it points at the specific decision or change that matched rather than making you re-read the whole history via workflow_get_context. An empty `matched_steps` array means the match came from the workflow\'s own name/description, not any individual step.';
+
 /** `add_repo`'s dedicated scratchpad filename — separate from the default whole-workspace one so
  * a scoped single-repo indexing session can never collide with (or be mistaken for) it. Passed as
  * `scratchpad` to index_checkpoint/index_continue/index_complete to keep working with it. */
@@ -1066,12 +1075,13 @@ export function createMcpServer(): Server {
         },
         {
           name: 'workflow_list',
-          description: 'List workflows, newest-touched first. Call this when starting work that MIGHT belong to an existing multi-session feature — if a description matches, ask the user whether to continue it (workflow_bind) rather than starting fresh and losing its history. Pass `query` to match on name AND description. Archived workflows are hidden unless include_archived is set. `total` is the true count before the page, and `bound_workflow_id` tells you what this session is already on.',
+          description: 'List workflows, best-match-first when `query` is set (otherwise newest-touched first). Call this when starting work that MIGHT belong to an existing multi-session feature — if a description or a past step matches, ask the user whether to continue it (workflow_bind) rather than starting fresh and losing its history. Pass `query` to token-match against name, description, and every step\'s summary/reasoning — the same tokenizing/stemming `search_nodes` uses, not a raw substring. Archived workflows are hidden unless include_archived is set. `total` is the true count before the page, and `bound_workflow_id` tells you what this session is already on.\n' +
+            WORKFLOW_MATCHED_STEPS_HINT_TEXT,
           inputSchema: {
             type: 'object',
             properties: {
               devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
-              query: { type: 'string', description: 'Optional: match this text against workflow name and description' },
+              query: { type: 'string', description: 'Optional: token-matched (not substring) search across workflow name, description, and every step\'s summary/reasoning — same tokenizing/stemming as search_nodes, so "logging in" matches a step about "login". Ranked by relevance; workflows are returned best-match-first when set (otherwise newest-touched-first).' },
               include_archived: { type: 'boolean', description: 'Include archived (retired) workflows (default: false)' },
               limit: { type: 'number', description: 'Max workflows in this page (default 25, max 200)' },
               offset: { type: 'number', description: 'Skip this many before the returned page (default 0)' }
@@ -3308,12 +3318,17 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
         case 'workflow_list': {
           const devmindPath = resolveDevmindPath(args.devmind_path);
           const db = getDatabase(devmindPath);
-          const query = args.query ? String(args.query) : undefined;
+          const query = args.query ? String(args.query) : '';
           const includeArchived = args.include_archived === true;
           const limit = clampInt(args.limit, 25, 1, 200);
           const offset = clampInt(args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
-          const total = db.countWorkflows({ query, includeArchived });
-          const workflows = db.listWorkflows({ query, includeArchived, limit, offset });
+          // rankWorkflows handles BOTH cases uniformly: a real query runs BM25 ranking over
+          // name/description/step summary/step reasoning, an empty one falls back to its own
+          // cheap newest-touched-first path — either way it returns the full ranked/ordered list
+          // plus its own true total in one call, so total and the page can never disagree (see
+          // its own doc comment for why a separate COUNT can't work once ranking is in-process).
+          const { workflows: ranked, total } = db.rankWorkflows(query, { includeArchived });
+          const workflows = ranked.slice(offset, offset + limit);
           const payload: Record<string, unknown> = {
             workflows,
             total,

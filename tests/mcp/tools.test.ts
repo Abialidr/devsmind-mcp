@@ -1802,6 +1802,153 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       }
     });
 
+    it('workflow_list query matches only a step summary and surfaces it in matched_steps', async () => {
+      const fx2 = makeFixture({ skipDefaultFiles: true });
+      try {
+        const h = await connectMcpClient();
+        try {
+          const { parsed: s } = await callToolJson(h.client, 'start_session', { devmind_path: fx2.devmindPath }) as { parsed: { session_id: string } };
+          const { parsed: wf } = await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'Checkout Flow', description: 'Improve checkout'
+          }) as { parsed: { workflow: { id: string } } };
+          await callTool(h.client, 'workflow_bind', { devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: wf.workflow.id });
+          await callTool(h.client, 'workflow_add_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id,
+            summary: 'Fixed the Stripe webhook retry timing bug'
+          });
+
+          const { parsed } = await callToolJson(h.client, 'workflow_list', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, query: 'webhook retry'
+          }) as { parsed: { workflows: { id: string; matched_steps: { summary: string }[] }[]; total: number } };
+
+          const match = parsed.workflows.find(w => w.id === wf.workflow.id);
+          expect(match).toBeTruthy();
+          expect(match!.matched_steps.length).toBeGreaterThan(0);
+          expect(match!.matched_steps[0].summary).toContain('webhook');
+        } finally {
+          await h.close();
+        }
+      } finally {
+        fx2.cleanup();
+      }
+    });
+
+    it('workflow_list orders by relevance, not recency, when query is set', async () => {
+      const fx2 = makeFixture({ skipDefaultFiles: true });
+      try {
+        const h = await connectMcpClient();
+        try {
+          const { parsed: s } = await callToolJson(h.client, 'start_session', { devmind_path: fx2.devmindPath }) as { parsed: { session_id: string } };
+
+          // Created FIRST (older), but matches the query term repeatedly in a high-weight field
+          // (its own name) — must still outrank the newer, weakly-matching workflow.
+          const { parsed: strong } = await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'Gorgonzola Gorgonzola Integration', description: 'x'
+          }) as { parsed: { workflow: { id: string } } };
+
+          // Created SECOND (newer), matches the term only once, in the lowest-weight field.
+          const { parsed: weak } = await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'Unrelated Newer Workflow', description: 'y'
+          }) as { parsed: { workflow: { id: string } } };
+          await callTool(h.client, 'workflow_bind', { devmind_path: fx2.devmindPath, session_id: s.session_id, workflow_id: weak.workflow.id });
+          await callTool(h.client, 'workflow_add_step', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id,
+            summary: 'did something', reasoning: 'gorgonzola was mentioned once in passing here'
+          });
+
+          const { parsed } = await callToolJson(h.client, 'workflow_list', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, query: 'gorgonzola'
+          }) as { parsed: { workflows: { id: string }[] } };
+
+          expect(parsed.workflows[0].id).toBe(strong.workflow.id);
+          expect(parsed.workflows.map(w => w.id)).toContain(weak.workflow.id);
+        } finally {
+          await h.close();
+        }
+      } finally {
+        fx2.cleanup();
+      }
+    });
+
+    it('workflow_list total/pagination stays consistent end-to-end through the real handler', async () => {
+      const fx2 = makeFixture({ skipDefaultFiles: true });
+      try {
+        const h = await connectMcpClient();
+        try {
+          const { parsed: s } = await callToolJson(h.client, 'start_session', { devmind_path: fx2.devmindPath }) as { parsed: { session_id: string } };
+          for (let i = 0; i < 3; i++) {
+            await callToolJson(h.client, 'workflow_create', {
+              devmind_path: fx2.devmindPath, session_id: s.session_id, name: `Marmalade Flow ${i}`, description: 'x'
+            });
+          }
+
+          const { parsed } = await callToolJson(h.client, 'workflow_list', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, query: 'marmalade', limit: 1
+          }) as { parsed: { workflows: unknown[]; total: number; truncated?: boolean; hint?: string } };
+
+          expect(parsed.total).toBe(3);
+          expect(parsed.workflows).toHaveLength(1);
+          expect(parsed.truncated).toBe(true);
+          expect(parsed.hint).toBeTruthy();
+        } finally {
+          await h.close();
+        }
+      } finally {
+        fx2.cleanup();
+      }
+    });
+
+    it('workflow_list query matching nothing real returns an empty result without crashing', async () => {
+      const fx2 = makeFixture({ skipDefaultFiles: true });
+      try {
+        const h = await connectMcpClient();
+        try {
+          const { parsed: s } = await callToolJson(h.client, 'start_session', { devmind_path: fx2.devmindPath }) as { parsed: { session_id: string } };
+          await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'Some Workflow', description: 'about payments'
+          });
+
+          const { parsed } = await callToolJson(h.client, 'workflow_list', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, query: 'xenomorph'
+          }) as { parsed: { workflows: unknown[]; total: number } };
+
+          expect(parsed.workflows).toEqual([]);
+          expect(parsed.total).toBe(0);
+        } finally {
+          await h.close();
+        }
+      } finally {
+        fx2.cleanup();
+      }
+    });
+
+    it('workflow_list with blank/omitted query still works unchanged, newest-touched first', async () => {
+      const fx2 = makeFixture({ skipDefaultFiles: true });
+      try {
+        const h = await connectMcpClient();
+        try {
+          const { parsed: s } = await callToolJson(h.client, 'start_session', { devmind_path: fx2.devmindPath }) as { parsed: { session_id: string } };
+          const { parsed: wf1 } = await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'First', description: 'x'
+          }) as { parsed: { workflow: { id: string } } };
+          const { parsed: wf2 } = await callToolJson(h.client, 'workflow_create', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id, name: 'Second', description: 'y'
+          }) as { parsed: { workflow: { id: string } } };
+
+          const { parsed } = await callToolJson(h.client, 'workflow_list', {
+            devmind_path: fx2.devmindPath, session_id: s.session_id
+          }) as { parsed: { workflows: { id: string }[]; total: number } };
+
+          expect(parsed.workflows.map(w => w.id)).toEqual([wf2.workflow.id, wf1.workflow.id]);
+          expect(parsed.total).toBe(2);
+        } finally {
+          await h.close();
+        }
+      } finally {
+        fx2.cleanup();
+      }
+    });
+
     it('start_session offers a resumable workflow only when there is one', async () => {
       const fx2 = makeFixture({ skipDefaultFiles: true });
       try {

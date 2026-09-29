@@ -206,6 +206,20 @@ CREATE TABLE IF NOT EXISTS workflow_artifacts (
   FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE CASCADE
 );
 
+-- Local, derived search index for workflows -- never synced or committed, purely a cache rebuilt
+-- from workflows+workflow_steps whenever search-index.ts's fingerprint check finds it stale.
+-- Same category as node_tokens and brain.db itself: safe to wipe and rebuild from the source of
+-- truth at any time. Keyed by workflow_id ONLY (not step_id) -- tf accumulates across a
+-- workflow's steps into one row set, the same way node reasoning accumulates across history rows.
+CREATE TABLE IF NOT EXISTS workflow_tokens (
+  workflow_id  TEXT NOT NULL,
+  token        TEXT NOT NULL,
+  field        TEXT NOT NULL,
+  tf           INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (workflow_id, token, field)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_tokens_token ON workflow_tokens (token);
+
 -- Index for searching nodes by name and type
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes (name);
 -- Matches getNodesByFilePath's own normalization (REPLACE(LOWER(file_path), '\', '/')) exactly —
