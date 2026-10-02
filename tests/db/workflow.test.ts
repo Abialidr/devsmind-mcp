@@ -289,6 +289,17 @@ describe('DevMindDatabase — workflow context vault', () => {
       }
     });
 
+    it('falls back to artifact when the source basename is empty', () => {
+      const fx = makeFixture({ skipDefaultFiles: true });
+      try {
+        const wf = fx.db.createWorkflow('Artifacts', 'x');
+        expect(() => fx.db.addWorkflowArtifactFromFile(wf.id, { type: 'step_doc', sourcePath: '' }))
+          .toThrow();
+      } finally {
+        fx.cleanup();
+      }
+    });
+
     it('throws clearly for an unknown workflow id, before touching the filesystem', () => {
       const fx = makeFixture({ skipDefaultFiles: true });
       try {

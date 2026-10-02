@@ -808,9 +808,10 @@ export function createMcpServer(): Server {
             '• `query` — a natural-language phrase (e.g. "where do we handle user login"). Drives the semantic/meaning layer and BM25. Use this for a concept you can describe but don\'t have exact terms for.\n' +
             '• `pattern` — a REAL regex, used exactly as you\'d give it to grep (alternation, escaped literals, character classes — nothing is re-escaped or split for you). Drives the file grep and code-body matching directly. Use this when you already know identifiers, an error string, or a structural shape (e.g. "heartRed|onLikeTap|item\\.liked" or "on\\w+Tap").\n' +
             'Passing only `pattern` is a first-class PRECISION mode: the semantic layer and the exact-identifier short-circuit are both skipped (a regex has no meaning to embed), so results are exact grep + code-body matches only — nothing ranked or blurred. Passing only `query` derives a literal OR-pattern from its significant words automatically, same as before. Passing both engages everything at once. At least one is required.\n' +
-            'It returns TWO buckets:\n' +
+            'It returns THREE buckets:\n' +
             '• `nodes` (PRIMARY): the indexed graph — functions/classes found by exact identifier, then by three fused rankers: word-match (BM25 over name/id/path/description/reasoning), meaning-match (vectors over descriptions, so "authentication" finds a node described only as "sign-in"), and code-body-match (your pattern appearing inside a node\'s code, with the matching lines in `code_matches`). Each node leads with `confidence` (high/medium/low), `relevance` (0-100 relative to the top hit) and `found_by` (which layers matched it) — TRIAGE ON THOSE, not on which node name reads plausibly to you. `confidence` is corroboration across independent layers, which is evidence you cannot reconstruct by eye; a name that merely looks right is the single easiest way to pick the wrong node. `nodes_total` is the TRUE count found before the top-20 cap.\n' +
             '• `files` (LAST RESORT): a real grep of every configured repo (or just `path`, if given), ranked by relevance — this is how you find things the graph does NOT model: CSS, JSON, config, `.env`, markup, and any un-indexed code. Each entry has the file path, per-match counts, and sample matching lines — each sample line carries `symbol` when it falls inside a known function/class (the insight a plain grep can\'t give you: not just "line 87 matched" but "line 87, inside onLikeTap"). `files_total` is the TRUE count of matching files; `files_total` bigger than the number of entries returned means there\'s more — pass a bigger `offset` for the next page, don\'t assume "not there" from a capped list.\n' +
+            '• `workflow_steps` (DECISION CONTEXT): matching steps from past workflows (summaries and reasoning), capped to top 5. Surfaces past architectural decisions, why code was changed, and which nodes were touched (`nodes_touched`). Drill into any specific step with `workflow_get_context(workflow_id, step_index)`.\n' +
             'Every `nodes` entry also carries drill-in hooks: `uses`/`used_by` (outgoing/incoming connection counts) and `history_count` (revision count). If you are about to change this node\'s signature or behavior and `used_by` is non-trivial, call `get_node_code` on it FIRST — its `used_by_nodes` already names the direct callers, and `graph_depth`/`graph_direction:"in"` in that same call gets the full transitive blast radius. `used_by: 0` carries a `used_by_note` when the graph could not statically prove any caller (generated bindings, dynamic dispatch) — treat that as "unverified", not "unused".\n' +
             'Lockfiles (package-lock.json, yarn.lock, Podfile.lock, go.sum…) and build artifacts (*.min.js, *.map) are excluded by default, along with anything in this project\'s configured ignored_paths — a lockfile names every dependency in the tree, so it used to match almost any product term and crowd out the real source. `.env`, JSON and config are NOT excluded; those are what the files bucket is for. Scoping `path` straight at an excluded file returns nothing and says so in `scope_note` — read it directly rather than re-querying.\n' +
             'If a response would be too large it is trimmed automatically and a `compacted` field says exactly what was dropped; every COUNT stays exact, so a trimmed result is never mistakable for a complete one. Pass `compact:false` to demand the full payload, or `compact:true` to ask for a lean triage list up front.\n' +
@@ -824,6 +825,11 @@ export function createMcpServer(): Server {
               pattern: { type: 'string', description: 'A real regex, used exactly as-is (not escaped, not split) — pass the same string you would give grep, e.g. "heartRed|onLikeTap|item\\.liked". Drives the file grep and code-body matching. Optional if `query` is given; when omitted, one is derived from `query`\'s own significant words. Passing this WITHOUT `query` is a precision-only mode: exact matches, no semantic ranking.' },
               path: { type: 'string', description: 'Optional: restrict the search to one folder or a single file (absolute path), instead of every configured repo. Rejected if it falls outside every configured repo — narrows the search space, never widens it.' },
               case_insensitive: { type: 'boolean', description: 'Case-insensitive matching (default: true) — the equivalent of grep -i. Prefer this over an inline (?i) regex flag: JavaScript throws on the leading (?i) form most tools use.' },
+              scope: {
+                type: 'string',
+                enum: ['all', 'nodes', 'files', 'steps'],
+                description: 'Optional search scope (default: "all"). "all" searches nodes, files, and workflow steps in one pass. "steps" searches only workflow history/steps. "nodes" or "files" restrict search to those specific buckets.'
+              },
               offset: { type: 'number', description: 'Files-bucket pagination: how many matched files to skip before the returned page (default 0). Use with `files_total` to page through results beyond the default page size.' },
               limit: { type: 'number', description: 'Files-bucket pagination: max files to return in this page (default 25, max 200).' },
               compact: { type: 'boolean', description: 'Leave this OFF unless you have a reason. Omitted (the default) means AUTO: the full payload comes back when it fits, and is trimmed only if it would be too large — either way a `compacted` field says exactly what happened, so you are never guessing. Pass true to force a lean triage list up front (ids, names, paths, descriptions, confidence, drill-in counts — no sample lines or code_matches) when you already know you only need to pick a node. Pass false to demand the untrimmed payload regardless of size. Counts (`nodes_total`, `files_total`) are exact in every mode.' }
@@ -2863,8 +2869,11 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
           // an uncapped firehose, which is the very payload size this change set exists to bound.
           const offset = args.offset !== undefined ? clampInt(args.offset, 0, 0, Number.MAX_SAFE_INTEGER) : undefined;
           const limit = args.limit !== undefined ? clampInt(args.limit, 25, 1, 200) : undefined;
+          const scope = (args.scope === 'all' || args.scope === 'nodes' || args.scope === 'files' || args.scope === 'steps')
+            ? args.scope
+            : undefined;
           const db = getDatabase(devmindPath);
-          // Returns the two-bucket `{ nodes, files, files_total, files_offset, nodes_total, hint?,
+          // Returns the three-bucket `{ nodes, files, workflow_steps, files_total, files_offset, nodes_total, hint?,
           // truncated? }` shape directly — including the empty+hint case when nothing matched
           // anywhere. Async: vector inference and the filesystem grep walk run concurrently inside
           // (a no-op vector fallback if ONNX absent; vector is skipped entirely when `query` is
@@ -2875,7 +2884,7 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
           // know a query will produce 56KB until it already has.
           const forceCompact = args.compact === true;
           const forbidCompact = args.compact === false;
-          const payload = await db.searchNodes(query, { pattern, path: searchPath, case_insensitive: caseInsensitive, offset, limit, compact: forceCompact });
+          const payload = await db.searchNodes(query, { pattern, path: searchPath, case_insensitive: caseInsensitive, offset, limit, compact: forceCompact, scope });
 
           // Note the absence of `null, 2`. Pretty-printing a payload whose bulk is deeply-nested
           // arrays of short strings spends 20-30% of the response on indentation that buys the

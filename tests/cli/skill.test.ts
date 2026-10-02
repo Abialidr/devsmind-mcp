@@ -52,6 +52,23 @@ describe('devsmind skill', () => {
       expect(fs.existsSync(path.join(dir, '.agents', 'skills', 'devsmind', 'SKILL.md'))).toBe(false);
     });
 
+    it('honors --tool in print mode for terminal tools instead of always showing the shared .agents path', async () => {
+      await handleSkill({ path: path.join(dir, '.devmind'), print: true, tool: 'claude-code' });
+
+      const expectedPath = path.join(dir, '.claude', 'devsmind', 'SKILL.md').replace(/\\/g, '/');
+      expect(out).toContain(expectedPath);
+      expect(out).toContain('Claude Code');
+      expect(out).not.toContain(path.join(dir, '.agents', 'skills', 'devsmind', 'SKILL.md').replace(/\\/g, '/'));
+    });
+
+    it('honors --global in print mode when a terminal tool is provided', async () => {
+      await handleSkill({ path: path.join(dir, '.devmind'), print: true, tool: 'codex', global: true });
+
+      const expectedPath = path.join(os.homedir(), '.codex', 'skills', 'devsmind', 'SKILL.md').replace(/\\/g, '/');
+      expect(out).toContain(expectedPath);
+      expect(out).toContain('Codex');
+    });
+
     it('carries the live renderCombined contract, not a stale copy', async () => {
       await handleSkill({ path: path.join(dir, '.devmind'), print: true });
 

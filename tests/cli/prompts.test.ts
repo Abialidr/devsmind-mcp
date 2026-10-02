@@ -8,6 +8,7 @@ import prompts from 'prompts';
 import {
   selectPrompt,
   confirmPrompt,
+  textPrompt,
   pickTarget,
   pickTransport,
   pickMcpScope,
@@ -80,6 +81,24 @@ describe('selectPrompt / confirmPrompt', () => {
     // This matters: a cancel read as `false` would look like "user said no" and abort quietly,
     // which is indistinguishable from a deliberate decline.
     await expect(confirmPrompt('Write this?')).rejects.toThrow(CancelledError);
+  });
+
+  it('returns text prompt input and forwards validation', async () => {
+    const validate = (v: string) => v.length > 0 || 'Required';
+    answers('typed value');
+
+    await expect(textPrompt('Say it', { validate })).resolves.toBe('typed value');
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'text',
+      message: 'Say it',
+      validate,
+    }));
+  });
+
+  it('turns a cancelled text prompt into CancelledError', async () => {
+    answers(undefined);
+
+    await expect(textPrompt('Say it')).rejects.toThrow(CancelledError);
   });
 });
 

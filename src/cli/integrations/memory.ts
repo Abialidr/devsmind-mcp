@@ -1,6 +1,6 @@
 import { IdeTarget, TARGETS, getTarget } from './registry';
 import { renderMemoryPrompt } from './memory-topics';
-import { pickTarget, CancelledError } from './prompt';
+import { pickTarget, confirmPrompt, CancelledError } from './prompt';
 
 /**
  * `devsmind memory` — for a tool with a real memory mechanism, prints ONE natural-language block
@@ -16,14 +16,13 @@ import { pickTarget, CancelledError } from './prompt';
  * trigger at all. So instead of maintaining 9 different internal file formats, this hands the
  * user one prompt and lets each tool's own native memory feature do whatever it does best with it.
  *
- * Why skip 4 of the 9 tools entirely: Antigravity (IDE + CLI), Codex, and Kiro have no genuine
- * background-memory concept at all (confirmed by direct testing and research — see
- * `registry.ts`'s `hasRealMechanism` doc comment) — their only real persistence mechanisms are
- * Rules and Skills. Printing the same "remember this" prompt there just gets acknowledged and
- * dropped with nothing actually saved, so those four get pointed at `devsmind skill` instead.
+ * Why skip some tools entirely: Antigravity (IDE + CLI) and Kiro have no genuine background-memory
+ * concept to ask anything of, so they get pointed at `devsmind skill` instead. Codex does have
+ * Memories once the user enables them in Settings > Personalization > Memory, so its flow first
+ * prints those setup steps and then prints the pasteable prompt.
  *
- * `--tool` changes both the framing line (e.g. "Cursor calls this Memories") AND, for the 5
- * tools with a real mechanism, a short tool-specific hint on how that tool's memory actually
+ * `--tool` changes both the framing line (e.g. "Cursor calls this Memories") AND, for tools
+ * with a real mechanism, a short tool-specific hint on how that tool's memory actually
  * gets saved (`target.memory.askHint`) — the core two-rule-lead-in + full contract stays the same.
  */
 export async function handleMemory(opts: { path?: string; print?: boolean; tool?: string }): Promise<void> {
@@ -35,12 +34,17 @@ export async function handleMemory(opts: { path?: string; print?: boolean; tool?
 
   if (!target.memory.hasRealMechanism) {
     console.log(`\n🚫 ${target.label} has no real background-memory mechanism to ask anything of — there's nothing to paste here.`);
-    console.log(`   Run \`devsmind skill\` instead — it writes an explicitly-invokable command file that works regardless of memory support.`);
+    console.log(`   Run \`devsmind skill --tool ${target.id}\` instead - it writes an explicitly-invokable command file for ${target.label}.`);
     console.log('');
     return;
   }
 
-  console.log(`\n📋 Paste this into your ${target.label} chat and ask it to remember it:\n`);
+  if (target.id === 'codex') {
+    const ready = await ensureCodexMemoryEnabled(!!opts.print);
+    if (!ready) return;
+  }
+
+  console.log(`\nPaste this into your ${target.label} chat and ask it to remember it:\n`);
   console.log(indent(renderMemoryPrompt(target)));
   console.log('');
 }
@@ -81,4 +85,33 @@ async function resolveTarget(opts: { print?: boolean; tool?: string }): Promise<
 
 function indent(text: string): string {
   return text.split('\n').map(l => '   ' + l).join('\n');
+}
+
+async function ensureCodexMemoryEnabled(nonInteractive: boolean): Promise<boolean> {
+  console.log('\nCodex memory setup:');
+  console.log('   1. Open Codex from the left sidebar.');
+  console.log('   2. Click the gear icon, then choose Codex settings.');
+  console.log('   3. Open Personalization.');
+  console.log('   4. Under Memory, turn on Enable memories.');
+  console.log('   5. Also turn on Allow memory generation from tool-assisted chats if you want Codex to learn from MCP/tool-assisted work.');
+
+  if (nonInteractive) {
+    console.log('\nAfter those toggles are on, paste the prompt below into Codex chat.');
+    return true;
+  }
+
+  try {
+    const ok = await confirmPrompt('Have you enabled Codex memories now?', true);
+    if (!ok) {
+      console.log('\nNo problem. Enable Codex memories first, then re-run `devsmind memory --tool codex`.');
+      return false;
+    }
+    return true;
+  } catch (err) {
+    if (err instanceof CancelledError) {
+      console.log('\nCancelled.');
+      return false;
+    }
+    throw err;
+  }
 }

@@ -134,9 +134,23 @@ export type RankedNode =
  * bucket's cap ship as SIBLING fields instead, so a capped result stays distinguishable from a
  * complete one without changing the shape of the arrays themselves.
  */
+/** A workflow step in the `workflow_steps` bucket of {@link DevMindDatabase.searchNodes}.
+ * Surfaces decisions, rationale, and implementation notes directly in search results. */
+export interface RankedWorkflowStep {
+  workflow_id: string;
+  workflow_name: string;
+  step_index: number;
+  summary: string;
+  relevance: number;
+  matched_terms: string[];
+  nodes_touched?: string[];
+}
+
 export interface SearchNodesResult {
   nodes: RankedNode[];
   files: RankedFile[];
+  /** Matches in workflow history (summaries/reasoning) — lets the caller pinpoint past decisions. */
+  workflow_steps?: RankedWorkflowStep[];
   /** True total distinct files that matched, before the `files_offset`/page-size cap — lets the
    * caller tell "that's everything" from "more exists, ask for the next page". */
   files_total: number;
@@ -187,6 +201,7 @@ export interface CompactRankedFile {
 export interface CompactSearchNodesResult {
   nodes: CompactRankedNode[];
   files: CompactRankedFile[];
+  workflow_steps?: RankedWorkflowStep[];
   files_total: number;
   files_offset: number;
   nodes_total: number;
@@ -254,6 +269,7 @@ export function toCompactSearchResult(result: SearchNodesResult, tier: 1 | 2): C
       total_matches: f.total_matches,
       sample_lines: keepEvidence ? trimLines(f.sample_lines) : undefined
     })),
+    workflow_steps: result.workflow_steps,
     files_total: result.files_total,
     files_offset: result.files_offset,
     nodes_total: result.nodes_total,
@@ -886,6 +902,7 @@ export class DevMindDatabase {
       );
     }
     const canonicalFp = canonicalizePath(node.file_path);
+    let pathToRewrite = canonicalFp;
     // A ", "-joined file_path arriving here is the only way a brain acquires its first multi-file
     // node, and hasMultiFileNodes gates a query that would otherwise never run again for the life
     // of the process — so the answer has to be re-derived rather than kept from before this write.
@@ -904,6 +921,7 @@ export class DevMindDatabase {
         paths.push(incoming);
         finalPath = paths.join(', ');
       }
+      pathToRewrite = finalPath;
 
       // description follows the same COALESCE idiom as signature: an unspecified description
       // on an ordinary edit must never blank out one already written — only an explicit new
@@ -927,7 +945,9 @@ export class DevMindDatabase {
       `);
       stmt.run(node.id, node.type, node.name, canonicalFp, node.signature || null, node.description || null, aliasesJson ?? '[]');
     }
-    this.writeGraphToDisk(canonicalFp);
+    for (const p of pathToRewrite.split(',').map(s => s.trim()).filter(Boolean)) {
+      this.writeGraphToDisk(p);
+    }
   }
 
   /**
@@ -2087,7 +2107,15 @@ export class DevMindDatabase {
 
   async searchNodes(
     query: string | undefined,
-    opts: { pattern?: string; path?: string; case_insensitive?: boolean; offset?: number; limit?: number; compact?: boolean } = {}
+    opts: {
+      pattern?: string;
+      path?: string;
+      case_insensitive?: boolean;
+      offset?: number;
+      limit?: number;
+      compact?: boolean;
+      scope?: 'all' | 'nodes' | 'files' | 'steps';
+    } = {}
   ): Promise<SearchNodesResult> {
     const trimmedQuery = query?.trim();
     const hasQuery = !!trimmedQuery;
@@ -2097,6 +2125,7 @@ export class DevMindDatabase {
       throw new Error('searchNodes requires at least one of `query` or `pattern`.');
     }
 
+    const scope = opts.scope ?? 'all';
     const caseInsensitive = opts.case_insensitive !== false;
     const scopePath = this.resolveSearchScopePath(opts.path);
     // Scoping `path` straight AT a lockfile or build artifact is honored, not overridden — the
@@ -2118,6 +2147,31 @@ export class DevMindDatabase {
     const compact = opts.compact === true;
     const grepOpts = { ignoredPaths: this.context?.config.ignored_paths, caseInsensitive, scopePath };
 
+    // BM25 tokens from natural-language query
+    const bm25Tokens = hasQuery ? Array.from(new Set(tokenizeText(trimmedQuery!))) : [];
+
+    // Search workflow steps when scope includes them and a natural-language query was provided
+    const workflowSteps = (hasQuery && (scope === 'all' || scope === 'steps'))
+      ? this.searchWorkflowSteps(bm25Tokens)
+      : [];
+
+    // When scope is explicitly 'steps', return only workflow step history immediately
+    if (scope === 'steps') {
+      const res: SearchNodesResult = {
+        nodes: [],
+        files: [],
+        workflow_steps: workflowSteps,
+        files_total: 0,
+        files_offset: 0,
+        nodes_total: 0,
+        scope_note: scopeNote
+      };
+      if (workflowSteps.length === 0) {
+        res.hint = 'No workflow steps matched this query. Try different terms or broaden the query.';
+      }
+      return res;
+    }
+
     // The pattern actually handed to the filesystem grep: the caller's own regex when given, else
     // a literal (escaped) OR of the query's own significant tokens — the same "derive from query"
     // fallback as before, just built from a real regex now instead of a keyword array. This is the
@@ -2126,12 +2180,7 @@ export class DevMindDatabase {
       ? trimmedPattern!
       : Array.from(new Set(tokenizeText(trimmedQuery!))).map(escapeRegExp).join('|');
 
-    // BM25/vector/the identifier short-circuit are all driven by natural-language MEANING — a bare
-    // regex has no meaning for them to tokenize or embed, so none of them run without a `query`.
-    // Grep (and the code-match nodes it feeds via mapGrepHitsToNodes) is unconditional.
-    const bm25Tokens = hasQuery ? Array.from(new Set(tokenizeText(trimmedQuery!))) : [];
-
-    if (hasQuery) {
+    if (hasQuery && scope !== 'files') {
       // Deliberately name/id ONLY — NOT description/reasoning. Those are free-text natural-language
       // fields (a description is a whole sentence); matching the query as a raw substring against
       // them turns "any short natural-language query that happens to appear inside some node's
@@ -2176,12 +2225,16 @@ export class DevMindDatabase {
           uses: 0, used_by: 0, history_count: 0
         }));
         this.attachDrillInHooks(nodes);
-        const grep = await grepRepos(this.repoRoots(), grepPattern, grepOpts);
+        const shouldRunGrep = scope !== 'nodes';
+        const grep = shouldRunGrep
+          ? await grepRepos(this.repoRoots(), grepPattern, grepOpts)
+          : { hits: [], truncated: false };
         const filesResult = rankGrepHits(grep.hits, { offset: filesOffset, maxFiles: filesLimit });
-        if (!compact) this.annotateSampleLinesWithSymbol(filesResult.files);
+        if (!compact && shouldRunGrep) this.annotateSampleLinesWithSymbol(filesResult.files);
         return {
           nodes,
           files: filesResult.files,
+          workflow_steps: workflowSteps,
           files_total: filesResult.total,
           files_offset: filesOffset,
           nodes_total: nodes.length,
@@ -2202,22 +2255,28 @@ export class DevMindDatabase {
     const perfDebug = !!process.env.DEVSMIND_PERF_DEBUG;
     const ms = (a: bigint, b: bigint) => (Number(b - a) / 1e6).toFixed(0);
     const perfStart = process.hrtime.bigint();
-    const bm25Ranked = this.tokenSearchNodes(bm25Tokens);
+    // Determine what to run based on scope
+    const runNodes = scope === 'all' || scope === 'nodes';
+    const runFiles = scope === 'all' || scope === 'files';
+
+    const bm25Ranked = (runNodes && hasQuery) ? this.tokenSearchNodes(bm25Tokens) : [];
     const perfAfterBm25 = process.hrtime.bigint();
     // Timed individually (not just the combined Promise.all) so a slow run can be attributed to
     // ONE of the two instead of leaving both under suspicion.
     let vectorMs = '?', grepMs = '?';
     const [vectorIds, grep] = await Promise.all([
-      (hasQuery ? this.vectorSearchNodes(trimmedQuery!) : Promise.resolve([])).then(r => { if (perfDebug) vectorMs = hasQuery ? ms(perfAfterBm25, process.hrtime.bigint()) : 'skipped(no query)'; return r; }),
-      grepRepos(this.repoRoots(), grepPattern, grepOpts).then(r => { if (perfDebug) grepMs = ms(perfAfterBm25, process.hrtime.bigint()); return r; })
+      (runNodes && hasQuery ? this.vectorSearchNodes(trimmedQuery!) : Promise.resolve([])).then(r => { if (perfDebug) vectorMs = (runNodes && hasQuery) ? ms(perfAfterBm25, process.hrtime.bigint()) : (!hasQuery ? 'skipped(no query)' : 'skipped(scope)'); return r; }),
+      (runFiles ? grepRepos(this.repoRoots(), grepPattern, grepOpts) : Promise.resolve({ hits: [], truncated: false })).then(r => { if (perfDebug) grepMs = runFiles ? ms(perfAfterBm25, process.hrtime.bigint()) : 'skipped(scope)'; return r; })
     ]);
     const perfAfterVectorGrep = process.hrtime.bigint();
 
     // The single grep walk feeds BOTH buckets: raw hits → the files bucket, and hits landing in
     // indexed source files → code-match nodes (this is the "code search that returns nodes").
-    const filesResult = rankGrepHits(grep.hits, { offset: filesOffset, maxFiles: filesLimit });
+    const filesResult = runFiles
+      ? rankGrepHits(grep.hits, { offset: filesOffset, maxFiles: filesLimit })
+      : { files: [], total: 0 };
     const perfAfterRank = process.hrtime.bigint();
-    const codeMatches = this.mapGrepHitsToNodes(grep.hits);
+    const codeMatches = (runNodes && runFiles) ? this.mapGrepHitsToNodes(grep.hits) : [];
     const perfAfterCodeMatch = process.hrtime.bigint();
     const codeLinesById = new Map(codeMatches.map(c => [c.nodeId, c.lines]));
     // Bounded annotation (only the page actually returned — see the doc comment on the helper for
@@ -2225,7 +2284,7 @@ export class DevMindDatabase {
     // not after — it shares `locateNodeInFile`, the exact primitive mapGrepHitsToNodes' own doc
     // comment identifies as the historical bottleneck, so leaving it unmeasured would silently
     // exempt a real cost from the one line this file's instrumentation exists to catch it with.
-    if (!compact) this.annotateSampleLinesWithSymbol(filesResult.files);
+    if (!compact && runFiles) this.annotateSampleLinesWithSymbol(filesResult.files);
     const perfAfterAnnotate = process.hrtime.bigint();
     if (perfDebug) {
       console.error(`[perf] bm25=${ms(perfStart, perfAfterBm25)}ms vector=${vectorMs}ms grep=${grepMs}ms (combined=${ms(perfAfterBm25, perfAfterVectorGrep)}ms) rankGrepHits=${ms(perfAfterVectorGrep, perfAfterRank)}ms mapGrepHitsToNodes=${ms(perfAfterRank, perfAfterCodeMatch)}ms annotateSampleLinesWithSymbol=${ms(perfAfterCodeMatch, perfAfterAnnotate)}ms grepHits=${grep.hits.length} truncated=${grep.truncated}`);
@@ -2236,14 +2295,15 @@ export class DevMindDatabase {
       const base: SearchNodesResult = {
         nodes: [],
         files: filesResult.files,
+        workflow_steps: workflowSteps,
         files_total: filesResult.total,
         files_offset: filesOffset,
         nodes_total: 0,
         truncated: grep.truncated || undefined,
         scope_note: scopeNote
       };
-      if (filesResult.files.length === 0) {
-        base.hint = 'No meaningful match anywhere — not in any node\'s name, description, reasoning, or code body, and no file on disk contains this pattern. If you expected this to exist, retry with a broader pattern or different query terms; if it genuinely isn\'t in this codebase, that\'s a real answer — don\'t keep re-querying variations.';
+      if (filesResult.files.length === 0 && workflowSteps.length === 0) {
+        base.hint = 'No meaningful match anywhere — not in any node\'s name, description, reasoning, or code body, no file on disk contains this pattern, and no workflow step matched. If you expected this to exist, retry with a broader pattern or different query terms; if it genuinely isn\'t in this codebase, that\'s a real answer — don\'t keep re-querying variations.';
       }
       return base;
     }
@@ -2329,6 +2389,7 @@ export class DevMindDatabase {
     return {
       nodes,
       files: filesResult.files,
+      workflow_steps: workflowSteps,
       files_total: filesResult.total,
       files_offset: filesOffset,
       nodes_total: fused.length,
@@ -3303,6 +3364,119 @@ export class DevMindDatabase {
         step_id: c.s.id, step_index: c.s.step_index, summary: c.s.summary, matched_terms: c.matched
       }));
     }
+  }
+
+  /**
+   * Fast BM25-based step search across all non-archived workflows — surfaces the top matching
+   * workflow steps for a query phrase (e.g. for `search_nodes`'s `workflow_steps` bucket).
+   * Steps are scored by BM25 relevance across summary and reasoning, with summary weighted higher.
+   */
+  searchWorkflowSteps(queryTokens: string[], limit: number = 5): RankedWorkflowStep[] {
+    const rawTokens = Array.from(new Set(queryTokens));
+    if (rawTokens.length === 0) return [];
+    const uniqTokens = Array.from(new Set(rawTokens.flatMap(t => tokenizeText(t))));
+    if (uniqTokens.length === 0) return [];
+
+    // Ensure tokens table is fresh so document frequencies reflect current corpus
+    this.ensureWorkflowSearchIndexFresh();
+
+    const steps = this.db.prepare(`
+      SELECT ws.id, ws.workflow_id, ws.step_index, ws.summary, ws.reasoning, ws.node_ids, w.name as workflow_name
+      FROM workflow_steps ws
+      JOIN workflows w ON w.id = ws.workflow_id
+      WHERE w.archived = 0
+      ORDER BY ws.step_index ASC
+    `).all() as {
+      id: string;
+      workflow_id: string;
+      step_index: number;
+      summary: string;
+      reasoning: string | null;
+      node_ids: string | null;
+      workflow_name: string;
+    }[];
+
+    if (steps.length === 0) return [];
+
+    const totalSteps = steps.length;
+    // Pre-calculate document frequency across steps for IDF weighting
+    const stepTokenFreq = new Map<string, number>();
+    const stepParsedTokens = steps.map(s => {
+      const summaryTokens = tokenizeText(s.summary);
+      const reasoningTokens = tokenizeText(s.reasoning || '');
+      const allTokens = new Set([...summaryTokens, ...reasoningTokens]);
+      for (const t of allTokens) {
+        if (uniqTokens.includes(t)) {
+          stepTokenFreq.set(t, (stepTokenFreq.get(t) || 0) + 1);
+        }
+      }
+      return { s, summaryTokens, reasoningTokens };
+    });
+
+    const K1 = 1.2;
+    const scored: { step: (typeof steps)[0]; matched_terms: string[]; score: number }[] = [];
+
+    for (const { s, summaryTokens, reasoningTokens } of stepParsedTokens) {
+      const summaryCounts = new Map<string, number>();
+      for (const t of summaryTokens) summaryCounts.set(t, (summaryCounts.get(t) || 0) + 1);
+      const reasoningCounts = new Map<string, number>();
+      for (const t of reasoningTokens) reasoningCounts.set(t, (reasoningCounts.get(t) || 0) + 1);
+
+      const matchedTerms: string[] = [];
+      let stepScore = 0;
+
+      for (const token of uniqTokens) {
+        const sumTf = summaryCounts.get(token) || 0;
+        const reasTf = reasoningCounts.get(token) || 0;
+        if (sumTf === 0 && reasTf === 0) continue;
+
+        matchedTerms.push(token);
+        const docFreq = stepTokenFreq.get(token) || 1;
+        const idf = Math.log(1 + (totalSteps - docFreq + 0.5) / (docFreq + 0.5));
+
+        if (sumTf > 0) {
+          const tfNorm = (sumTf * (K1 + 1)) / (sumTf + K1);
+          stepScore += DEFAULT_WORKFLOW_FIELD_WEIGHTS.summary * Math.max(idf, 0.01) * tfNorm;
+        }
+        if (reasTf > 0) {
+          const tfNorm = (reasTf * (K1 + 1)) / (reasTf + K1);
+          stepScore += DEFAULT_WORKFLOW_FIELD_WEIGHTS.reasoning * Math.max(idf, 0.01) * tfNorm;
+        }
+      }
+
+      if (matchedTerms.length > 0 && stepScore > 0) {
+        scored.push({ step: s, matched_terms: matchedTerms, score: stepScore });
+      }
+    }
+
+    if (scored.length === 0) return [];
+
+    scored.sort((a, b) => b.score - a.score || a.step.step_index - b.step.step_index);
+    const topScore = scored[0].score;
+
+    return scored.slice(0, limit).map(({ step, matched_terms, score }) => {
+      let nodes_touched: string[] | undefined = undefined;
+      if (step.node_ids) {
+        try {
+          const parsed = JSON.parse(step.node_ids);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            nodes_touched = parsed;
+          }
+        } catch {
+          // ignore malformed JSON
+        }
+      }
+
+      return {
+        workflow_id: step.workflow_id,
+        workflow_name: step.workflow_name,
+        step_index: step.step_index,
+        summary: step.summary,
+        relevance: Math.max(1, Math.round((score / topScore) * 100)),
+        matched_terms,
+        nodes_touched
+      };
+    });
   }
 
   /**

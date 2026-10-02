@@ -99,10 +99,11 @@ export interface IdeTarget {
      *  `false` means asking the tool to "remember this" has nothing to attach to: no store exists,
      *  so `devsmind memory` skips straight to pointing at `devsmind skill` instead of printing a
      *  prompt that would just get acknowledged and dropped. Confirmed `false` for Antigravity
-     *  (IDE + CLI — its only persistence is Skills), Codex (no documented explicit-ask trigger for
-     *  its opaque `~/.codex/memories/`), and Kiro (steering is static; its Knowledge store is
-     *  explicit-command-only, not autonomous). `true` for the other five, even where the
-     *  mechanism itself is shaky (Cursor requires manual approval; still real enough to ask). */
+     *  (IDE + CLI - its only persistence is Skills) and Kiro (steering is static; its Knowledge
+     *  store is explicit-command-only, not autonomous). Codex memory is real once enabled in
+     *  Settings > Personalization > Memory, so it gets setup guidance before the pasteable ask.
+     *  `true` can still mean the mechanism is gated or shaky (Cursor requires manual approval;
+     *  Codex requires the Memories toggle), but there is something real to ask. */
     hasRealMechanism: boolean;
     /** The tool's own name for this feature — use it verbatim in prompts, not a generic "memory". */
     featureName: string;
@@ -502,16 +503,14 @@ export const TARGETS: IdeTarget[] = [
       note: 'Codex discovers skills by scanning .agents/skills/ — the same path as Antigravity, so one placement covers both. Invoke as `$devsmind` in Codex chat.',
     },
     memory: {
-      hasRealMechanism: false,
-      featureName: 'Skills',
+      hasRealMechanism: true,
+      featureName: 'Memories',
+      askHint: 'Save this as a Codex Memory now. If memory is not enabled yet, tell the developer to enable Settings > Personalization > Memory > Enable memories first, then repeat this request.',
       scopes: [AGENTS_SKILL_SCOPE],
       wrap: skillMdWrap,
-      // Codex has two stores and only one of them is ours to write. `~/.codex/memories/` is
-      // generated state its own docs warn against hand-editing ("don't rely on editing them by
-      // hand") and a background job regenerates — untouched, here and everywhere else. Skills are
-      // the human-authored surface, and Codex scans the same `.agents/skills/` directory
-      // Antigravity does, so this is one file serving both tools rather than a new integration.
-      note: 'Codex discovers skills by scanning .agents/skills/ for any SKILL.md — the same file Antigravity reads, so seeding once covers both. Codex\'s own ~/.codex/memories/ is generated state and is never touched. Pair this with `devsmind rule` (AGENTS.md): a skill loads only when the task matches its description, while AGENTS.md is read every turn.',
+      // Codex memory is enabled from the app UI, not by hand-writing ~/.codex/memories/.
+      // That generated state remains untouched; DevsMind only prints an explicit in-chat ask.
+      note: 'Codex Memories work after you enable them in Codex Settings > Personalization > Memory. DevsMind never writes ~/.codex/memories/ by hand; it prints a prompt for Codex to remember through its own UI-backed memory flow.',
     },
   },
   {
@@ -554,3 +553,4 @@ export const TARGETS: IdeTarget[] = [
 export function getTarget(id: string): IdeTarget | undefined {
   return TARGETS.find(t => t.id === id);
 }
+

@@ -404,6 +404,29 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
     // The multi-file query is gated on a cached "does this brain have any such node" answer. A
     // brain that had none when the cache was filled and then gains one must start running it, or
     // the node silently never reaches disk until the process restarts.
+    it('does not hand a comma-joined multi-file path to writeGraphToDisk during upsert', async () => {
+      const fx = makeFixture();
+      try {
+        const a = repoFile(fx, 'a.ts');
+        const b = repoFile(fx, 'b.ts');
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          fx.db.upsertNode({
+            id: '{app}/a.ts#shared_nowarn', type: 'function', name: 'shared_nowarn',
+            file_path: `${a}, ${b}`, description: 'Spans two files without malformed path warnings.'
+          });
+          expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('Failed to write graph JSON'), expect.anything());
+        } finally {
+          warnSpy.mockRestore();
+        }
+
+        expect(fs.existsSync(path.join(fx.devmindPath, 'graph', 'app', 'a.json'))).toBe(true);
+        expect(fs.existsSync(path.join(fx.devmindPath, 'graph', 'app', 'b.json'))).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
     it('picks up the first multi-file node added after the cache was warmed', async () => {
       const fx = makeFixture();
       try {

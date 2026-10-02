@@ -3,7 +3,7 @@ import * as os from 'os';
 import { resolveDevmindDir } from '../../utils/config';
 import { SkillScope, TARGETS, getTarget, skillMdWrap, resolveOsPath } from './registry';
 import { renderCombined } from './memory-topics';
-import { mergeRuleFile, writeConfigFile, confirmPrompt, selectPrompt, pickTarget, CancelledError } from './prompt';
+import { mergeRuleFile, writeConfigFile, confirmPrompt, selectPrompt, pickTarget, pickDirectory, CancelledError } from './prompt';
 
 const HEADER = '# DevsMind — AI Workflow Skill\n\n';
 
@@ -60,17 +60,30 @@ export async function handleSkill(opts: {
   const workspaceRoot = devmindDir ? path.dirname(devmindDir) : process.cwd();
   const body = renderCombined(HEADER);
 
-  // ── --print mode: no interaction, no tool required ────────────────────────
+  // --print mode: no interaction, optional target-specific path
   if (opts.print || (!process.stdout.isTTY && !opts.tool)) {
-    const scope = TARGETS.find(t => t.id === 'antigravity')!.skill.scopes[0]; // canonical default
+    const target = opts.tool ? getTarget(opts.tool) : TARGETS.find(t => t.id === 'antigravity')!; // canonical default
+    if (!target) {
+      console.error(
+        `\nError: Unknown tool "${opts.tool}".\n` +
+        `   Valid IDs: ${TARGETS.map(t => t.id).join(', ')}`
+      );
+      process.exit(1);
+    }
+    const scope = opts.global
+      ? target.skill.scopes.find(s => s.scope === 'global')
+      : target.skill.scopes[0];
+    if (!scope) {
+      console.error(`\nError: ${target.label} has no global skill scope.`);
+      process.exit(1);
+    }
     const filePath = resolveSkillFilePath(scope, workspaceRoot);
     const merged = mergeRuleFile(filePath, body, 'standalone', skillMdWrap);
-    console.log(`\n📄 ${filePath.replace(/\\/g, '/')}\n`);
+    console.log(`\nFile: ${filePath.replace(/\\/g, '/')}\n`);
     console.log(merged.preview);
-    printCoverageNote(null);
+    printCoverageNote(opts.tool ? target.skill.note ?? null : null);
     return;
   }
-
   // ── Resolve target (interactive or --tool flag) ───────────────────────────
   let target;
   if (opts.tool) {
@@ -114,7 +127,19 @@ export async function handleSkill(opts: {
     }
   }
 
-  const filePath = resolveSkillFilePath(scope, workspaceRoot);
+  let filePath: string;
+  if (scope.scope === 'project' && process.stdout.isTTY) {
+    try {
+      const base = await pickDirectory(workspaceRoot, `Where is the project root for ${target.label}?`);
+      filePath = path.join(base, resolveOsPath(scope.dir), scope.file);
+    } catch (err) {
+      if (err instanceof CancelledError) { console.log('\nCancelled.'); return; }
+      throw err;
+    }
+  } else {
+    filePath = resolveSkillFilePath(scope, workspaceRoot);
+  }
+
   const merged = mergeRuleFile(filePath, body, 'standalone', skillMdWrap);
   if (merged.error) {
     console.error(`\n❌ ${merged.error}`);
