@@ -120,7 +120,12 @@ describe('safeJsonParse', () => {
 
   it('returns the fallback on total failure without throwing', () => {
     const fallback = { ok: false };
-    expect(() => safeJsonParse('!!!not json at all!!!', fallback)).not.toThrow();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => safeJsonParse('!!!not json at all!!!', fallback)).not.toThrow();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('returns the fallback for non-string input', () => {

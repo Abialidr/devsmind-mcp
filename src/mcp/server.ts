@@ -37,6 +37,7 @@ import { parseNodeId, isAstParseable, findTouchedSymbols, invalidateParsedFile, 
 import { replaceTextInFile, createFileWithContent, locateAppliedEdit } from '../utils/edit';
 import { validateDescription } from '../utils/tokenize';
 import { DEVSMIND_VERSION } from '../utils/version';
+import { resolveResponseStyle, withResponseStyle, buildResponseStyleReminder } from '../utils/response-style';
 import { stageEntry, readStaged, clearStaged, commitStagedChanges, summarizeEntriesForWorkflow, StagedEntry, stageFileEdit, readStagedFileEdits, overwriteStaged, resolveEntryId, partitionStagedForSession, clearStagedForSession } from '../db/staging';
 import { recordMessage } from '../db/activity';
 import { runAnalysis } from '../db/analyze';
@@ -62,24 +63,19 @@ export const DEVSMIND_PORT = 4513;
 /** MCP prompts/list name for the workflow-contract prompt below — see createMcpServer's prompts handlers. */
 export const DEVSMIND_PROMPT_NAME = 'devsmind-workflow';
 
-export const DEVSMIND_INSTRUCTIONS = `DevsMind is this team's persistent shared code memory — not a personal tool you reach for only when asked to search something. Every teammate's AI agent, in every session, reads from the SAME graph you are about to write to. There is no "your copy."
+export const DEVSMIND_INSTRUCTIONS = `DevsMind is this team's shared code graph: every teammate's agent reads and writes the SAME one. Skip recording and the graph goes stale for everyone, and the reasoning behind your change exists only in this conversation: if it isn't captured at commit_changes this turn, it is lost.
 
-If you skip recording a change, you are not skipping a formality. You are leaving the whole team's graph stale for every other AI agent that queries this code later — tomorrow, on a different task, in a different session. And the reasoning behind your change (why it was made, what ticket drove it, what was broken before, what you tried and rejected) exists ONLY in this conversation, right now. It is not in the diff. It is not in the commit message. If it isn't captured at commit_changes this turn, it is gone forever — no reindex, no log, no git blame can recover it later.
+Workflow:
+1. start_session once before your first WRITE. It returns a session_id that every write requires (responses echo it back; never invent one; on a resumed conversation reuse the earlier id). Reads need no session: search and read freely first.
+2. Find code with search_nodes BEFORE any grep or file read: a natural-language query and/or a pattern (a real regex, used exactly as given). It returns graph nodes (triage by confidence and relevance, not by how a name looks) plus a real file grep for what the graph doesn't index (config, CSS, markup). Empty means absent: retry once with a different query or pattern first.
+3. Read one function/class with get_node_code, not the file. It already includes imports, named callers and callees, a file outline and recent reasoning. Before changing a signature add graph_depth and graph_direction:"in" for the full blast radius; before a refactor add history:"full" for every past revision and why.
+4. Write EVERY file with edit_node (file_path + old_string + new_string; old_string:"" creates a file), never your own edit/write tool. If a file was already edited without it, stage_change records that edit without rewriting the file.
+5. commit_changes at natural checkpoints and before ending a turn with staged work. It REQUIRES message (the user's request, verbatim), reasoning (one what_changed/why/goal for everything staged) and feedback (5 fields; answer for real, "none" only after checking). It REFUSES a brand-new node without a description (1-3 sentences of purpose, in words a teammate would search by): pass description on edit_node, or call add_description.
+6. commit_changes is NOT git. It writes only to DevsMind's local graph. Never run git add, commit or push because it succeeded: a real git commit is the developer's separate decision, only when they ask.
+7. rename_node for renames, deprecate_node for removals. Never delete a node: its history is lost.
+8. For multi-session features call workflow_list, ask the user, then workflow_bind. Once bound, commit_changes logs steps itself; use workflow_add_step only for a decision or research finding that changed no code. workflow_sync attaches earlier work.
 
-Non-negotiable workflow:
-1. Call start_session once, before your first WRITE of the conversation (edit_node/commit_changes and the other mutating tools). It mints a session_id that every write REQUIRES — it ties a request's edits together on the local Activity log and makes them revertable as a unit — and every response echoes it back so it stays in front of you, including after a context compaction. Read-only tools (search_nodes, get_node_code, list_nodes, and the other getters) do NOT need it: search and read freely from the very first call. Never invent a session_id yourself; if a write errors saying session_id is required, start_session was skipped — call it now, then retry. If you are resuming a conversation that already called start_session earlier (visible in the reloaded history), reuse that same session_id instead of starting a new one.
-2. Before any filesystem search, grep, or file read: call search_nodes FIRST — it is now the one call for both "find this node" AND "find where X lives across files", so you should not need an external grep. Two inputs, pass either or both: a natural-language query (a real phrase — drives meaning-matching, so "authentication" finds a node described only as "sign-in") and/or pattern, a REAL regex used exactly as you'd give it to grep (e.g. "heartRed|onLikeTap|item\.liked" — nothing is re-escaped or split for you). Pattern-only is a precision mode: exact grep + code-body matches, no semantic blur. It returns two buckets: nodes (the indexed graph — the primary answer for "which function/class", with a true nodes_total before the top-20 cap) and files (a real grep of every repo, or just the path scope if given — the answer for things the graph does not index: CSS, JSON, config, .env, markup, wiring like "where is CORS configured" or "what mounts this middleware" — each sample line reports which function/class it falls inside, and files_total tells you honestly whether there's more than the page shown; pass a bigger offset for the next page). Triage by each node's confidence and relevance, NOT by which name looks right to you — confidence reflects how many independent layers corroborated the hit, which your own reading of a name cannot. Lockfiles and build artifacts are excluded by default, so what comes back is real source. If the response carries a compacted field, it was trimmed to fit and says exactly what was dropped — all counts stay exact, and compact:false gets you the untrimmed payload. It only returns real evidence — genuinely-absent things come back empty with a hint; if so, retry once with a different pattern/query before concluding it is not there. Only drop to a manual grep/read if search_nodes itself says truncated, or you need full file context after it points you at the file.
-3. To read one function/class: call get_node_code instead of opening the file, and do not follow it with a file read for context — this is the ONE node-read call, not a lean summary. It already includes the file's imports, the node's own name/type/signature/description, up to 20 named callers AND callees per direction (with exact uses/used_by counts even when the lists are capped), and up to 40 other declarations from the same file (file_outline — this is how you tell "was this renamed?" or "what else lives here" without opening the file). Reach further in the SAME call instead of a second tool: graph_depth + graph_direction walks the transitive graph past the direct neighbors already included (add graph_code:true for a whole call flow's source in one round trip — if some nodes' code doesn't fit the budget they are named in graph.code_omitted_node_ids, so fetch exactly those rather than re-running blind), and history:"full" returns every revision with diffable edits, pageable with history_limit/history_offset. Every capped section is honest about it (*_truncated, *_hint) — a hint means more is reachable in this same call, not a dead end.
-4. Before touching any function's signature: get_node_code already includes its direct callers by name (used_by_nodes) — for the FULL transitive blast radius, pass graph_direction:"in" with a graph_depth of 2-3 in that same call. Git shows you what changed; it never shows you what depends on it. Find out before you break something, not after.
-5. Before refactoring: get_node_code already includes the last 3 changes' reasoning by default — for the full revision trail with diffable before/after edits, pass history:"full" in that same call. Git blame tells you who and when; it never tells you why. The actual decision context only exists here.
-6. Write EVERY file with edit_node — .ts, .vue, .css, .json, .xml, .md, anything — and never your editor's own edit/write tools. It takes file_path + old_string + new_string exactly like an ordinary edit tool and never refuses a file type; to create a file that doesn't exist yet, pass old_string: "" and the whole file as new_string. Because it knows where your text landed, it works out which function/class you changed automatically: no node_id to look up, no code_snapshot to send back. It answers with every caller of what you changed. The graph only ever holds source code (functions/classes/logic) though — writes landing outside any function (markup, config, an import) get no graph node, normal and expected, not a failure — but the whole-file change is still staged for the local activity log, so commit_changes makes it revertable there like any other edit.
-7. If a file already got edited WITHOUT going through edit_node — your own editor's edit/write tool got used by mistake, or you're catching up on work from before this session — call stage_change to recover it: same file_path/old_string/new_string/replace_all/description shape as edit_node, but it traces and stages the change without touching the file, since new_string is already sitting on disk. It fails clearly (new_string not found) if the edit never actually happened, so it can't silently record the wrong thing. Always prefer edit_node going forward; stage_change exists only to catch up after the fact, not as a second way to make an edit.
-8. commit_changes REQUIRES a message AND a reasoning — the call fails without either. message is the user's request, verbatim, that led to this commit; it builds a local, private, never-pushed activity log (devsmind view → Activity) grouping your work by request and letting the user revert a request as a whole. Pass the exact same text again on a later commit that's still answering the same request — that merges them into one entry instead of splitting it. reasoning (what_changed/why/goal) is ONE object covering everything staged since the last commit — a commit is one logical change, so it gets one why, recorded against every node it touches, not one per edit_node/stage_change call.
-9. commit_changes also REFUSES any batch containing a brand-NEW node with no description — a description is what makes that node findable later by a natural-language search_nodes query instead of only by its exact identifier. If edit_node or stage_change just created a node, call add_description with it (1-3 sentences of what it does and the domain concepts involved — never a restatement of the name) before commit_changes will accept it. Nothing staged is lost by the refusal; retry the same commit_changes call once it's described. Existing nodes are never gated by this — only ones new this commit.
-10. commit_changes is NOT git and never touches it. It writes only into DevsMind's own local graph/database (.devmind/) and local activity log — it never runs git add, git commit, git push, or any other git command, and its "commit" is a completely different thing from a git commit despite the shared word. Calling it successfully is not a signal to now go run git yourself: never run git add/git commit/git push on your own initiative just because commit_changes succeeded, or because you finished a task. Your real git commit — staging and committing the actual code changes — is the developer's decision, made separately, only when they explicitly ask for it, exactly like any other git action.
-11. A workflow is a named log of how ONE piece of functionality grew, across many sessions — read it to learn how the code got this way. start_session tells you if there is a recent one worth continuing; otherwise, when starting work that might belong to an existing multi-session feature, call workflow_list. If a description matches, ask the user before continuing it, then workflow_bind to attach THIS session. Binding is local to you: it never moves, pauses, or steals anyone else's workflow, and two sessions can work different ones at the same time.
-12. Once bound, commit_changes logs a step for you automatically — you do NOT need workflow_add_step for ordinary code work. Call it for the thing a commit cannot express: a DECISION OR RESEARCH FINDING THAT CHANGED NO CODE ("evaluated X, rejected it because Y"), attaching the docs behind it via doc_paths. That is the one kind of knowledge nothing else keeps — git has the diff, history has the per-node reasoning, but neither records what was considered and rejected. If you did work while unbound, or on the wrong workflow, workflow_sync attaches it afterwards from your local activity log: it previews first and only writes when you pass confirm:true, so nothing has to be got right in the moment.
-13. commit_changes also REQUIRES a feedback object (5 fields) — this is the only channel that improves DevsMind over time, so answer it for real, not as a formality. Before writing "none" on any field, actually check: did anything in THIS task take an extra tool call, a guess, a re-read, or a wrong turn? There almost always is something, even on an easy task — a specific one-line answer with evidence (file:line) is far more useful than a reflexive "none". "none" is correct only when you genuinely paid attention and nothing applies. Noticed something worth reporting but aren't committing right now (or don't want to wait until you are)? Call add_feedback directly — same 5 categories, but any one or more, nothing required, no commit needed. Passing evidence (file + snippet) on a graph_problem/edge_problem gets it verified fresh at call time and marked confirmed instead of suspected.`;
+Each tool's own description lists its parameters and limits.`;
 
 // Shared node-type taxonomy description, reused by update_history and add_description.
 const NODE_TYPE_DESCRIPTION =
@@ -408,7 +404,8 @@ export function cleanup() {
 }
 
 /**
- * Read-only tools that DON'T require a session_id. A session exists to tie a request's writes
+ * Tools that DON'T require a session_id: the read-only ones, plus `devsmind_git_sync` (see its entry
+ * below). A session exists to tie a request's writes
  * together on the local activity log and make them revertable as a unit — reads mutate nothing,
  * so gating them buys nothing and only adds friction to the very first thing an agent does in a
  * conversation (usually a search). Their handlers never touch `sessionId`, verified case-by-case;
@@ -418,8 +415,9 @@ export function cleanup() {
  * `session_id` (a filter — "show me just this session's activity"), so exempting it stops the
  * injection loop from force-promoting that optional filter into a required gate.
  *
- * NOTE: every entry here is a read. Adding a WRITE tool to this set would let it run without a
- * session and silently drop its edits out of the revert/grouping model — do not.
+ * NOTE: every entry here is a read, with one deliberate exception (`devsmind_git_sync`, explained at
+ * its entry). Adding any tool that records graph EDITS to this set would let it run without a
+ * session and silently drop those edits out of the revert/grouping model — do not.
  *
  * `get_node_history`, `get_node_graph`, `search_decisions`, `get_orphaned_nodes` are retired —
  * unadvertised in ListTools, folded into `get_node_code`/`search_nodes`/`analyze_graph`. They
@@ -427,7 +425,7 @@ export function cleanup() {
  * including unlisted ones, so removing them here would make their still-live retained handlers
  * start failing on a missing session_id for any direct/legacy caller.
  */
-const SESSION_EXEMPT_READ_TOOLS = new Set<string>([
+const SESSION_EXEMPT_TOOLS = new Set<string>([
   'list_nodes',
   'get_node_code',
   'get_node_history',
@@ -442,11 +440,24 @@ const SESSION_EXEMPT_READ_TOOLS = new Set<string>([
   // are gone, so they no longer belong here. `workflow_list` is NOT exempt any more either: it
   // reports `bound_workflow_id`, which is a per-session fact — without a session_id it could only
   // ever answer null, which reads as "you are on nothing" rather than "I cannot tell".
-  'get_activity_log'
-  // `devsmind_git_sync` is deliberately NOT exempt: it's a real write (commit + merge + push),
-  // same bar as commit_changes/workflow_add_step. The old read-only `pull_devsmind_branch` was
-  // exempt, but it no longer exists — syncing is now one operation that always writes.
+  'get_activity_log',
+  // `devsmind_git_sync` is exempt although it does commit, merge and push: what a session is FOR is
+  // tying a request's graph edits to the local Activity log so it can be reverted as a unit, and a
+  // git sync neither records an edit nor appears in that log — its handler never reads the id. The
+  // gate it used to carry bought nothing and cost a start_session round trip on a tool that only
+  // moves the shared branch.
+  'devsmind_git_sync'
 ]);
+
+/**
+ * The handshake / prompt text for the brain this process serves: the contract, plus the developer's
+ * own terse-reply setting when they have turned one on (see utils/response-style). With the setting
+ * off — the default — this is exactly `DEVSMIND_INSTRUCTIONS`, byte for byte. Resolved per call, not
+ * once at module load, so a style changed with `devsmind style` reaches the next connection.
+ */
+function currentInstructions(): string {
+  return withResponseStyle(DEVSMIND_INSTRUCTIONS, resolveResponseStyle(boundDevmindPath));
+}
 
 /**
  * Creates and wires up a DevsMind MCP Server instance.
@@ -458,11 +469,12 @@ const SESSION_EXEMPT_READ_TOOLS = new Set<string>([
  * binding a real port.
  */
 export function createMcpServer(): Server {
+  const styleReminder = buildResponseStyleReminder(resolveResponseStyle(boundDevmindPath));
   const server = new Server(
     { name: 'devsmind-server', version: DEVSMIND_VERSION },
     {
       capabilities: { tools: {}, prompts: {} },
-      instructions: DEVSMIND_INSTRUCTIONS
+      instructions: currentInstructions()
     }
   );
 
@@ -1248,8 +1260,8 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
     };
     for (const t of tools) {
       if (t.name === 'start_session') continue;
-      // Read-only tools don't require a session (see SESSION_EXEMPT_READ_TOOLS) — don't inject it.
-      if (SESSION_EXEMPT_READ_TOOLS.has(t.name)) continue;
+      // Read-only tools don't require a session (see SESSION_EXEMPT_TOOLS) — don't inject it.
+      if (SESSION_EXEMPT_TOOLS.has(t.name)) continue;
       const schema = t.inputSchema as any;
       if (schema.properties && !schema.properties.session_id) schema.properties.session_id = SESSION_ID_PROP;
       if (Array.isArray(schema.required) && !schema.required.includes('session_id')) schema.required.push('session_id');
@@ -1283,7 +1295,7 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
 
     // start_session mints the id; every WRITE call must carry it back. This is the sole minting
     // point — no auto-mint fallback — and the resolved id is echoed on every response below so it
-    // survives context compaction. Read-only tools (SESSION_EXEMPT_READ_TOOLS) run without one:
+    // survives context compaction. Read-only tools (SESSION_EXEMPT_TOOLS) run without one:
     // sessionId stays '' for them, which is falsy so the trailing echo is skipped, and no write
     // handler is exempt so none ever sees the empty value.
     let sessionId: string;
@@ -1291,7 +1303,7 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
       sessionId = crypto.randomUUID();
     } else if (args.session_id) {
       sessionId = String(args.session_id);
-    } else if (SESSION_EXEMPT_READ_TOOLS.has(name)) {
+    } else if (SESSION_EXEMPT_TOOLS.has(name)) {
       sessionId = '';
     } else {
       return {
@@ -3720,7 +3732,12 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
         ...(result.content ?? []),
         ...(sessionId
           ? [{ type: 'text', text: `devsmind_session_id: ${sessionId}  (required on every DevsMind write call for the rest of this conversation — reuse this exact value)` }]
-          : [])
+          : []),
+        // The terse-reply setting as a last line the agent reads right before it writes its answer.
+        // The note in the handshake text is read once, at the top of a long context, and was
+        // ignored on a first long reply; recency is what makes an instruction stick. Empty (so
+        // nothing is added) unless the developer turned the style on.
+        ...(styleReminder ? [{ type: 'text', text: styleReminder }] : [])
       ]
     };
   });
@@ -3744,7 +3761,7 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
       throw new Error(`Prompt not found: ${request.params.name}`);
     }
     return {
-      messages: [{ role: 'user', content: { type: 'text', text: DEVSMIND_INSTRUCTIONS } }]
+      messages: [{ role: 'user', content: { type: 'text', text: currentInstructions() } }]
     };
   });
 

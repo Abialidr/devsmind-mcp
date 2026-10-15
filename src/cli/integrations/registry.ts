@@ -79,6 +79,8 @@ export interface IdeTarget {
     scopes: RuleScope[];
     /** `standalone` = dedicated devsmind file; `append-section` = merge a delimited block into a shared file. */
     style: 'standalone' | 'append-section';
+    /** Write the full rule to this shared file and keep only a pointer in the agent's always-loaded file. */
+    sharedRuleFile?: string;
     /** Optional transform of the rule body before writing (e.g. Cursor .mdc frontmatter). */
     wrap?: (body: string) => string;
   };
@@ -378,6 +380,7 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'AGENTS.md' }],
       style: 'append-section',
+      sharedRuleFile: '.agents/rules/devsmind.md',
     },
     skill: {
       scopes: [
@@ -456,6 +459,7 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'AGENTS.md' }],
       style: 'append-section',
+      sharedRuleFile: '.agents/rules/devsmind.md',
     },
     skill: {
       scopes: [
@@ -492,6 +496,7 @@ export const TARGETS: IdeTarget[] = [
     rules: {
       scopes: [{ scope: 'project', file: 'AGENTS.md' }],
       style: 'append-section',
+      sharedRuleFile: '.agents/rules/devsmind.md',
     },
     skill: {
       scopes: [

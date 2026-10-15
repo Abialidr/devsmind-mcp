@@ -50,42 +50,43 @@ export function buildRule(config: DevMindConfig, devmindDir: string, workflowSty
   const bt = '`';
 
   const whatThisIs = manual
-    ? `DevsMind is this team's shared code graph — every teammate's AI agent reads the same graph, there is no "your copy." ${bt}get_node_code${bt} shows what git can't (live callers/callees by name already included; ${bt}graph_depth${bt}+${bt}graph_direction:"in"${bt} for the full blast radius before you break a signature). Its ${bt}history:"full"${bt} option shows what git blame can't (why a change was made, not just who/when). Reading from it is never optional — check it before you touch code. **Writing to it is the developer's call, not yours: this project is set to MANUAL — only stage or commit when explicitly asked to.**`
-    : `DevsMind is this team's shared code graph — every teammate's AI agent reads the same graph you write to, there is no "your copy." ${bt}get_node_code${bt} shows what git can't (live callers/callees by name already included; ${bt}graph_depth${bt}+${bt}graph_direction:"in"${bt} for the full blast radius before you break a signature). Its ${bt}history:"full"${bt} option shows what git blame can't (why a change was made, not just who/when). Both are worthless if changes stop getting recorded — so recording is not optional, it's the product.`;
+    ? `DevsMind is this team's shared code graph: every teammate's agent reads the same one. ${bt}get_node_code${bt} shows what git can't: live callers/callees and, with ${bt}history:"full"${bt}, why a change was made. Reading it is never optional: check it before you touch code. **Writing to it is the developer's call: this project is MANUAL, so only stage or commit when explicitly asked.**`
+    : `DevsMind is this team's shared code graph: every teammate's agent reads the same one you write to. ${bt}get_node_code${bt} shows what git can't: live callers/callees and, with ${bt}history:"full"${bt}, why a change was made. It is only as good as what gets recorded, so recording is not optional.`;
 
   const editRow = manual
-    ? `| Editing a file | ${bt}edit_node${bt} (${bt}file_path${bt} + ${bt}old_string${bt} + ${bt}new_string${bt}) is a safe drop-in for your own edit tool and traces automatically if you ever do commit — but it's optional here, your own editor's edit tool is equally fine |`
-    : `| ANY edit to ANY file — ${bt}.ts${bt}, ${bt}.vue${bt}, ${bt}.css${bt}, ${bt}.json${bt}, ${bt}.xml${bt}, anything | ${bt}edit_node${bt} (${bt}file_path${bt} + ${bt}old_string${bt} + ${bt}new_string${bt}) — never your own edit tool. It never refuses a file type, and traces what you changed for you |`;
+    ? `| Editing a file | ${bt}edit_node${bt} (${bt}file_path${bt} + ${bt}old_string${bt} + ${bt}new_string${bt}) is a safe drop-in for your edit tool and traces for you if you later commit; optional here |`
+    : `| ANY edit to ANY file | ${bt}edit_node${bt} (${bt}file_path${bt} + ${bt}old_string${bt} + ${bt}new_string${bt}), never your own edit tool. It never refuses a file type and traces what you changed |`;
   const createRow = manual
     ? `| Creating a NEW file | ${bt}edit_node${bt} with ${bt}old_string: ""${bt} works the same way |`
-    : `| Create a NEW file | ${bt}edit_node${bt} with ${bt}old_string: ""${bt} and the whole file as ${bt}new_string${bt} — never your own write tool |`;
+    : `| Create a NEW file | ${bt}edit_node${bt} with ${bt}old_string: ""${bt} and the whole file as ${bt}new_string${bt} |`;
   const commitRow = manual
-    ? `| The developer explicitly asks you to commit/save/record this to DevsMind | ${bt}commit_changes${bt} — never on your own initiative |`
-    : `| Checkpoints during a long task, and before ending any turn with staged work | ${bt}commit_changes${bt} |`;
-  const stageChangeRow = `| A file already got edited WITHOUT ${bt}edit_node${bt} — your own editor's edit tool got used by mistake, or you're catching up on earlier work | ${bt}stage_change${bt} — same ${bt}file_path${bt}/${bt}old_string${bt}/${bt}new_string${bt} shape as ${bt}edit_node${bt}, but it never writes to the file: ${bt}new_string${bt} is expected to already be on disk, and it just traces + stages the change. Prefer ${bt}edit_node${bt} for every edit going forward — this only recovers one it missed |`;
+    ? `| The developer explicitly asks you to commit/save/record this | ${bt}commit_changes${bt}, never on your own initiative |`
+    : `| Checkpoints in a long task, and before ending a turn with staged work | ${bt}commit_changes${bt} |`;
+  const stageChangeRow = `| A file already got edited WITHOUT ${bt}edit_node${bt} | ${bt}stage_change${bt}: same params as ${bt}edit_node${bt}, but it never writes the file, it only traces and stages the change already on disk. Prefer ${bt}edit_node${bt}; this only recovers a miss |`;
 
   const recordingHeader = manual
-    ? '### Recording Changes — Manual: Only When Asked'
-    : '### Recording Changes — Per Node, Not Per File, Not At The End';
+    ? '### Recording Changes: Manual, Only When Asked'
+    : '### Recording Changes: Per Node, At Checkpoints';
+
+  const feedbackFields = `${bt}graph_problems${bt}, ${bt}edge_problems${bt}, ${bt}tools_used${bt}, ${bt}dropped_and_why${bt}, ${bt}devsmind_better${bt}`;
+  const commitContract = `${bt}commit_changes${bt} REQUIRES all three of ${bt}message${bt} (the user's request, verbatim; reuse the exact text on later commits for the same request), ${bt}reasoning${bt} (ONE ${bt}what_changed${bt}/${bt}why${bt}/${bt}goal${bt} object for everything staged since the last commit) and ${bt}feedback${bt} (5 strings: ${feedbackFields}; each must be answered, ${bt}"none"${bt} is fine only after you checked whether this task cost an extra call, a guess or a wrong turn). A brand-NEW node also needs a ${bt}description${bt} (1-3 sentences of purpose, in words a teammate would search by): pass it on the ${bt}edit_node${bt} call that created it, or call ${bt}add_description${bt}.`;
+  const notGit = `${bt}commit_changes${bt} is NOT git: it writes only to DevsMind's local graph. Never ${bt}git add${bt}/${bt}git commit${bt}/${bt}git push${bt} on your own initiative because it succeeded or a task feels done; that stays the developer's decision, only when asked.`;
 
   const recordingBody = manual ? [
-    `This project is set to **MANUAL**. Search/read tools (${bt}search_nodes${bt}, ${bt}get_node_code${bt}) stay always-on — use them before reading a raw file or guessing at impact, same as automatic mode. What's different is the write side:`,
+    `This project is **MANUAL**. Search/read tools (${bt}search_nodes${bt}, ${bt}get_node_code${bt}) stay always on. The write side is different:`,
     '',
-    `1. Do **not** call ${bt}commit_changes${bt} on your own initiative — not after an edit, not at a "natural checkpoint," not because a turn is ending. The developer decides what reaches the graph and when.`,
-    `2. If the developer explicitly asks you to commit/save/record something ("commit this", "save that to devsmind", "record what we just did"), then follow the normal automatic-mode mechanics: ${bt}edit_node${bt} already staged whatever it traced; call ${bt}commit_changes${bt} with ${bt}message${bt} set to their request verbatim, ONE ${bt}reasoning${bt} (what_changed/why/goal) covering everything staged, and ${bt}feedback${bt} (5 strings: ${bt}graph_problems${bt}, ${bt}edge_problems${bt}, ${bt}tools_used${bt}, ${bt}dropped_and_why${bt}, ${bt}devsmind_better${bt} — each must be answered, ${bt}"none"${bt} is fine where nothing applies). All three are REQUIRED by the tool itself, not a style choice. If anything staged is a brand-NEW node, ${bt}commit_changes${bt} also requires a ${bt}description${bt} for it first (pass it on the ${bt}edit_node${bt} call that created it, or call ${bt}add_description${bt}) — enforced by the tool regardless of workflow style, not something MANUAL mode opts out of.`,
-    `3. ${bt}session_id${bt} is also mechanically required on every DevsMind WRITE regardless of mode (see above) — that's the protocol, not a recording obligation. Calling ${bt}start_session${bt} and carrying its id doesn't mean anything is being tracked; it's just what makes a write succeed at all. Read-only tools (${bt}search_nodes${bt}, ${bt}get_node_code${bt}, ${bt}get_activity_log${bt}, etc.) do NOT need it — search and read freely before ${bt}start_session${bt} has even run.`,
-    `4. Don't narrate that you skipped staging/committing — silence is the expected default here. Only bring up DevsMind's state when it's relevant or the developer asks.`,
-    `5. If you already edited a file with your own editor's tool before being asked to record it, ${bt}stage_change${bt} (same ${bt}old_string${bt}/${bt}new_string${bt} shape as ${bt}edit_node${bt}) traces and stages that already-applied change without rewriting the file — use it instead of redoing the edit through ${bt}edit_node${bt} just to get it staged.`,
-    `6. ${bt}commit_changes${bt} is NOT git and never touches it — same rule as above, but worth repeating: it writes only into DevsMind's own local graph, never ${bt}git add${bt}/${bt}git commit${bt}/${bt}git push${bt} or any other git command. Never run a real git commit on your own initiative here either — that's the developer's call, same as everything else on the write side in MANUAL mode.`,
+    `1. Do **not** call ${bt}commit_changes${bt} on your own initiative: not after an edit, not at a checkpoint, not because a turn is ending.`,
+    `2. If the developer asks you to commit/save/record something, ${bt}edit_node${bt} has already staged what it traced. ${commitContract} Set ${bt}message${bt} to their request verbatim.`,
+    `3. ${bt}session_id${bt} is mechanically required on every write in both styles (see above); calling ${bt}start_session${bt} does not mean anything is being tracked.`,
+    `4. Don't narrate that you skipped committing; silence is the default here.`,
+    `5. ${notGit}`,
   ] : [
-    `1. ${bt}edit_node${bt} is the write path for **every** file — never your own edit/write tool, whatever the extension. Pass ${bt}file_path${bt} + ${bt}old_string${bt} + ${bt}new_string${bt}, exactly like an ordinary edit tool; to create a file, pass ${bt}old_string: ""${bt} and the whole file as ${bt}new_string${bt}. It traces where your text landed to the function/class you actually changed, and answers with that node's callers. No ${bt}node_id${bt} to look up, no ${bt}code_snapshot${bt} to send back. Writes landing outside any function (markup, config, imports) get no graph node — expected, not a failure — but the whole-file change is still staged for the local activity log, so ${bt}commit_changes${bt} makes it revertable there too.`,
-    `2. Call ${bt}commit_changes${bt} at natural checkpoints (a batch of related nodes, a context switch) — not saved for a single end-of-task call that's easy to skip when the task runs long. ${bt}edit_node${bt} only stages; it never writes to the graph on its own. Always commit before ending a turn with anything staged.`,
-    `3. ${bt}message${bt}, ${bt}reasoning${bt} AND ${bt}feedback${bt} are all REQUIRED on ${bt}commit_changes${bt} — the call fails without any one of them. ${bt}message${bt} is the user's request, verbatim, that led to this commit; it builds a local activity log (${bt}devsmind view${bt} → Activity, never pushed) grouping your work by request and letting the user revert one as a whole. Pass the exact same text again on a later commit that's still answering the same request — that merges them into one entry instead of splitting it. ${bt}reasoning${bt} (${bt}what_changed${bt}/${bt}why${bt}/${bt}goal${bt}) is ONE object covering **everything staged since the last commit** — not one per edit_node call, one per commit — and gets recorded against every node that commit touches.`,
-    `4. ${bt}feedback${bt} is the third required field: 5 strings (${bt}graph_problems${bt}, ${bt}edge_problems${bt}, ${bt}tools_used${bt}, ${bt}dropped_and_why${bt}, ${bt}devsmind_better${bt}). Every field must be ANSWERED, but none has to contain a problem — ${bt}"none"${bt} is a valid answer everywhere. It's the only channel that improves DevsMind instead of leaving it frozen at index time, so before writing "none", actually check whether one moment in THIS task took an extra tool call, a guess, a re-read, or a wrong turn; one specific sentence with evidence (${bt}file:line${bt}) beats a reflexive "none". Never invent an issue to fill a field. ${bt}graph_problems${bt}/${bt}edge_problems${bt} feed a local graph-fix queue (${bt}read_graph_feedback${bt}); the rest feed a product log. Both are local and gitignored — ${bt}devsmind feedback${bt} shows them.`,
-    `5. Every brand-NEW node needs a ${bt}description${bt} before ${bt}commit_changes${bt} will accept it — 1-3 sentences of what it does and its domain concepts, in words a teammate might search by later, never a restatement of the name. If an ${bt}edit_node${bt} call creates exactly ONE new function/class, pass ${bt}description${bt} on that same call — you already know what you just wrote, so there's no reason to wait for the refusal and a separate round trip. Otherwise call ${bt}add_description${bt} for whatever ${bt}edit_node${bt} traced as new (its response tells you when). Write it while the code is still in front of you — commit_changes will otherwise refuse the batch and hand back exactly which node_ids need one.`,
-    `6. Don't print node/history data as text instead of calling the tools — that looks done but records nothing.`,
-    `7. If a file already got edited WITHOUT ${bt}edit_node${bt} — your own editor's edit tool got used by mistake, or you're catching up on work from before this session — don't leave it unstaged. Call ${bt}stage_change${bt} with the same ${bt}old_string${bt}/${bt}new_string${bt} shape; it traces and stages the already-applied change without touching the file.`,
-    `8. ${bt}commit_changes${bt} is NOT git — it never runs ${bt}git add${bt}/${bt}git commit${bt}/${bt}git push${bt} or any other git command, and never touches the actual git history, only DevsMind's own local graph. Calling it successfully is not a cue to now run a real git commit yourself: never ${bt}git add${bt}/${bt}git commit${bt}/${bt}git push${bt} on your own initiative just because ${bt}commit_changes${bt} succeeded or a task feels finished — that stays the developer's decision, made separately, only when explicitly asked for.`
+    `1. ${bt}edit_node${bt} is the write path for **every** file, never your own edit/write tool. Writes landing outside any function (markup, config, imports) get no graph node, which is expected; the whole-file change is still staged so ${bt}commit_changes${bt} makes it revertable.`,
+    `2. Call ${bt}commit_changes${bt} at natural checkpoints, not once at the end. ${bt}edit_node${bt} only stages. Always commit before ending a turn with anything staged.`,
+    `3. ${commitContract}`,
+    `4. Before writing ${bt}"none"${bt} in ${bt}feedback${bt}, actually check; one specific sentence with evidence (${bt}file:line${bt}) beats a reflexive "none". Never invent an issue. It is the only channel that improves DevsMind; ${bt}add_feedback${bt} sends the same 5 categories on demand.`,
+    `5. Don't print node/history data as text instead of calling the tools; that records nothing.`,
+    `6. ${notGit}`,
   ];
 
   const lines = [
@@ -94,34 +95,32 @@ export function buildRule(config: DevMindConfig, devmindDir: string, workflowSty
     `**DEVMIND_PATH**: ${bt}${safeDevmindDir}${bt}`,
     `**Project**: ${projectName} | **Mode**: ${mode} | **Tech**: ${techLine} | **Session timeout**: ${timeout}min`,
     `**Repos**: ${repoLines}`,
-    `**Workflow style**: ${manual ? 'MANUAL — DevsMind is for search & context here; the AI stages/commits only when explicitly asked' : 'AUTOMATIC — the AI stages, commits, and tracks every edit without being asked'}`,
+    `**Workflow style**: ${manual ? 'MANUAL: DevsMind is for search & context; stage/commit only when explicitly asked' : 'AUTOMATIC: stage, commit and track every edit without being asked'}`,
     notes ? `**Notes**: ${notes}` : '',
     '',
     '### What This Is',
     '',
     whatThisIs,
     '',
-    `**${bt}session_id${bt} is required on every DevsMind WRITE** (${bt}edit_node${bt}, ${bt}commit_changes${bt}, and the other mutating calls) **— read-only tools do not need it.** Call ${bt}start_session${bt} before your first write, then pass the ${bt}session_id${bt} it returns on every later write this conversation — every response echoes it back so it stays in front of you even across a long or compacted conversation. Never invent one. This applies in both workflow styles — it's the protocol, not a recording obligation. ${bt}get_activity_log${bt} additionally accepts ${bt}session_id${bt} as its own OPTIONAL filter ("just this session's activity") — don't pass your own conversation's id there by default, or you'll silently narrow an otherwise-broad query to one session.`,
+    `**${bt}session_id${bt} is required on every DevsMind WRITE** (${bt}edit_node${bt}, ${bt}commit_changes${bt}, the other mutating calls); read-only tools do not need it. Call ${bt}start_session${bt} before your first write and reuse the id it returns for the rest of the conversation (never invent one). ${bt}get_activity_log${bt} also takes ${bt}session_id${bt} as an OPTIONAL filter: don't pass your own by default or you silently narrow the query to one session.`,
     '',
     '### Tool Triggers',
     '',
     '| Situation | Tool |',
     '|-----------|------|',
-    `| **Before your first WRITE this conversation** | ${bt}start_session${bt} — mints a ${bt}session_id${bt}. Every WRITE tool call (not reads) REQUIRES that exact ${bt}session_id${bt}; a write without one errors. On a resumed conversation that already called ${bt}start_session${bt} earlier (visible in the reloaded history), reuse that same id — don't start a new one |`,
-    `| Searching for a module, feature, concept, or code fragment — AND for config/CSS/markup the graph doesn't index | ${bt}search_nodes${bt}, passing ${bt}query${bt} (a natural-language phrase — drives meaning-matching) and/or ${bt}pattern${bt} (a real regex, used exactly as you'd give grep — e.g. an identifier or "item\.liked", not re-escaped or split). Pattern-only skips semantic ranking for exact matches. It answers with ${bt}nodes${bt} (the graph — triage on the ${bt}confidence${bt} and ${bt}relevance${bt} each node now leads with, NOT on which name reads plausibly to you; ${bt}nodes_total${bt} is the true count before the cap) AND ${bt}files${bt} (a real grep of every repo, or just ${bt}path${bt} if scoped; ${bt}files_total${bt} tells you honestly if there's more than the page shown). Lockfiles and build artifacts are excluded by default, so what comes back is real source. An oversized response is trimmed automatically and a ${bt}compacted${bt} field says what was dropped — counts stay exact, and ${bt}compact:false${bt} gets you all of it. Never start with your own grep; retry once with a different pattern/query before giving up on it |`,
-    `| List/discover all nodes for a component or directory | ${bt}list_nodes${bt} — paged. It answers ${bt}{nodes, total, offset}${bt}; ${bt}total${bt} is the true match count and ${bt}nodes${bt} is one page (default 100). A ${bt}truncated${bt} flag plus a ${bt}hint${bt} name the next call — never read a short page as everything. Narrow with ${bt}type${bt}/${bt}file_path${bt} rather than paging a whole repo |`,
-    `| Read the code of ONE function/class | ${bt}get_node_code${bt} — the ONE node-read call, live-parsed, cheaper than opening the file. Already includes ${bt}imports${bt}, ${bt}name${bt}/${bt}type${bt}/${bt}signature${bt}/${bt}description${bt}, up to 20 named callers AND callees per direction (${bt}uses_nodes${bt}/${bt}used_by_nodes${bt}, exact counts even when capped), up to 40 other declarations from the same file (${bt}file_outline${bt}), and up to 3 ${bt}recent_history${bt} summaries — a raw file read shouldn't be needed afterward for any of that |`,
-    `| Trace a flow through MULTIPLE functions | ${bt}get_node_code${bt} with ${bt}graph_depth:3${bt} + ${bt}graph_direction:"out"${bt} + ${bt}graph_code:true${bt} in ONE call — don't chain per-function calls. If some nodes' code didn't fit the budget they're named in ${bt}graph.code_omitted_node_ids${bt}; fetch exactly those, or re-issue with a larger ${bt}graph_code_budget${bt} |`,
-    `| What would break if I change this? | Direct callers are already in ${bt}used_by_nodes${bt} on the plain ${bt}get_node_code${bt} call; for the FULL transitive blast radius add ${bt}graph_depth:2-3${bt} + ${bt}graph_direction:"in"${bt} in that same call |`,
-    `| Before refactoring a function | ${bt}get_node_code${bt} with ${bt}history:"full"${bt} — every revision, with diffable before/after edits |`,
-    `| "What changed recently?" / "which files did you touch?" / everything done for a ticket | ${bt}get_activity_log${bt} — filters compose (${bt}developer${bt}, ${bt}session_id${bt}, ${bt}since_hours${bt}/${bt}since${bt}/${bt}until${bt}, ${bt}requirement_contains${bt}), and every entry lists the actual ${bt}files${bt} that commit touched, plus an ${bt}all_files${bt} union and ${bt}total_matched${bt} (the pre-${bt}limit${bt} count). ${bt}source${bt} defaults to ${bt}"auto"${bt}: the local gitignored log, falling back to shared graph history when it's empty — so a fresh clone still gets an answer |`,
-    `| What did a TEAMMATE change? / anything on a machine that isn't this one | ${bt}get_activity_log${bt} with ${bt}source:"both"${bt} — ${bt}"auto"${bt} stops at the local log the moment it has anything of your own, so it never surfaces other developers' work. Graph-backed entries come with a ${bt}caveats${bt} array (no revert status, ${bt}request${bt} degrades to the reasoning's Requirement) — read it before acting on them |`,
+    `| **Before your first WRITE** | ${bt}start_session${bt}, which mints the ${bt}session_id${bt} writes require. On a resumed conversation reuse the earlier id |`,
+    `| Find a module, feature, concept or code fragment, or config/CSS/markup the graph doesn't index | ${bt}search_nodes${bt} with ${bt}query${bt} (natural language) and/or ${bt}pattern${bt} (a real regex, used exactly as you'd give grep). Returns ${bt}nodes${bt} (triage on ${bt}confidence${bt}/${bt}relevance${bt}, not on a plausible-looking name) and ${bt}files${bt} (a real grep of every repo). ${bt}nodes_total${bt}/${bt}files_total${bt} are exact; a ${bt}compacted${bt} field says what was trimmed (${bt}compact:false${bt} for all). Never start with your own grep; retry once with a different query before giving up |`,
+    `| List everything in a component or directory | ${bt}list_nodes${bt}, paged: ${bt}total${bt} is the true count, a ${bt}hint${bt} names the next call |`,
+    `| Read ONE function/class | ${bt}get_node_code${bt}: imports, named callers/callees, file outline and recent reasoning included, so no raw file read afterward |`,
+    `| Trace a flow, or what breaks if I change this | ${bt}get_node_code${bt} with ${bt}graph_depth${bt} + ${bt}graph_direction${bt}: ${bt}"out"${bt} + ${bt}graph_code:true${bt} for a whole call flow, ${bt}"in"${bt} at depth 2-3 for the full blast radius. One call, not a chain |`,
+    `| Before refactoring | ${bt}get_node_code${bt} with ${bt}history:"full"${bt}: every revision with diffable edits |`,
+    `| "What changed recently?" / which files did you touch / what did a TEAMMATE change | ${bt}get_activity_log${bt}: every entry lists its ${bt}files${bt}. ${bt}source${bt} defaults to ${bt}"auto"${bt} (local log, falling back to shared history); use ${bt}"both"${bt} for teammates' work |`,
     editRow,
     createRow,
     stageChangeRow,
     commitRow,
     `| Function/class renamed | ${bt}rename_node${bt} |`,
-    `| Function/class removed | ${bt}deprecate_node${bt} (never delete — history is lost otherwise) |`,
+    `| Function/class removed | ${bt}deprecate_node${bt}. Never delete: history is lost |`,
     '',
     recordingHeader,
     '',
@@ -129,30 +128,26 @@ export function buildRule(config: DevMindConfig, devmindDir: string, workflowSty
     '',
     '### Other Rules',
     '',
-    `1. **No external scripts for indexing.** Use ${bt}index_start${bt} / ${bt}index_checkpoint${bt} / ${bt}index_continue${bt} / ${bt}index_complete${bt} natively so progress survives a context reset.`,
-    `2. **Don't pause mid-index** for confirmation — keep going until the workspace is indexed or the context limit is hit.`,
-    `3. **Drift signals** — ${bt}get_node_code${bt} returning ${bt}snapshot_outdated:true${bt} means the graph disagrees with disk. If you're about to edit that node anyway, an ${bt}edit_node${bt} call re-syncs it as a side effect — nothing extra to do. To force a resync with NO real code change, ${bt}edit_node${bt} can't help (it requires ${bt}old_string${bt} to actually differ from ${bt}new_string${bt}) — run ${bt}devsmind reindex${bt} instead (incremental parsing of modified/new files). ${bt}source:"cached"${bt} means the symbol wasn't found (renamed/moved/deleted) — verify, then ${bt}rename_node${bt} or ${bt}deprecate_node${bt}.`,
-    `4. **Before multi-day work**, call ${bt}workflow_list${bt} — a workflow is a named log of how one piece of functionality grew. If a description matches, offer to continue it (${bt}workflow_bind${bt} + ${bt}workflow_get_context${bt}) rather than starting fresh. Binding is local to your session: it never moves or pauses anyone else's. Once bound, ${bt}commit_changes${bt} auto-logs a step — call ${bt}workflow_add_step${bt} only for what a commit can't express, a decision or research finding that changed no code, with its docs via ${bt}doc_paths${bt} (reference a file already in a repo), ${bt}doc_uploads${bt} (COPY an existing file's bytes in — any type, no repo restriction — when it has no on-repo home or must survive the source being deleted), or ${bt}doc_content${bt} (paste text that isn't a file at all).`,
+    `1. **Index natively** with ${bt}index_start${bt}/${bt}index_checkpoint${bt}/${bt}index_continue${bt}/${bt}index_complete${bt}, no external scripts, and don't pause mid-index for confirmation.`,
+    `2. **Drift:** ${bt}snapshot_outdated:true${bt} from ${bt}get_node_code${bt} means the graph disagrees with disk; an ${bt}edit_node${bt} on that node resyncs it, otherwise run ${bt}devsmind reindex${bt}. ${bt}source:"cached"${bt} means the symbol wasn't found: verify, then ${bt}rename_node${bt} or ${bt}deprecate_node${bt}.`,
+    `3. **Before multi-day work** call ${bt}workflow_list${bt}; if one matches, offer to continue it (${bt}workflow_bind${bt} then ${bt}workflow_get_context${bt}). Binding is local to your session. Once bound, ${bt}commit_changes${bt} logs steps itself; use ${bt}workflow_add_step${bt} only for a decision or research finding that changed no code (docs via ${bt}doc_paths${bt}, ${bt}doc_uploads${bt} or ${bt}doc_content${bt}). ${bt}workflow_sync${bt} attaches earlier work, previewing until ${bt}confirm:true${bt}.`,
+    `4. **Maintenance:** ${bt}analyze_graph${bt} is a zero-token health check (${bt}fix:true${bt} for safe fixes). The graph-feedback loop is ${bt}read_graph_feedback${bt}, re-verify, fix (${bt}record_alias${bt}/${bt}link_nodes${bt}/${bt}merge_nodes${bt}/${bt}split_node${bt}/${bt}create_missing_node${bt}), then ${bt}mark_graph_feedback_processed${bt}, even for reports that don't apply, or the queue never drains. ${bt}get_visualizer_url${bt} opens the graph view.`,
     '',
-    '### A Few Less-Obvious Tools',
-    '',
-    `Every tool's own name/schema/description is already sent to you automatically by the MCP server — no need to list them all here. Just the ones worth knowing about ahead of time:`,
-    '',
-    `* ${bt}recheck_graph${bt} / ${bt}analyze_graph${bt} — maintenance, not day-to-day lookup. ${bt}analyze_graph${bt} is a zero-token local health check (god entities, cycles, dangling edges, renames, AND orphaned nodes — no separate orphan lookup needed); ${bt}fix:true${bt} applies only the safe automatic fixes.`,
-    `* Want the decision but don't know which node made it? ${bt}search_nodes${bt} already searches reasoning text from EVERY history revision, not just the latest — no separate decisions-only search needed (${bt}get_node_code${bt} ${bt}history:"full"${bt} is the same thing scoped to one node you've already found).`,
-    `* ${bt}add_feedback${bt} — the same 5 ${bt}commit_changes${bt} feedback categories, callable ON DEMAND instead of waiting for a commit: pass any one or more, nothing required. Evidence (${bt}file${bt} + ${bt}snippet${bt}) on a ${bt}graph_problem${bt}/${bt}edge_problem${bt} is verified fresh at call time — a fabricated or stale claim is rejected outright, not silently downgraded.`,
-    `* ${bt}read_graph_feedback${bt} → fix → ${bt}mark_graph_feedback_processed${bt} — the supervised loop that drains what ${bt}commit_changes${bt}'/${bt}add_feedback${bt}'s ${bt}graph_problem${bt}/${bt}edge_problem${bt} collected, clustered by frequency. Re-verify each cluster against current code first: ${bt}confidence${bt} is a priority signal, not proof, and reports go stale. Mark entries processed even when you decide they don't apply, or the queue never drains. ${bt}flag_indexer_rule${bt} notes a recurring pattern worth turning into a permanent detector.`,
-    `* ${bt}record_alias${bt} / ${bt}link_nodes${bt} / ${bt}merge_nodes${bt} / ${bt}split_node${bt} / ${bt}create_missing_node${bt} — the structural fixers that loop reaches for: a symbol known by another name, a real connection no AST could prove (dynamic dispatch, generated bindings), a node wrongly split or lumped together, something the indexer never picked up.`,
-    `* ${bt}get_visualizer_url${bt} — the local URL for the interactive graph view: one page, Chat + Graph tabs, with a 2D/3D toggle inside the Graph tab (same thing ${bt}devsmind view${bt} opens).`,
-    `* ${bt}workflow_get_context${bt} — call right after ${bt}workflow_bind${bt} to read that workflow's story: its steps in order, each with the reasoning and the nodes it touched. Paged, so ${bt}last_n${bt} is how you catch up on a long one.`,
-    `* ${bt}workflow_sync${bt} — attaches work you already did onto a workflow, for when you were unbound or on the wrong one. Reads your local activity log and previews first; it only writes when you pass ${bt}confirm:true${bt}, and re-running it is a no-op.`,
-    `* ${bt}workflow_archive${bt} — retires a workflow from the list without deleting anything. Deliberately not "complete": a feature is never finished, it just stops being worked on.`,
-    `* ${bt}workflow_remove_step${bt} — deletes ONE step that should not have been recorded (a duplicate from a retry, or one on the wrong workflow), and any artifacts filed under it. Unlike ${bt}workflow_archive${bt} this is a real delete with no undo — use it to correct a mistake just made, not to edit settled history.`,
-    `* ${bt}workflow_delete${bt} — deletes an EMPTY workflow (a mistyped name, a duplicate created because the first was not found). Refuses the moment a workflow has any steps or artifacts, since that record is the point of having made it; archive those instead.`,
-    `* ${bt}workflow_import${bt} — turns existing flow/architecture docs into workflows.`,
+    `Every tool's own description lists its parameters and limits.`,
   ];
 
   return lines.filter(l => l !== null).join('\n');
+}
+
+/** Keep always-loaded Codex/Gemini rules small; the full rule lives in one shared Markdown file. */
+function buildSharedRulePointer(ruleFile: string, workflowStyle: WorkflowStyle): string {
+  const lines = [
+    `For DevsMind work, read and follow \`${ruleFile.replace(/\\/g, '/')}\`. That file is the single full DevsMind rule shared by Codex and Gemini. Keep DevsMind instructions there; do not duplicate them in this file.`,
+  ];
+  if (workflowStyle === 'manual') {
+    lines.push('', 'Project policy: DevsMind writes are manual. Search and read freely, but stage or commit graph changes only when the developer explicitly asks.');
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -242,6 +237,12 @@ export async function handleRule(opts: { path?: string; print?: boolean; manual?
     const target = await pickTarget();
     const workflowStyle: WorkflowStyle = opts.manual ? 'manual' : 'automatic';
     const rule = buildRule(config, devmindDir, workflowStyle);
+    let sharedRulePath = target.rules.sharedRuleFile
+      ? resolveScopeFile(target.rules.sharedRuleFile, 'project', workspaceRoot)
+      : null;
+    const agentRule = sharedRulePath
+      ? buildSharedRulePointer(target.rules.sharedRuleFile!, workflowStyle)
+      : rule;
     const kickoff = buildKickoffPrompt(workflowStyle);
     const mode = await pickMode();
 
@@ -251,12 +252,18 @@ export async function handleRule(opts: { path?: string; print?: boolean; manual?
       const noteFrontmatter = target.rules.wrap
         ? '\n    (this file needs frontmatter — automatic mode adds it for you)'
         : '';
-      printRuleBanner(
-        rule,
-        kickoff,
-        projectName,
-        ` 💡 Save this to ${file.replace(/\\/g, '/')}${noteFrontmatter}`
-      );
+      if (sharedRulePath) {
+        printRuleBanner(rule, kickoff, projectName, ` 💡 Save this full rule to ${sharedRulePath.replace(/\\/g, '/')}.`);
+        console.log(`AGENTS.md pointer to add to ${file.replace(/\\/g, '/')}${noteFrontmatter}:\n`);
+        console.log(mergeRuleFile(file, agentRule, target.rules.style, target.rules.wrap).preview);
+      } else {
+        printRuleBanner(
+          rule,
+          kickoff,
+          projectName,
+          ` 💡 Save this to ${file.replace(/\\/g, '/')}${noteFrontmatter}`
+        );
+      }
       return;
     }
 
@@ -266,19 +273,30 @@ export async function handleRule(opts: { path?: string; print?: boolean; manual?
     if (scope.scope === 'project') {
       const base = await pickDirectory(workspaceRoot, `Where is the project root for ${target.label}?`);
       filePath = path.join(base, resolveOsPath(scope.file));
+      if (target.rules.sharedRuleFile) {
+        sharedRulePath = path.join(base, resolveOsPath(target.rules.sharedRuleFile));
+      }
     } else {
       filePath = resolveScopeFile(scope.file, 'global', workspaceRoot);
     }
 
-    const merged = mergeRuleFile(filePath, rule, target.rules.style, target.rules.wrap);
-    if (merged.error) {
-      console.error(`\n❌ ${merged.error}`);
+    const merged = mergeRuleFile(filePath, agentRule, target.rules.style, target.rules.wrap);
+    const sharedMerged = sharedRulePath
+      ? mergeRuleFile(sharedRulePath, rule, 'standalone')
+      : null;
+    const mergeError = merged.error ?? sharedMerged?.error;
+    if (mergeError) {
+      console.error(`\n❌ ${mergeError}`);
       return;
     }
 
     console.log(`\n📝 Target: ${filePath.replace(/\\/g, '/')}  (${merged.existed ? (target.rules.style === 'append-section' ? 'merge DevsMind block into existing' : 'overwrite dedicated file') : 'create new'})`);
     console.log(`\n${target.rules.style === 'append-section' ? 'The DevsMind block to be written:' : 'File contents to be written:'}\n`);
     console.log(merged.preview.split('\n').map(l => '   ' + l).join('\n'));
+    if (sharedMerged && sharedRulePath) {
+      console.log(`\n📝 Full DevsMind rule: ${sharedRulePath.replace(/\\/g, '/')} (${sharedMerged.existed ? 'overwrite generated rule' : 'create new'})`);
+      console.log(sharedMerged.preview.split('\n').map(l => '   ' + l).join('\n'));
+    }
 
     const ok = await confirmPrompt('Write this?', true);
     if (!ok) {
@@ -286,8 +304,9 @@ export async function handleRule(opts: { path?: string; print?: boolean; manual?
       return;
     }
 
+    if (sharedMerged && sharedRulePath) writeConfigFile(sharedRulePath, sharedMerged.content);
     writeConfigFile(filePath, merged.content);
-    console.log(`\n✅ DevsMind rule written to ${filePath.replace(/\\/g, '/')} for ${target.label}.\n`);
+    console.log(`\n✅ DevsMind rule written to ${filePath.replace(/\\/g, '/')} for ${target.label}.${sharedRulePath ? ` Full rule: ${sharedRulePath.replace(/\\/g, '/')}.` : ''}\n`);
     printKickoffBlock(kickoff);
   } catch (err) {
     if (err instanceof CancelledError) {

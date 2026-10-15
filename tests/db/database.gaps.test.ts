@@ -852,6 +852,15 @@ describe('DevMindDatabase — coverage gaps', () => {
       }
     });
 
+    it('normalizes separators in an already portable repo-relative path', () => {
+      const fx = makeFixture();
+      try {
+        expect(fx.db.toRepoRelativePath('{app}/src\\nested\\file.ts')).toBe('{app}/src/nested/file.ts');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
     it('clampToRoot blocks a resolved path that escapes its root and warns, falling back to the root itself', () => {
       const fx = makeFixture();
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -881,6 +890,18 @@ describe('DevMindDatabase — coverage gaps', () => {
         const resolved = fx.db.toAbsolutePath('some/random/path.txt');
         expect(resolved.toLowerCase()).toBe(path.join(fx.devmindPath, 'some', 'random', 'path.txt').toLowerCase());
       } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('drops a workspace-root fallback when another comma-separated path resolves to a file', () => {
+      const fx = makeFixture();
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const resolved = fx.db.toAbsolutePath(`../../.., {app}/foo.ts`);
+        expect(resolved.toLowerCase()).toBe(repoFile(fx, 'foo.ts').toLowerCase());
+      } finally {
+        warnSpy.mockRestore();
         fx.cleanup();
       }
     });
@@ -2339,6 +2360,22 @@ describe('DevMindDatabase — coverage gaps', () => {
       try {
         expect(() => fx.db.writeGraphToDisk('')).not.toThrow();
         expect(() => fx.db.writeVectorsToDisk('')).not.toThrow();
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('splits comma-separated file paths and writes each graph JSON file', () => {
+      const fx = makeFixture();
+      try {
+        const first = repoFile(fx, 'first.ts');
+        const second = repoFile(fx, 'second.ts');
+        fx.db.upsertNode({ id: '{app}/first.ts#first', type: 'function', name: 'first', file_path: first });
+        fx.db.upsertNode({ id: '{app}/second.ts#second', type: 'function', name: 'second', file_path: second });
+
+        expect(() => fx.db.writeGraphToDisk(`${first}, ${second}`)).not.toThrow();
+        expect(fs.existsSync(path.join(fx.devmindPath, 'graph', 'app', 'first.json'))).toBe(true);
+        expect(fs.existsSync(path.join(fx.devmindPath, 'graph', 'app', 'second.json'))).toBe(true);
       } finally {
         fx.cleanup();
       }

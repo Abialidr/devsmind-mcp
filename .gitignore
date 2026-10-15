@@ -61,5 +61,12 @@ yarn.lock
 .claude
 .agents
 
+# Keep other agent-local files ignored, but version the shared DevsMind rule.
+!.agents/
+.agents/*
+!.agents/rules/
+.agents/rules/*
+!.agents/rules/devsmind.md
+
 Burhani Centenary Park, SOW.md
 Burhani Centenary Park, SOW.pdf

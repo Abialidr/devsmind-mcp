@@ -55,6 +55,7 @@ const SECTIONS: { key: keyof AnalysisReport['summary']; label: string; fixable: 
   { key: 'renamed_files', label: 'Renamed files (git-detected)', fixable: true },
   { key: 'untracked_files', label: 'Git-tracked files with zero graph nodes', fixable: false },
   { key: 'stray_output_dirs', label: 'Stray .devmind output directories blocking sync', fixable: true },
+  { key: 'unsafe_output_files', label: 'Generated files with names Windows cannot check out', fixable: true },
 ];
 
 const MAX_ROWS = 20;
@@ -121,6 +122,8 @@ function formatRow(key: string, row: any): string {
       return `[${row.repo}] ${row.file}`;
     case 'stray_output_dirs':
       return `${row.kind} — ${row.target} (blocked writes for ${row.file_path})`;
+    case 'unsafe_output_files':
+      return `${row.kind} — ${row.file}`;
     default:
       return JSON.stringify(row);
   }

@@ -34,6 +34,36 @@ function readJson(devDir: string, sub: string, name: string): any {
   return JSON.parse(fs.readFileSync(path.join(devDir, sub, name), 'utf-8'));
 }
 
+/**
+ * Builds a commit whose tree holds exactly `paths` (each an empty-JSON blob) using only plumbing, so
+ * paths no Windows checkout could create (`a*b`, `App/` beside `app/`, ...) still land in git's
+ * object store — which is how a Linux teammate puts them there in the first place. Returns the
+ * commit sha, optionally parented.
+ */
+function commitWithPaths(repo: string, paths: string[], parent?: string): string {
+  const run = (cmd: string, input?: string) => execSync(cmd, { cwd: repo, encoding: 'utf-8', input }).trim();
+  const blob = run('git hash-object -w --stdin', '{}');
+  interface Node { files: string[]; dirs: Map<string, Node> }
+  const root: Node = { files: [], dirs: new Map() };
+  for (const p of paths) {
+    const segs = p.split('/');
+    let cur = root;
+    for (const d of segs.slice(0, -1)) {
+      if (!cur.dirs.has(d)) cur.dirs.set(d, { files: [], dirs: new Map() });
+      cur = cur.dirs.get(d)!;
+    }
+    cur.files.push(segs[segs.length - 1]);
+  }
+  const write = (n: Node): string => {
+    const lines = [
+      ...n.files.map(f => `100644 blob ${blob}\t${f}\n`),
+      ...[...n.dirs].map(([name, child]) => `040000 tree ${write(child)}\t${name}\n`),
+    ];
+    return run('git mktree', lines.join(''));
+  };
+  return run(`git commit-tree ${write(root)}${parent ? ` -p ${parent}` : ''} -m "crafted"`);
+}
+
 /** A realistically-shaped graph JSON — the validator checks for exactly these fields. */
 function graphFile(filePath: string, nodes: { id: string; deprecated?: number }[]) {
   return {
@@ -548,6 +578,245 @@ describe('devsmind-branch — git-sync over real git', () => {
       expect(result.conflicts).toBeUndefined();
     } finally {
       spawnSyncSpy.mockRestore();
+    }
+  });
+
+  it('isWindowsUnsafePath flags what Windows cannot check out and leaves ordinary brain paths alone', () => {
+    const { isWindowsUnsafePath } = require('../../src/utils/devsmind-branch');
+    for (const bad of [
+      '.devsmind/vectors/a:b.json',
+      '.devsmind/vectors/wild*card.json',
+      '.devsmind/vectors/q?.json',
+      '.devsmind/vectors/dashboard.ts, /home/u/app/x.json',
+      '.devsmind/vectors/con.json',
+      '.devsmind/vectors/NUL',
+      '.devsmind/vectors/trailing.',
+      '.devsmind/vectors/trailing ',
+      '.devsmind/vectors/back\\slash.json',
+      `.devsmind/vectors/${'d/'.repeat(130)}x.json`,
+    ]) {
+      expect(isWindowsUnsafePath(bad)).toBe(true);
+    }
+    for (const ok of [
+      '.devsmind/vectors/app/(admin)/orders/page.json',
+      '.devsmind/graph/harrir-web/app/[id]/page.json',
+      '.devsmind/vectors/app/a,b.json',
+      '.devsmind/history/0f1e2d3c-0000-4000-8000-000000000000.json',
+    ]) {
+      expect(isWindowsUnsafePath(ok)).toBe(false);
+    }
+  });
+
+  it('never publishes a local file whose name Windows cannot check out, and still publishes the rest', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'good.json', graphFile('{app}/good.ts', [{ id: 'good' }]));
+    writeJson(devA, 'vectors', 'bad.ts, bad.json', { file_path: '{app}/bad.ts', vectors: {} });
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = gitSyncDevsmindBranch(devA, 'seed with one unsafe local file');
+      expect(result.status).toBe('pushed');
+    } finally {
+      errSpy.mockRestore();
+    }
+    const tree = sh(repoA, 'git ls-tree -r --name-only origin/devsmind');
+    expect(tree).toContain('.devsmind/graph/good.json');
+    expect(tree).not.toContain('bad.ts');
+  });
+
+  it('blocks BEFORE any checkout, naming the exact unsafe paths, when the remote tip already holds one', () => {
+    const { gitSyncDevsmindBranch, removeRemoteBranchPaths } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    gitSyncDevsmindBranch(devA, 'seed');
+
+    // Plumbing-only: `update-index`/checkout would reject or fail on these names on Windows, but
+    // object storage doesn't care — which is exactly how a teammate's machine got them on the branch.
+    const run = (cmd: string, input?: string) => execSync(cmd, { cwd: repoA, encoding: 'utf-8', input }).trim();
+    const blob = run('git hash-object -w --stdin', '{}');
+    const vecTree = run('git mktree', `100644 blob ${blob}\tweird*name.json\n100644 blob ${blob}\tfine.json\n`);
+    const devTree = run('git mktree', `040000 tree ${vecTree}\tvectors\n`);
+    const rootTree = run('git mktree', `040000 tree ${devTree}\t.devsmind\n`);
+    const commit = run(`git commit-tree ${rootTree} -p origin/devsmind -m "teammate pushed an unsafe path"`);
+    run(`git push -q origin ${commit}:refs/heads/devsmind`);
+
+    const result = gitSyncDevsmindBranch(devA, 'sync against a poisoned remote');
+    expect(result.status).toBe('blocked_on_remote_paths');
+    expect(result.blockedPaths).toEqual(['.devsmind/vectors/weird*name.json']);
+    expect(result.worktree).toBeUndefined();
+
+    // The literal pathspec removes exactly that file — the `*` must not behave as a glob.
+    const repair = removeRemoteBranchPaths(devA, result.blockedPaths);
+    expect(repair.removed).toEqual(['.devsmind/vectors/weird*name.json']);
+    expect(run('git ls-tree -r --name-only origin/devsmind')).toContain('.devsmind/vectors/fine.json');
+
+    expect(gitSyncDevsmindBranch(devA, 'sync after the repair').status).not.toBe('blocked_on_remote_paths');
+  });
+
+  // Every shape of unsafe name, plus a genuine case-collision pair, committed to the remote the only
+  // way possible on Windows (plumbing). Proves the scan finds them all, and that the repair removes
+  // exactly the stray ones — in particular that removing `foo.json` does NOT take `Foo.json` with
+  // it, which core.ignorecase=true (the Windows default) would otherwise do.
+  it('finds every unsafe shape and case-collision stray on the remote, and repairs exactly those', () => {
+    const { gitSyncDevsmindBranch, removeRemoteBranchPaths } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    gitSyncDevsmindBranch(devA, 'seed');
+
+    const run = (cmd: string, input?: string) => execSync(cmd, { cwd: repoA, encoding: 'utf-8', input }).trim();
+    const blob = run('git hash-object -w --stdin', '{}');
+    const unsafeNames = ['a:b.json', 'q?.json', 'wild*.json', 'con.json', 'trailing.', 'back\\slash.json', 'x.ts, y.json'];
+    const entries = [...unsafeNames, 'Foo.json', 'foo.json', 'fine.json']
+      .map(n => `100644 blob ${blob}\t${n}\n`).join('');
+    const vecTree = run('git mktree', entries);
+    const devTree = run('git mktree', `040000 tree ${vecTree}\tvectors\n`);
+    const rootTree = run('git mktree', `040000 tree ${devTree}\t.devsmind\n`);
+    const commit = run(`git commit-tree ${rootTree} -p origin/devsmind -m "poisoned"`);
+    run(`git push -q origin ${commit}:refs/heads/devsmind`);
+
+    const result = gitSyncDevsmindBranch(devA, 'sync against a poisoned remote');
+    expect(result.status).toBe('blocked_on_remote_paths');
+    const expectedBlocked = [...unsafeNames, 'foo.json'].map(n => `.devsmind/vectors/${n}`).sort();
+    expect([...result.blockedPaths].sort()).toEqual(expectedBlocked);
+
+    const repair = removeRemoteBranchPaths(devA, result.blockedPaths);
+    expect([...repair.removed].sort()).toEqual(expectedBlocked);
+    expect(repair.notFound).toEqual([]);
+
+    const left = run('git ls-tree -r --name-only origin/devsmind').split('\n').sort();
+    expect(left).toEqual(['.devsmind/vectors/Foo.json', '.devsmind/vectors/fine.json']);
+  });
+
+  it('catches directory-level clashes and another machine\'s stripped absolute path on the remote — Windows-safe names the character rules cannot see', () => {
+    const { gitSyncDevsmindBranch, removeRemoteBranchPaths } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    gitSyncDevsmindBranch(devA, 'seed');
+
+    const commit = commitWithPaths(repoA, [
+      '.devsmind/vectors/App/x.json',           // directory spelled two ways: App wins,
+      '.devsmind/vectors/app/y.json',           //   everything under `app/` is the stray
+      '.devsmind/vectors/app/deep/z.json',
+      '.devsmind/vectors/foo',                  // a file named like a directory: the file loses
+      '.devsmind/vectors/Foo/bar.json',
+      '.devsmind/vectors/home/u/app/w.json',    // `/home/u/app/w.ts` with its leading slash stripped
+      '.devsmind/graph/Users/me/v.json',
+      '.devsmind/vectors/fine/ok.json',
+    ], 'origin/devsmind');
+    execSync(`git push -q origin ${commit}:refs/heads/devsmind`, { cwd: repoA });
+
+    const result = gitSyncDevsmindBranch(devA, 'sync against a poisoned remote');
+    expect(result.status).toBe('blocked_on_remote_paths');
+    expect([...result.blockedPaths].sort()).toEqual([
+      '.devsmind/graph/Users/me/v.json',
+      '.devsmind/vectors/app/deep/z.json',
+      '.devsmind/vectors/app/y.json',
+      '.devsmind/vectors/foo',
+      '.devsmind/vectors/home/u/app/w.json',
+    ]);
+
+    removeRemoteBranchPaths(devA, result.blockedPaths);
+    const left = sh(repoA, 'git ls-tree -r --name-only origin/devsmind').split('\n').sort();
+    expect(left).toEqual(['.devsmind/vectors/App/x.json', '.devsmind/vectors/Foo/bar.json', '.devsmind/vectors/fine/ok.json']);
+  });
+
+  it('does not mistake a repo that genuinely carries an OS-root name for another machine\'s path', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    fs.writeFileSync(path.join(devA, 'config.json'), JSON.stringify({ repos: [{ name: 'home' }] }));
+    writeJson(devA, 'graph', 'foo.json', graphFile('{home}/foo.ts', [{ id: 'foo' }]));
+    gitSyncDevsmindBranch(devA, 'seed');
+    const commit = commitWithPaths(repoA, ['.devsmind/vectors/home/app/legit.json'], 'origin/devsmind');
+    execSync(`git push -q origin ${commit}:refs/heads/devsmind`, { cwd: repoA });
+    expect(gitSyncDevsmindBranch(devA, 'sync').status).not.toBe('blocked_on_remote_paths');
+  });
+
+  it('cleans an unsafe path off this machine\'s own devsmind branch before it can break the checkout, without asking and without touching the remote', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    // A LOCAL-ONLY devsmind branch already holding paths that cannot be checked out here. The remote
+    // has no devsmind branch at all, so the remote scan has nothing to say — only the local scan can.
+    const commit = commitWithPaths(repoA, [
+      '.devsmind/vectors/poison*.json',
+      '.devsmind/vectors/Dup.json',
+      '.devsmind/vectors/dup.json',
+      '.devsmind/vectors/fine.json',
+    ]);
+    execSync(`git update-ref refs/heads/devsmind ${commit}`, { cwd: repoA });
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let result: any;
+    try {
+      result = gitSyncDevsmindBranch(devA, 'sync with a dirty local branch');
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(result.status).toBe('pushed');
+
+    const local = sh(repoA, 'git ls-tree -r --name-only devsmind').split('\n');
+    expect(local).not.toContain('.devsmind/vectors/poison*.json');
+    expect(local).not.toContain('.devsmind/vectors/dup.json');
+    expect(local).toContain('.devsmind/vectors/Dup.json');
+    expect(local).toContain('.devsmind/vectors/fine.json');
+    expect(local).toContain('.devsmind/graph/foo.json');
+    const remoteTree = sh(repoA, 'git ls-tree -r --name-only origin/devsmind');
+    expect(remoteTree).not.toContain('poison');
+    expect(remoteTree).not.toContain('dup.json');
+  });
+
+  it('never publishes a file that differs only by case from one the branch already holds', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'Foo.json', graphFile('{app}/Foo.ts', [{ id: 'upper' }]));
+    gitSyncDevsmindBranch(devA, 'seed with Foo.json');
+
+    const { devB } = makeRepoB();
+    writeJson(devB, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'lower' }]));
+    writeJson(devB, 'graph', 'other.json', graphFile('{app}/other.ts', [{ id: 'other' }]));
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      gitSyncDevsmindBranch(devB, 'B syncs a case-only duplicate');
+    } finally {
+      errSpy.mockRestore();
+    }
+    const tree = sh(repoA, 'git fetch -q origin && git ls-tree -r --name-only origin/devsmind').split('\n').sort();
+    expect(tree).toContain('.devsmind/graph/Foo.json');
+    expect(tree).toContain('.devsmind/graph/other.json');
+    expect(tree).not.toContain('.devsmind/graph/foo.json');
+  });
+
+  it('turns core.longpaths on in the local repo config on Windows, and leaves global config alone', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    gitSyncDevsmindBranch(devA, 'seed');
+    const local = (() => { try { return sh(repoA, 'git config --local --get core.longpaths'); } catch { return ''; } })();
+    if (process.platform === 'win32') expect(local).toBe('true');
+    else expect(local).toBe('');
+  });
+
+  it('also recognises git\'s "invalid path" / "unable to create file" failures, not only "Filename too long"', () => {
+    const STDERR = [
+      "error: invalid path '.devsmind/vectors/app/a:b.json'",
+      'error: unable to create file .devsmind/vectors/app/q?.json: Invalid argument',
+    ].join('\n');
+
+    const { spawnSync: realSpawnSync } = require('child_process');
+    const spy = jest.spyOn(require('child_process'), 'spawnSync')
+      .mockImplementation((...callArgs: unknown[]) => {
+        const [cmd, cmdArgs] = callArgs as [string, string[]];
+        if (cmd === 'git' && cmdArgs[0] === 'merge') {
+          return { status: 1, error: undefined, signal: null, stdout: '', stderr: STDERR };
+        }
+        return (realSpawnSync as (...a: unknown[]) => unknown)(...callArgs);
+      });
+    jest.resetModules();
+    try {
+      const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+      const { devB } = makeRepoB();
+      writeJson(devB, 'graph', 'bar.json', graphFile('{app}/bar.ts', [{ id: 'bar' }]));
+      const result = gitSyncDevsmindBranch(devB, 'B syncs');
+      expect(result.status).toBe('blocked_on_remote_paths');
+      expect(result.blockedPaths).toEqual(
+        expect.arrayContaining(['.devsmind/vectors/app/a:b.json', '.devsmind/vectors/app/q?.json'])
+      );
+    } finally {
+      spy.mockRestore();
     }
   });
 

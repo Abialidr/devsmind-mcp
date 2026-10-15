@@ -211,9 +211,15 @@ describe('sendPrompt', () => {
   });
 
   it('gemini: malformed JSON body is handled via safeJsonParse without throwing (falls back to "")', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     mockMakeHttpRequest.mockResolvedValue('not json at all {{{');
     const creds: LlmCredentials = { provider: 'gemini', model: 'gemini-2.0-flash', apiKey: 'k1' };
-    await expect(sendPrompt(creds, 'sys', 'user')).resolves.toBe('');
+    try {
+      await expect(sendPrompt(creds, 'sys', 'user')).resolves.toBe('');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[JSON Parse Warning]'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('vertex: uses a raw vertexToken directly (no getVertexTokenCached call) and builds the aiplatform URL', async () => {

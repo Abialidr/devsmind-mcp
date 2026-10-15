@@ -97,10 +97,12 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     const SESSION_EXEMPT_READS = [
       'list_nodes', 'get_node_code', 'get_node_history', 'get_node_graph', 'search_nodes',
       'search_decisions', 'get_orphaned_nodes', 'get_visualizer_url', 'read_graph_feedback',
-      'workflow_get_context', 'get_activity_log'
-      // `devsmind_git_sync` is NOT here: it commits, merges and pushes, so it's a write and
-      // carries the same session_id bar as commit_changes. The old read-only
-      // `pull_devsmind_branch` was exempt, but syncing is one always-writing operation now.
+      'workflow_get_context', 'get_activity_log',
+      // `devsmind_git_sync` is the one deliberate non-read here. It commits, merges and pushes the
+      // shared branch, but a session exists to tie graph EDITS to the local Activity log for
+      // revert, and a git sync neither records an edit nor appears in that log (its handler never
+      // reads the id), so the gate bought nothing and cost a start_session round trip.
+      'devsmind_git_sync'
     ];
 
     it('write tools require session_id; read-only tools do not', async () => {
@@ -2050,7 +2052,22 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       execSync('git commit -q -m init', { cwd: fx.root });
     }
 
-    it('requires session_id and surfaces a clear error when .devsmind is not inside a git repo', async () => {
+    it('needs no session_id, and surfaces a clear error when .devsmind is not inside a git repo', async () => {
+      // No start_session: the error must be the git one, not "session_id is required".
+      const { isError, textBlocks } = await callTool(harness.client, 'devsmind_git_sync', {
+        devmind_path: fx.devmindPath, message: 'test'
+      });
+      expect(isError).toBe(true);
+      const text = textBlocks.join(' ');
+      expect(text).toMatch(/not inside a git repository/);
+      expect(text).not.toMatch(/session_id is required/);
+    });
+
+    it('does not advertise session_id as required, but still accepts one from a client that sends it anyway', async () => {
+      const { tools } = await harness.client.listTools();
+      const schema = tools.find(t => t.name === 'devsmind_git_sync')!.inputSchema as { required?: string[] };
+      expect(schema.required ?? []).not.toContain('session_id');
+
       const { parsed: session } = await callToolJson(harness.client, 'start_session', { devmind_path: fx.devmindPath }) as { parsed: { session_id: string } };
       const { isError, textBlocks } = await callTool(harness.client, 'devsmind_git_sync', {
         devmind_path: fx.devmindPath, session_id: session.session_id, message: 'test'
@@ -2078,10 +2095,10 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
     it('flushes brain.db to disk, commits onto the devsmind branch, and is a clean no-op on a second run', async () => {
       gitInitFixtureRoot();
       await stageAndCommit(fx, [{ node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: 'export function greet() { return 1; }', name: 'greet', type: 'function' }]);
-      const { parsed: session } = await callToolJson(harness.client, 'start_session', { devmind_path: fx.devmindPath }) as { parsed: { session_id: string } };
 
+      // Deliberately no session_id on either call: a git sync needs none.
       const first = await callToolJson(harness.client, 'devsmind_git_sync', {
-        devmind_path: fx.devmindPath, session_id: session.session_id, message: 'first sync'
+        devmind_path: fx.devmindPath, message: 'first sync'
       }) as { isError: boolean; parsed: { status: string; branch: string; counts: { nodes: number } } };
       expect(first.isError).toBe(false);
       expect(first.parsed.status).toBe('committed_local_only'); // no remote configured in this fixture
@@ -2098,7 +2115,7 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       expect(onBranch).toMatch(`${brainDirName}/graph/`);
 
       const second = await callToolJson(harness.client, 'devsmind_git_sync', {
-        devmind_path: fx.devmindPath, session_id: session.session_id, message: 'nothing changed'
+        devmind_path: fx.devmindPath, message: 'nothing changed'
       }) as { isError: boolean; parsed: { status: string } };
       expect(second.isError).toBe(false);
       expect(second.parsed.status).toBe('nothing_to_do');

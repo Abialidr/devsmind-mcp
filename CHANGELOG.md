@@ -2,6 +2,39 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
+## Unreleased - terse reply style, and path-safety hardening
+
+### Terse replies (`devsmind style`)
+- **New `devsmind style [normal|lite|full]`** - makes your agent's chat replies shorter to save tokens. `full` is "caveman" (fragments, no articles, answer first); `lite` just cuts filler and hedging. Off by default; `on`/`off`/`caveman` work as aliases.
+- **Rides on the handshake DevsMind already sends**, so there is no rule or skill file to rewrite and a change reaches the next connection. With it off, the instructions are byte-for-byte what they were.
+- **Personal, not shared.** Stored as `DEVSMIND_RESPONSE_STYLE` in the brain's gitignored `.env` (the process environment overrides it), never in the committed `config.json`, so one developer's preference cannot change how a teammate's agent talks.
+- **Shortens chat only.** Code, commands, paths and error text stay exact, and so does everything written into the shared graph (node `description`, `commit_changes` `message`/`reasoning`/`feedback`, workflow steps), since teammates and future agents search and read those.
+
+- **Harder to miss.** The style note now opens with a bold MANDATORY line ("every reply, starting with the first, even when the user asks for a brief, report or summary"), after one agent read the note and still wrote a long first reply. While a style is on, every tool result also ends with a one-line bold reminder (`**TERSE REPLY (full): ...**`) so the instruction is the last thing read before the reply is written. Nothing is added when the style is off.
+
+### Smaller prompts (less token use per session)
+- **The MCP handshake instructions shrank from ~11,000 to ~2,500 characters.** It now states only the contract (session, search, read, write with `edit_node`, the `commit_changes` requirements, "not git", rename/deprecate, workflows) and points at each tool's own description for parameters and limits, instead of restating them. Short enough to survive clients that truncate server instructions.
+- **The workspace rule (`devsmind rule`) shrank from ~15,400 to ~6,300 characters** in both automatic and manual styles, keeping every tool-trigger row and the required `commit_changes` parameters.
+- **The skill and memory topics shrank from ~33,500 to ~16,000 characters** (the skill file from ~35,000 to ~16,500). Same facts, without re-explaining what each tool's description already says.
+
+- **One shared Codex/Gemini project rule:** `devsmind rule` writes the full project-specific instructions to `.agents/rules/devsmind.md` and a compact pointer block to `AGENTS.md`. Re-running updates both files and preserves the selected manual/automatic graph-recording mode.
+
+### Path safety
+- **Windows-unsafe and wrong paths can no longer reach the shared `devsmind` branch.** One shared definition (`utils/safe-path`) now guards every writer, the publish step, sync import, `analyze` and a pre-flight scan of both the remote and the local branch: forbidden characters, reserved names, over-long paths, glued `", "` paths, case-only duplicates (files and directories), and another machine's absolute path with its leading slash stripped.
+- **`devsmind analyze --fix`** reports and removes such files from `graph/`, `vectors/`, `history/` and `workflows/`.
+- **The remote repair works on the names it exists to delete** (`*`, `?`, `:`, backslashes, case pairs): it removes by exact name instead of by pathspec.
+- **A foreign-path heuristic fixed:** `C:/Users/...` is no longer mistaken for another machine's path on Windows.
+- **CI now runs on Ubuntu, macOS and Windows** (`.github/workflows/test.yml`).
+
+- The session-exempt set was renamed from `SESSION_EXEMPT_READ_TOOLS` to `SESSION_EXEMPT_TOOLS`; `devsmind_git_sync` is exempt because it records no graph edit and does not use a session ID. Clients that still send one are accepted.
+- A pre-flight scan checks remote and local branch trees before checkout. Unsafe files on the local branch are removed in a temporary worktree and committed locally only; remote paths are reported for repair.
+- Path checks cover file and directory case collisions, file-versus-directory conflicts, Unicode normalization, foreign root segments, and Windows path limits. The 200-character default tightens to 259 characters minus the Git path prefix when Windows Git long paths are unavailable; this is a safe default, not machine-specific measurement.
+- Writers keep graph and vector output inside configured repository roots. Publishing skips unsafe paths and branch collisions; disk import ignores them. `analyze` reports unsafe files in graph, vectors, history, and workflows, and `analyze --fix` removes them and tidies empty folders.
+- Path mapping no longer remaps a missing native absolute path by folder-name guess alone, and startup healing no longer replaces an unmappable path with the workspace root. Repeated folder names resolve to the occurrence present in the repository.
+- Remote-path repair removes exact index entries through NUL-delimited index data, avoiding pathspec rewriting, invalid-name validation, and case-insensitive deletion of a similarly named file. Foreign-root detection no longer mistakes `C:/Users/...` for a stripped foreign absolute path.
+- Git error parsing recognizes invalid-path and unable-to-create-file failures. Windows sync sets `core.longpaths` only in the repository-local Git config and records whether it took effect.
+- Added a Node 20 type-check and Jest CI matrix for Ubuntu, macOS, and Windows. The matrix is defined but has not run; current verification is Windows-only (type check clean, 65 suites and 1,580 tests passing).
+
 ## 4.6.0 — `workflow_list` BM25 search over step content, and `search_nodes` gains a `workflow_steps` bucket
 
 ### CLI integrations

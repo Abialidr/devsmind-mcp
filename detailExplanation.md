@@ -4,30 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/Abialidr/devsmind/blob/main/LICENSE)
 [![Awesome MCP](https://img.shields.io/badge/MCP-Awesome-purple)](https://modelcontextprotocol.io)
 
-> **The evolutionary collective memory layer for your AI coding agents. Shared across your entire team.**
-
-AI agents (like Cursor, Cline, Copilot, or Antigravity) lose all context between sessions. Teams repeat the same conversations, new developers ask questions answered months ago, and the same bug gets fixed twice because nobody remembered the first fix.
-
-Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, WHO decided it, WHAT requirement it served, and WHAT broke before.**
-
-```
-   ┌──────────────────────────────────────────────┐
-   │             DevsMind MCP Server              │
-   │    (installed once globally on machine)      │
-   │                                              │
-   │  Stateless. Holds no data.                   │
-   │  `devsmind start` binds it to ONE project    │
-   │  (--path, or auto-detected from cwd), so     │
-   │  the agent never passes a path at all.       │
-   └──────────────────────┬───────────────────────┘
-                          │ one bound server per project
-        ┌─────────────────┴─────────────────┐
-        ▼                                   ▼
-  c:\work\my-project\.devsmind\        c:\work\other-project\.devsmind\
-  brain.db                            brain.db
-  (Project A team brain)              (Project B team brain)
-```
-
+DevsMind stores code structure, change rationale, and workflow history in a project brain shared by a team. This document covers the data model, commands, MCP tools, and release rationale.
 > This is the exhaustive reference doc. For a fast-path quick start, see [README.md](README.md).
 
 <details open>
@@ -55,14 +32,11 @@ Git tells you **WHAT** changed. **DevsMind tells your AI agent WHY it changed, W
 
 ## 🚀 Key Features
 
-*   **Function-Level Evolution Graph**: Every class, method, schema, endpoint, or function is mapped with a rich history chain.
-*   **AI-Written Context Snapshots**: Once per commit, your AI agent documents the *why, goal, previous state, decision rationale, model, and ticket ID* — one reasoning covering everything staged since the last commit, recorded against every node it touches.
-*   **Token-Surgical MCP Interface**: AI can inspect function relationships, histories, and code snapshots *without* reading entire directories or files, reducing token costs by **up to 70%**.
-*   **One server, one project**: `devsmind start` resolves its brain once at startup (`--path`, or auto-detected from the directory you launched it in) and every tool then serves that project — the agent never discovers, remembers, or sends a path, because `devmind_path` is dropped from every advertised tool schema. Run one server per project. (Before 3.0.0 a single server served many workspaces and each call carried its own path; that still works as an unbound fallback when no brain can be found, but it is no longer the normal mode.)
-*   **Workflows that survive a context reset**: a named, backward-looking log of how one feature grew — steps carry the reasoning and the nodes they touched, so an agent picking the thread up days later reads how the code got this way instead of starting from zero. Research findings that changed no code are first-class, since nothing else records what was evaluated and rejected.
-*   **`devsmind view` — Chat + Graph, offline**: a chat-style timeline of your own work with whole-file diffs and revert, and a node-first graph explorer (repo/type sidebar, filters, a small ego-graph per node instead of the whole thing at once, 2D/3D) — no CDN dependencies, works with no internet.
-*   **Git-Native Collaboration**: The database and configuration are committed to Git, enabling seamless context sharing among team members.
-
+*   **Code history and rationale** - indexed declarations have relationships and change history; commits can record one rationale for all staged edits.
+*   **Search** - `search_nodes` combines code entities, filesystem matches, and workflow history. BM25 and optional local vectors support natural-language discovery.
+*   **Workflows** - multi-session timelines preserve implementation reasoning and research that did not change code.
+*   **Team sync** - graph, history, vectors, and workflows move through the dedicated `devsmind` branch; local cache and Activity data stay on the machine.
+*   **Local viewer** - `devsmind view` provides graph exploration and Activity history with request-level revert.
 ---
 
 ## 🛠️ Architecture: The `.devsmind/` Directory
@@ -96,7 +70,7 @@ Running `devsmind init` creates a `.devsmind/` directory in your workspace. This
 
 > **BRANCH replaced COMMITTED for those four directories in 4.4.0, which is why `.gitignore` now lists them.** They still sit in `.devsmind/` on your disk and the brain still reads them from there — your working branch simply stops tracking them. Before this, they committed onto whatever branch you happened to be on: an ordinary feature PR arrived carrying thousands of graph and history files alongside a few lines of real code, and two teammates conflicted on files neither had opened. Ask your agent to sync (`devsmind_git_sync`) and it moves them to the `devsmind` branch and brings teammates' work back down. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) for the branch itself and [4.3.2](#432--one-devsmind_git_sync-tool-replaces-devsmind-pushpull) for the one-tool sync that replaced `devsmind push`/`pull`.
 >
-> **A brain created before 4.4.0 is repaired by `devsmind git-sync` itself.** Git keeps tracking what it already tracks, so topping up `.gitignore` cannot undo it — the sync therefore also runs `git rm --cached` over the four directories, leaving every file on disk. It deliberately stops before committing: that would be a commit on the developer's own branch, which this tool does nowhere else. The staged result is yours to commit, and worth doing promptly — a merge or checkout discards staged deletions silently and the files come straight back.
+> **Brains created before 4.4.0 may still track these folders on the code branch.** Updating `.gitignore` does not untrack existing files. `devsmind_git_sync` checks for that state and repairs it in an isolated worktree; review and commit any cleanup it leaves on the code branch as indicated by the tool output.
 
 `devsmind init` writes `.devsmind/.gitignore` covering every LOCAL and BRANCH entry, and repairs it on every re-run so a brain from an older version — or a teammate's checkout that predates an entry — can't leave something exposed. It appends rather than rewrites, so lines you added yourself survive, and it matches entries the way git reads them (`local`, `/local` and `local/` are one entry, not three). As a backstop, the activity log checks the same file on its first write, since a brain where nobody ever re-runs `init` would otherwise never pick the line up.
 
@@ -121,209 +95,57 @@ DevsMind supports two deployment topologies depending on your team's workflow:
 
 ## ⚡ Quick Start
 
-DevsMind is installed **once per machine**, but there are two different first-time flows depending on whether you're *creating* a brain for a project or *joining* one a teammate already created. Both start with the global install:
+
+
+DevsMind is installed once per machine. The setup commands configure a developer's local tool; shared graph data moves through the `devsmind_git_sync` MCP tool.
 
 ```bash
 npm install -g devsmind-mcp
 ```
 
-> **🔄 Already using DevsMind? Upgrading an existing install?**
-> ```bash
-> npm install -g devsmind-mcp@latest   # pull the latest CLI
-> devsmind rule                        # re-paste — the generated rule changes between releases
-> devsmind memory                      # re-print — it carries the same contract and goes stale the same way
-> devsmind skill                       # re-write — same contract again, a third surface for it
-> ```
-> **Run all three you use, not just the rule.** They put the same contract in different places, so refreshing one and not the others leaves your agent working from multiple versions of the truth.
->
-> **3.0.0 makes this more important than any release before it**, because it *removed* tools rather than adding them. A rule or memory file written against 2.x points your agent at `workflow_pause`, `get_node_graph`, `search_decisions`, and `search_nodes`' `keywords` — none of which exist now. Nothing fails loudly; the agent just burns turns calling tools that aren't there. Check the [Changelog](#changelog) after each upgrade — some releases need this, some don't.
-
-The MCP connection, the workspace rule, the memory prompt, and the skill file are all **per-developer, per-tool** — they live in your IDE/CLI's own config files on your machine and are **not** committed to git. So every teammate runs `devsmind mcp`, `devsmind rule`, and whichever of `devsmind memory`/`devsmind skill` their tool supports, once on their own machine, even when the brain itself is already set up.
-
-### 🆕 A) Starting a new brain (first person on the project)
+### A) Create a brain
 
 ```bash
-# 1. Create the brain. Interactive: asks for project name, repos, tech stack,
-#    which folders to index, etc. Creates the .devsmind/ directory.
 devsmind init
-
-# 2. Connect your IDE / CLI to the DevsMind MCP server (guided, per-tool).
-#    Asks what you're working in (Cursor, VS Code, Claude Code, Codex, …) and
-#    then either PRINTS the exact snippet to paste, or WRITES/merges the correct
-#    config file for you (with a preview + confirmation).
 devsmind mcp
-
-# 3. Place the AI workspace rule into your tool's native rules file (guided).
-#    This is what actually teaches your agent to USE DevsMind — which tools to
-#    call and when. Without it the server is connected but your agent won't know
-#    to use it. (The rule still prints DEVMIND_PATH for reference, but a bound
-#    server resolves its own brain — the agent never sends a path.)
 devsmind rule
-
-# 4. (Optional) Print a "remember this" prompt to paste into your AI chat — a
-#    different lever from the rule file above (see why below). Writes nothing
-#    to disk. Safe to skip; the rule alone is enough. Skipped automatically
-#    (with an explanation) for a tool with no real background-memory feature.
-devsmind memory
-
-# 5. (Optional) Write the workflow contract as an explicitly-invokable skill
-#    file (.agents/skills/devsmind/SKILL.md) — a single file, `/devsmind` (or
-#    `$devsmind` for Codex) to re-assert the contract mid-conversation. Worth
-#    running especially for the tools step 4 skipped, since this works
-#    regardless of whether a tool has a background-memory feature at all.
-devsmind skill
-
-# 6. Start the MCP server. Run from the folder containing .devsmind (or pass
-#    --path <devmind_path>). Skip this if you connected via stdio in step 2 —
-#    then your IDE launches the server itself.
-devsmind start
-
-# 7. (Optional, recommended) Index your codebase so the graph actually has
-#    content to look up. This is the one step unique to a NEW project. It's
-#    skippable — you can instead let the graph "grow as you go" as your agent
-#    records changes — but until the code is indexed (or enough organic usage
-#    has accumulated) there's little for the agent to query yet.
+devsmind skill       # optional
+# Optional initial index:
 devsmind index --run --provider gemini --key YOUR_GEMINI_KEY
-#    (see the `index` / `reindex` reference below for providers, flags, and the
-#     zero-setup grow-as-you-go alternative)
-
-# 8. Commit .devsmind/ so your team shares the same brain.
-git add .devsmind && git commit -m "Add DevsMind brain"
 ```
 
-### 🔄 B) Joining / resuming an existing brain (teammate already set it up)
+Commit `.devsmind/config.json` and `.devsmind/.gitignore` on the code branch. Then ask the connected agent to run `devsmind_git_sync`; it creates or updates the shared `devsmind` branch.
 
-The brain already exists — **no fresh setup, no indexing.** It arrives in two pieces, because as of 4.4.0 it lives in two places: `config.json` comes down with your code branch like any other file, and the graph/history/vectors/workflows come from the `devsmind` branch via one sync. Your `.env` (your developer identity, and in standalone mode your machine's local repo paths) is gitignored and never shared, so you run `devsmind init` once to set up your local side:
+### B) Join an existing brain
 
 ```bash
-# 1. Get the code and config.json.
-git pull        # or: git clone <repo>
-
-# 2. Get the brain data itself, off the devsmind branch. Ask your agent to sync
-#    (the devsmind_git_sync tool) — it fetches that branch, writes graph/,
-#    history/, vectors/ and workflows/ into your .devsmind/, and loads them into
-#    brain.db. Nothing checks out; your own branch never moves.
-
-# 3. Set up your machine-local .env. `init` detects the existing brain and,
-#    instead of creating a new one, just configures this machine: your
-#    developer name/email, and (standalone mode) the local paths to each repo.
-#    It does NOT re-create config or re-index the graph.
-devsmind init
-
-# 4. Connect your IDE / CLI (same guided command as above).
+git clone <repo>     # or git pull
+npm install -g devsmind-mcp
+devsmind init         # configure this machine's identity and repo paths
 devsmind mcp
-
-# 5. Place the workspace rule for your tool.
 devsmind rule
-
-# 6. (Optional) Print the "remember this" prompt again (see why below).
-#    Nothing to sync here — it never wrote anything in the first place.
-devsmind memory
-
-# 7. (Optional) Re-run the skill file too — same reasoning as the memory
-#    step above. Idempotent: regenerates the same content every time.
-devsmind skill
-
-# 7. Sync the committed graph/ + history/ JSONs into your local brain.db.
-#    Especially important for stdio setups (VS Code and most CLI tools): the
-#    editor spawns the server itself and only loads the graph once per process,
-#    so after every `git pull` run this to pick up teammates' changes.
-devsmind sync
-
-# 8. Start the server (skip if you connected via stdio — the IDE runs it).
-devsmind start
 ```
 
-That's the whole loop. For what each step actually does under the hood — `init`'s full prompt flow, `mcp`/`rule`/`sync`/`memory`/`skill` in depth, every `index`/`reindex` flag, provider setup, and benchmarks — see the sections below.
+Then ask the connected agent to run `devsmind_git_sync` to fetch the shared brain. `devsmind sync` only imports files already on disk into the local database; it does not fetch the branch. The setup commands and their options are described below; command flags are in [Other CLI Commands](#-other-cli-commands).
 
----
+
 
 ## 🔌 Adding DevsMind to your IDE / CLI: `devsmind mcp`, `devsmind rule`, `devsmind memory` & `devsmind skill`
 
-These four commands solve four genuinely different problems, and it helps to understand *why* there are four instead of one:
 
-1. **`devsmind mcp` — can your agent even reach the tools?** Connecting the MCP server is what makes `search_nodes`, `get_node_code`, `edit_node`, and every other DevsMind tool *exist* from your agent's point of view. Skip this and DevsMind is just files sitting on disk — nothing in your IDE or CLI knows they're there to query at all. This is pure capability, wired up per tool since every one of them expects the server in a different config file, key, and shape. As of this release, connecting also gets you a second, related surface for free: the server declares the MCP `prompts` capability and answers `prompts/list`/`prompts/get` with one static prompt, `devsmind-workflow`, carrying the exact same contract text sent automatically at connect. Any client that supports the capability (Claude Code, Cursor, Windsurf, Kiro, Qwen so far) can invoke it explicitly mid-conversation, the same way a slash command would — no extra setup, no CLI flag, it's just there once `devsmind mcp` is done.
-2. **`devsmind rule` — does your agent know it should use them?** Being *connectable* isn't the same as being *used*. Without the workspace rule, an agent with DevsMind fully wired up will often still default to grep and raw file reads out of habit, because nothing told it DevsMind exists or why it matters more than what it already knows how to do. The rule is what actually changes behavior — it's where DevsMind explains the team-brain framing, the consequence of skipping `commit_changes`, and exactly which tool to reach for and when. As of **3.0.0** it also asks which **workflow style** you want: **Automatic** (the original default — stages, commits, and tracks every edit without being asked) or **Manual** (search/read tools like `search_nodes`/`get_node_code` stay always-on, since that part is never optional, but the agent never stages or commits on its own — only when you explicitly ask it to). You're the owner of this project's graph; which style fits depends on whether you want DevsMind quietly building the team's shared context as you go, or only when you say so. `session_id` and `message` stay required either way — that's the MCP protocol layer, not a style choice, so Manual mode doesn't make those optional, it just changes whether the agent *decides on its own* to reach for `commit_changes`. Every run also prints a short **session kickoff prompt** — a separate block meant to be pasted at the start of a fresh chat (not baked into the rule file itself) so a new conversation commits to the rule immediately instead of drifting into it over the first few turns.
-3. **`devsmind memory` - want the reminder to persist in a tool's own memory, without re-pasting the rule?** As of **4.0.0** this writes nothing to disk - it prints ONE natural-language block framed as an explicit "remember this" ask, and you paste it into your AI chat yourself. Antigravity (IDE + CLI) and Kiro do not have a genuine background-memory concept, so `devsmind memory` still points them at `devsmind skill`. Codex now has a real Memories toggle under Settings > Personalization > Memory; for Codex, `handleMemory` first prints that setup path, asks the user to confirm it is enabled in interactive mode, and then prints the same explicit "remember this" prompt backed by `DEVSMIND_INSTRUCTIONS`.
-4. **`devsmind skill` — want one file that works the same way regardless of whether a tool has memory at all?** New this release. Writes a single file, `.agents/skills/devsmind/SKILL.md`, holding the same contract as an explicitly-invokable command (`/devsmind`, or `$devsmind` for Codex) instead of something a tool decides on its own whether to recall. One file, one location — no per-tool variants. Confirmed discoverable today by Antigravity, Antigravity CLI, and Codex; Claude Code and Cursor are documented to read the same `.agents/skills/` convention and may pick it up too. Complementary to `devsmind memory`, not a replacement for it — worth running for the tools memory skips, and harmless to also run alongside memory-capable tools like Codex. In the interactive project-only flow it asks for the actual project root before writing, matching `devsmind rule` and `devsmind mcp`.
 
-`mcp` and `rule` are both **guided and per-tool**: they ask what you're working in (Cursor, VS Code, Windsurf, Kiro, Antigravity, Claude Code, Codex CLI, Qwen Code CLI, …), then either **print the exact snippet to copy-paste (manual)** or **create/merge the config file for you (automatic)** — with a preview and confirmation, never clobbering your existing servers.
+These commands solve separate setup problems and are run per developer and per tool. They write only local IDE or workspace configuration, not the shared brain.
 
-```bash
-# Add the MCP server connection. Picks the right transport per tool
-# (stdio for CLI tools, stdio-or-HTTP for IDEs) and the right config file
-# + key (mcpServers / servers / [mcp_servers] / serverUrl / httpUrl / url).
-devsmind mcp
+| Command | What it does |
+|---|---|
+| `devsmind mcp` | Connects the IDE or CLI to the MCP server. Guided mode writes or prints the client-specific connection config. The server also exposes the `devsmind-workflow` MCP prompt where supported. |
+| `devsmind rule` | Writes or prints the workspace instructions that tell the agent when to use DevsMind. Offers Automatic and Manual workflow styles and prints a session kickoff prompt. |
+| `devsmind memory` | Prints a prompt for a tool's own persistent memory feature. It does not write to that feature or to disk. Tools without a suitable memory surface are directed to `devsmind skill`. |
+| `devsmind skill` | Writes or prints `.agents/skills/devsmind/SKILL.md`, an explicitly invokable `/devsmind` skill (or `$devsmind` in Codex). |
 
-# Place the workspace rule in the tool's native rules file
-# (.cursor/rules/*.mdc, CLAUDE.md, AGENTS.md, QWEN.md, .github/copilot-instructions.md, …).
-# In a pipe or with --print, it just prints the rule (back-compat: `devsmind rule --print > rule.md`).
-devsmind rule
-```
+`mcp`, `rule`, and `skill` support print/non-interactive flows; see [Other CLI Commands](#-other-cli-commands) for their flags. `memory` has tool-specific framing, including a guided setup reminder for Codex. Generated config tests verify file shape and merging; they do not prove that every client loads the config or that its agent follows the instructions. Refresh the files you use after upgrading when the release notes say their content changed.
 
-**`devsmind sync`** — force the committed `graph/` + `history/` JSONs into your local `brain.db`.
-Under `--stdio` (how VS Code and most CLI tools run the server), the editor spawns the process itself and the on-disk graph is only loaded once per process — so after a `git pull` your teammates' graph changes won't appear until you re-sync. Run this to apply them without restarting:
 
-```bash
-devsmind sync
-devsmind sync --analyze          # also run devsmind analyze right after, on the same connection
-devsmind sync --analyze --fix    # ...and apply the safe automatic fixes too
-```
-
-*(4.3.0, standalone mode)* Before any of that, `sync` first checks whether `config.json` names a repo your `.env` has no path for yet — a teammate's `devsmind add-repo` catching up to this machine. (`devsmind pull` ran the same check until 4.3.2 removed that command, so `sync` is now the only place it runs.) Nothing missing is a silent no-op; something missing prompts for the path, then offers to refresh `devsmind rule`/`devsmind skill` too, since those were generated against the shorter repo list. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in).
-
-`devsmind start` can do the same before it launches the server — useful so a fresh `--stdio` process (or a restarted HTTP one) always starts from a synced, health-checked graph instead of you remembering to run `sync`/`analyze` separately first:
-
-```bash
-devsmind start --sync                    # sync, then start
-devsmind start --sync --analyze          # sync, report health, then start
-devsmind start --sync --analyze --fix    # ...and apply safe fixes too
-```
-Neither flag is on by default — plain `devsmind start` behaves exactly as before.
-
-**`devsmind memory`** — beyond the rule file, some IDEs/CLIs have their own persistent, agent-managed memory store — a place the agent itself writes a lesson to once and reads back automatically in every future session, no re-pasting required. This is a *different* mechanism per tool, under genuinely different names (Claude Code's "Auto Memory," Cursor's "Memories," Windsurf's "Cascade Memories," Qwen's "Auto-Memory," …), and DevsMind never writes into any of them directly — some are backed by an undocumented database, gated behind manual approval, or explicitly documented as internal, regenerated state a manual edit would just get overwritten by. Instead `devsmind memory` prints ONE natural-language block, framed as an explicit "remember this" ask, and you paste it into your AI chat yourself — research across every tool found the same thing independently: background/agent-written memory is discretionary by design, while an EXPLICIT in-chat request is what actually gets saved reliably.
-
-Not every tool has a background-memory concept to ask anything of in the first place, though. `devsmind memory` checks that first (`registry.ts`'s `hasRealMechanism`) and only prints the ask where there's something for it to attach to:
-
-```bash
-devsmind memory
-```
-
-| Tool | Feature | `devsmind memory --tool <id>` |
-|---|---|---|
-| Claude Code | Auto Memory | Tailored "remember this" prompt — Auto Memory saves reliably from exactly this kind of explicit in-chat request |
-| Cursor | Memories | Tailored prompt, with a hint that the agent must explicitly *propose* the memory — Cursor only saves once you approve what it proposes |
-| VS Code (Copilot) | Copilot Memory | Tailored prompt — Copilot Memory builds up from repeated real usage rather than one instant save, so this is the first strong signal, not a guarantee |
-| Windsurf (Cascade) | Cascade Memories | Tailored prompt, with a hint that the agent should explicitly state it's *creating* a Cascade Memory, not just acknowledging the request |
-| Qwen Code CLI | Auto-Memory | Tailored prompt, with a hint that Qwen's own docs call auto-memory best-effort (`QWEN.md`, already handled by `devsmind rule`, is the guaranteed fallback) |
-| Google Antigravity (IDE + CLI) | Skills (`/learn`) | No real background-memory mechanism — its only persistence is Skills. Prints a short explanation and points at `devsmind skill` |
-| Codex CLI | Memories | Guided two-step flow: enable Codex Settings > Personalization > Memory > Enable memories (and the tool-assisted chats toggle), then paste the generated DevsMind memory prompt into Codex chat. DevsMind still never hand-writes `~/.codex/memories/`. |
-| Kiro | Knowledge / PR-comment learning | No real background-memory mechanism — Knowledge is explicit-command-only (JSON + embeddings, not file-based) and steering is static. Points at `devsmind skill` |
-
-For Antigravity and Kiro, `devsmind memory` never prints a dead-end prompt that would just get acknowledged and dropped - it explains why there is nothing to ask and points at the alternative that works regardless of memory support:
-
-```bash
-devsmind skill
-```
-
-Writes ONE file, `.agents/skills/devsmind/SKILL.md`, holding the same contract as an explicitly-invokable command instead of something a tool decides on its own whether to recall - `/devsmind`, or `$devsmind` for Codex. Confirmed discoverable today by Antigravity, Antigravity CLI, and Codex; Claude Code and Cursor are documented to read the same `.agents/skills/` convention too. In the interactive project-only flow it asks for the actual project root before writing; `-p/--path` and `--print` keep the same direct behavior as `rule`/`mcp`.
-
-### 🧪 How much of this table is actually verified
-
-Worth being precise, because "supported" can mean two very different things:
-
-| Level | Tools | What it means |
-|---|---|---|
-| **Used in anger** | Antigravity, Claude Code | Run day-to-day against real projects. Behavior observed, not inferred. |
-| **Config verified** | Cursor, VS Code, Windsurf, Kiro, Codex, Qwen Code, Antigravity CLI | Automated tests confirm DevsMind writes a well-formed config — right file, right shape, merged without clobbering existing entries — for every target × scope × transport. Whether the tool then *reads* it, and how the agent behaves afterwards, is untested. |
-
-The gap between those rows is the interesting one. A test can prove we produced valid JSON at `.cursor/mcp.json`; it cannot prove Cursor loads it, that the agent notices the rule, or that it still reaches for `search_nodes` forty turns into a session instead of drifting back to grep. That second question is the one that decides whether DevsMind is useful, and it can only be answered by someone using the tool.
-
-**If you work in one of the "config verified" tools, a report is worth more than a bug report** — there is currently no data at all. Useful to know: did the server connect? Does the agent search before grepping, and does it keep doing so late in a long session? Does it commit on its own, or only when asked? Benchmarks against a raw agent on the same task are especially welcome. [Open an issue](https://github.com/Abialidr/devsmind-mcp/issues) with your tool and version — including "it just worked", which is also a result.
-
-**`devsmind memory --print [--tool <id>]`** skips the interactive tool picker and prints immediately — for reading the prompt (or the skip message) without the picker, diffing it against something you already pasted, or piping it from a script. It's also what a non-TTY run does automatically, so `devsmind memory > memory.md` works rather than erroring. `--tool` takes any of the 9 registered ids; without it, it defaults to `claude-code`'s framing and says so rather than picking silently. `devsmind skill --print` is the same escape hatch for the skill file — prints the resolved path and contents instead of writing.
-
----
 
 ## 📇 Command Reference: `index` & `reindex`
 
@@ -355,7 +177,7 @@ devsmind index --run --provider gemini --model gemini-2.5-flash --key YOUR_API_K
 
 | Flag | Description |
 |---|---|
-| `-p, --path <devmind_path>` | Path to the brain directory (default: `.devsmind`, or a legacy `.devsmind`, in cwd) |
+| `-p, --path <devmind_path>` | Path to the brain directory (default: `.devsmind`, or a legacy `.devmind`, in cwd) |
 | `--run` | **Required** to actually start indexing |
 | `--provider <provider>` | `gemini` (default) \| `vertex` \| `ollama` |
 | `--model <name>` | Model id (default per provider — see [Providers & Performance](#providers--performance) below) |
@@ -399,7 +221,7 @@ devsmind reindex --provider gemini --key YOUR_API_KEY
 
 | Flag | Description |
 |---|---|
-| `-p, --path <devmind_path>` | Path to the brain directory (default: `.devsmind`, or a legacy `.devsmind`, in cwd) |
+| `-p, --path <devmind_path>` | Path to the brain directory (default: `.devsmind`, or a legacy `.devmind`, in cwd) |
 | `--provider <provider>` | `gemini` (default) \| `vertex` \| `ollama` |
 | `--model <name>` | Model id |
 | `--key <api_key>` | API key / service account path |
@@ -509,9 +331,9 @@ Local to your machine, gitignored under `.devsmind/local/`:
 | **session** | `workflow_id` — what this conversation is bound to right now |
 | **message** | `workflow_sync` — which of your edits already became steps |
 
-`brain.db` is a cache; the JSON on disk is the source of truth, so a teammate gets the whole timeline from `git pull` + `devsmind sync` (or just starting the server). **The workflow never stores your chat** — messages stay local. The shared side holds the summary, the reasoning, and which nodes were touched.
+`brain.db` is a cache; the JSON on disk is the source of truth, so teammates receive it through `devsmind_git_sync`. **The workflow never stores your chat** — messages stay local. The shared side holds the summary, the reasoning, and which nodes were touched.
 
-Each workflow is written as **two** files: `workflow.json` in the shape a pre-3.0 client understands, and `v2.json` holding what that shape has no field for (`archived`, per-step `reasoning`/`node_ids`/`doc_paths`). `devsmind sync` re-serializes `workflow.json` from local columns, so a teammate on an older build who pulled and synced would otherwise rewrite the file without the new fields and commit that loss — they have no idea the sidecar exists, so they can't touch it, and the next read merges everything back.
+Each workflow is written as **two** files: `workflow.json` in the shape a pre-3.0 client understands, and `v2.json` holding what that shape has no field for (`archived`, per-step `reasoning`/`node_ids`/`doc_paths`). the sync code re-serializes the legacy `workflow.json` shape from local columns, so an older build that rewrites the file could omit fields kept only in `v2.json` — they have no idea the sidecar exists, so they can't touch it, and the next read merges everything back.
 
 ### 2. Binding is per session, and local
 
@@ -547,6 +369,9 @@ Nothing detects drift onto a different topic — asking an AI to notice "this is
 ## 🖥️ Other CLI Commands
 
 *   **`devsmind start [--stdio] [-p, --port <number>]`** — starts the MCP server. Default: HTTP on port `4513`, reachable at `http://localhost:4513/mcp`. Pass `--stdio` for IDEs that manage the server process directly instead of connecting over HTTP.
+*   **`devsmind sync [-p, --path <devmind_path>] [--analyze] [--fix]`** - imports brain JSON already on disk into the local SQLite cache. It does not fetch or merge the `devsmind` branch; use `devsmind_git_sync` for team sync. In standalone mode, it can also reconcile repo paths missing from local `.env`.
+*   **`devsmind style [normal|lite|full]`** - sets the personal response style in the brain's gitignored `.env`. `on`, `off`, and `caveman` are aliases; the process environment overrides the saved value. It affects chat replies, not code or shared DevsMind content.
+*   **`devsmind git-status`** - read-only counts of brain files waiting to sync.
 *   **`devsmind skill [-p, --path <devmind_path>] [--print]`** - writes the workflow contract as an explicitly-invokable skill file, `.agents/skills/devsmind/SKILL.md` (`/devsmind`, or `$devsmind` for Codex). In the interactive project-only flow it asks for the actual project root before writing, matching `devsmind rule` and `devsmind mcp`; `--print` (or a non-TTY run) prints the resolved path and contents instead of writing. Idempotent: content is regenerated fresh each run from the same source as `devsmind memory`'s prompt, so it never drifts from it.
 *   **`devsmind view [-p, --path <devmind_path>] [-P, --port <number>]`** — opens the `devsmind view` app in your browser (see the **devsmind view** section below): Chat (your work as a timeline, per-request) and Graph, one app, no CDN dependencies.
 *   **`devsmind describe [--provider <p>] [--model <name>] [--key <k>] [--url <u>] [--rpm <n>] [--batch-size <n>] [--dry-run]`** — backfills a natural-language `description` onto every node that has none. This is the field `search_nodes` weights in its BM25 ranking *and* embeds for the semantic layer, so a node without one is only reachable by identifier, path, or grep — a plain-English query will never find it. The work queue is literally "nodes where `description IS NULL`", which makes the command idempotent: re-running it is a no-op once the backlog is clear. `--dry-run` lists what's pending and needs no credentials at all. **Only for a backlog** — nodes created from here on get described at commit time, because `commit_changes` refuses a brand-new node without one. Same engine (`describePendingNodes`) that `devsmind index --run`'s Phase 3 calls, so results are identical either way; only the credential source differs.
@@ -566,19 +391,7 @@ Nothing detects drift onto a different topic — asking an AI to notice "this is
 
     **This is a different tool from Activity's message-revert, on purpose.** This one is permanent (erase, no trace) and scoped to one entity's last edit — a quick "that was wrong" with no ceremony. Activity's revert undoes a whole request, keeps a backup, and can itself be undone — the deliberate tradeoff for that is that it's a bigger, slower operation with more moving parts (a cascade, an un-revert order). Use this one for a fast single-function undo; use Activity when you want to walk back a session's worth of work and keep the option to walk it forward again.
 *   **`devsmind prune [-p, --path <devmind_path>]`** — interactive terminal tool to review node stats, inspect current code, page through chronological change history, and permanently delete individual nodes or clear all nodes/history.
-*   **`devsmind analyze [-p, --path <devmind_path>] [--fix] [--god-entity-threshold <n>]`** — local, **zero-AI** graph health check. Pure SQLite queries, filesystem checks, and `git log` — no LLM calls, no tokens spent. One command reports on:
-    *   **God entities** — nodes with 15+ (configurable) total connections, an architectural-bottleneck signal.
-    *   **Circular dependency cycles** — DFS cycle detection over the connection graph.
-    *   **Orphaned nodes** — active nodes with zero connections.
-    *   **Dangling edges** — connections pointing at a node id that no longer exists.
-    *   **Duplicate/case-collision ids** — two node ids differing only by case (a real risk on Windows's case-insensitive filesystem).
-    *   **History missing developer attribution** — history rows with no non-empty `Developer:` line.
-    *   **Empty code snapshots** — history rows with a blank snapshot (silent AST extraction failure).
-    *   **Spurious/built-in nodes** and **missing files** — the same detections `devsmind prune` already used, now also surfaced in a dry-run report.
-    *   **Renamed files** — detected via `git log`'s rename tracking since the last analysis run.
-    *   **Untracked files** — git-tracked code files with **zero** graph nodes at all. This is a coarse, low-noise blind-spot signal (a file DevsMind has never recorded anything about), not a claim that any specific edit was skipped — it can't know that without guessing.
-
-    Pass `--fix` to auto-apply only the *safe, reversible* fixes: soft-deprecate orphaned/spurious/missing-file nodes (history is preserved, never hard-deleted) and delete dangling edges, and cascade-migrate detected renames. Everything else (god entities, cycles, duplicate ids, missing developer attribution, empty snapshots, untracked files) is **report-only** — these need a human or AI to decide what to do, not a mechanical fixer.
+*   **`devsmind analyze [-p, --path <devmind_path>] [--fix] [--god-entity-threshold <n>]`** - local, zero-AI health report. It checks graph structure, history metadata, tracked files without nodes, renamed files, stray output directories, and unsafe generated paths in `graph/`, `vectors/`, `history/`, and `workflows/`. `--fix` soft-deprecates stale nodes, removes dangling edges, migrates detected renames, and deletes unsafe output files or blocking directories. Node history is retained, but filesystem cleanup is permanent. God entities, cycles, duplicate IDs, missing developer attribution, empty snapshots, and untracked files remain report-only.
 *   **`devsmind workflow [-p, --path <devmind_path>]`** — interactive terminal view of your workflows: list them (newest-touched first, archived ones hidden until you ask), read a workflow's full timeline (steps in order, each with its reasoning, the nodes it touched, and any document paths), and archive/unarchive. Day-to-day creation and step-recording happens through the `workflow_*` MCP tools the agent calls — this is a visibility/manual-override surface, not the primary way workflows get built. There is no pause/resume here any more: binding is per session and lives on the agent side.
 *   **`devsmind workflow-import <path> [-p, --path <devmind_path>]`** — imports a folder of `.md` flow/architecture docs (one workflow per file), or a single file. Expects the common `# Title` / `## Summary` structure (falls back to the filename / first paragraph if a file doesn't follow it) — the workflow gets one seed step recording where it came from, pointing at the source document by **path** rather than copying it, so it can't go stale. Re-running the import on the same file updates that workflow in place instead of duplicating it, so it's safe to re-import after the source docs change.
 *   **`devsmind add-repo [-p, --path] [--provider …] [--key …] [--chunk-size …] …`** *(4.3.0, standalone mode only)* — adds ONE repo to an existing brain (prompts for name + local path) and indexes just that repo, reusing `index --run`'s own flags/credentials for the indexing step. Resumable: an interrupted run continues automatically on the next `add-repo` call, with no re-prompt. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) above.
@@ -589,152 +402,28 @@ Nothing detects drift onto a different topic — asking an AI to notice "this is
 
 ## 🗄️ Database Schema: `.devsmind/brain.db`
 
-The local SQLite database (`brain.db`) acts as a metadata cache. The full database schema consists of seven tables:
-
-### 1. `nodes` (Code Entities)
-Contains structural identifiers.
-```sql
-CREATE TABLE nodes (
-  id          TEXT PRIMARY KEY,  -- e.g., "CartService.applyPromoCode"
-  type        TEXT NOT NULL,     -- Taxonomy type (e.g., nest_controller, route_handler)
-  name        TEXT NOT NULL,     -- Friendly display name
-  file_path   TEXT NOT NULL,     -- Source file path
-  signature   TEXT,              -- Param types & return value signature
-  deprecated  INTEGER DEFAULT 0, -- 1 if the node has been deprecated/removed
-  created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### 2. `node_connections` (Architecture Relationships)
-Directional mapping (Many-to-Many). Represents **uses/calls** interactions.
-```sql
-CREATE TABLE node_connections (
-  source_node_id  TEXT,  -- The node doing the calling
-  target_node_id  TEXT,  -- The node being called
-  PRIMARY KEY (source_node_id, target_node_id),
-  FOREIGN KEY (source_node_id) REFERENCES nodes (id) ON DELETE CASCADE,
-  FOREIGN KEY (target_node_id) REFERENCES nodes (id) ON DELETE CASCADE
-);
--- Direction: source_node USES target_node
-```
-
-### 3. `history` (AI Change Logs)
-Holds metadata references to version histories.
-```sql
-CREATE TABLE history (
-  id             TEXT PRIMARY KEY,  -- UUID of the history block
-  node_id        TEXT NOT NULL,     -- Associated node
-  session_id     TEXT NOT NULL,     -- Session key
-  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-  code_snapshot  TEXT NOT NULL,     -- Always empty string (stored in history/[id].json)
-  reasoning      TEXT NOT NULL,     -- Always empty string (stored in history/[id].json)
-  FOREIGN KEY (node_id) REFERENCES nodes (id) ON DELETE CASCADE
-);
-```
-> ⏱️ **Session Boundary Rule**: If the AI updates a function, it checks the last history log. If `updated_at` is less than **1 hour ago**, it updates the same record in-place (same session) instead of inserting a new row — `code_snapshot` is replaced with the latest state (git already owns code version history), but `reasoning` is **appended**, not overwritten, so an earlier commit's "why" within the same session is preserved rather than silently lost. If older than 1 hour, it inserts a new history record (new session).
->
-> 💾 **JSON Storage Note**: In version 2.0.0, the actual code snapshots and AI change reasonings are stored in `.devsmind/history/[id].json` to resolve Git merge conflicts, while the SQLite database holds empty strings for `code_snapshot` and `reasoning`.
->
-> 🔴🟢 **Edit trail (3.0.0)**: that same JSON also carries an `edits` array — one entry per edit, each holding the entity's code `before` and `after` it, plus `at` and the `reasoning` of the commit that produced it (one `reasoning` object per `commit_changes` call, shared by every edit that commit made — not one per edit). It lives only in the JSON, never in SQLite, exactly like `code_snapshot`. This is what `devsmind diff` renders and what `devsmind revert` restores from.
->
-> It's a trail rather than a single "previous code" field *because* of the session rule above: the 1-hour window is measured from `updated_at`, so an entity edited every 50 minutes keeps sliding the same row forward and one row can span hours. A single before-field would make a revert undo the whole span instead of the last change. A gap between one edit's `after` and the next one's `before` also means someone edited the file by hand in between.
->
-> Entries written before 3.0.0 have no `edits` key; it reads as `[]`, which is the honest answer — no diff, no revert. The legacy `update_history` path and an initial index snapshot supply no before-state either, so their entries read the same way.
-
-### 4. `system_meta` (System Configuration & Caching Metadata)
-Stores project caching timestamps.
-```sql
-CREATE TABLE system_meta (
-  key         TEXT PRIMARY KEY, -- Metadata key (e.g., 'last_reindex_at')
-  value       TEXT NOT NULL,    -- Config value
-  updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-> `'active_workflow_id'` used to live here. It was removed in 3.0.0: one project-wide pointer meant two sessions fought over it, and it travelled through git so a teammate could move yours. Binding is per session and local now — see [Workflows In Depth](#-workflows-in-depth).
-
-### 5. `workflows`
-One row per named thread of work.
-```sql
-CREATE TABLE workflows (
-  id           TEXT PRIMARY KEY,  -- UUID or custom workflow id
-  name         TEXT NOT NULL,     -- User-facing name, e.g. "Wallet Integration"
-  description  TEXT NOT NULL,     -- What this thread is about
-  archived     INTEGER NOT NULL DEFAULT 0, -- 1 = hide from the list (reversible)
-  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,  -- threads sort by this
-  status       TEXT DEFAULT 'active'  -- VESTIGIAL: nothing reads or writes it
-);
-```
-> `archived` replaced `status` in 3.0.0. Nothing ever "completed" and nobody marked it, so the field lied; archiving claims only what it delivers. `status` survives as an unused column rather than being dropped — a `DROP COLUMN` buys nothing and breaks an older CLI opening the same `brain.db`. It is absent from the TypeScript types, so no code can reach it by accident.
-
-### 6. `workflow_steps` (the timeline)
-One row per commit, or per research finding. Self-contained by design: reading a workflow's story needs no joins.
-```sql
-CREATE TABLE workflow_steps (
-  id             TEXT PRIMARY KEY,  -- Step UUID
-  workflow_id    TEXT NOT NULL,     -- Link to parent workflow
-  step_index     INTEGER NOT NULL,  -- Chronological sequence index
-  summary        TEXT NOT NULL,     -- One line: what was done / discovered
-  reasoning      TEXT,              -- The why, COPIED (not joined) — see note
-  node_ids       TEXT,              -- JSON array of the nodes this step touched
-  doc_paths      TEXT,              -- JSON array of repo-relative doc paths (research)
-  session_id     TEXT,              -- Which session recorded it
-  created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-  pending_tasks  TEXT,              -- VESTIGIAL: nothing reads or writes it
-  history_ids    TEXT,              -- VESTIGIAL: nothing reads or writes it
-  FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE CASCADE
-);
-```
-> **Why `reasoning` is copied rather than joined to `history`.** History reasoning *mutates* after the fact — the 1-hour merge appends to it, a revert can drop a block — and a record of "what we thought at the time" cannot read from a moving target.
->
-> **Why `history_ids` had to go.** It could not identify a commit at all: two commits touching the same node within an hour merge into a **single** history row, so a step's ids could point at rows an earlier commit created, and one row could be cited by several steps. Old steps are backfilled to `node_ids` on the first open of an upgraded brain — approximately, for that same reason.
-
-### 7. `workflow_artifacts` — dormant since 3.0.0, active again in 4.3.0
-```sql
-CREATE TABLE workflow_artifacts (
-  id           TEXT PRIMARY KEY,
-  workflow_id  TEXT NOT NULL,
-  step_id      TEXT,
-  type         TEXT NOT NULL,
-  source_name  TEXT NOT NULL,
-  file_path    TEXT NOT NULL,
-  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (workflow_id) REFERENCES workflows (id) ON DELETE CASCADE
-);
-```
-> 3.0.0 through 4.2.x: nothing wrote to it. Artifacts were **copies** of files placed under `.devsmind/workflows/<id>/artifacts/`, and a copy goes stale the moment the original changes — while your repo already versions and shares the original. A step's `doc_paths` stored the **path** instead: already versioned, already synced, can't drift.
->
-> **4.3.0** put it back to work, narrowly: `workflow_add_step`'s new `doc_content` (via `addWorkflowArtifact`) and `doc_uploads` (via `addWorkflowArtifactFromFile`) params write here, under `.devsmind/workflows/<id>/` — but only for docs `doc_paths` structurally can't express (no on-repo home, or pasted text that was never a file). See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in). `doc_paths` remains the default and is unaffected.
 
 
-### 8. Activity log (3.0.0) — `.devsmind/local/`, not `brain.db`
+The SQLite database is a local cache. Graph, history, vector, and workflow JSON on disk are the shared source data; `brain.db` can be rebuilt. It contains ten tables:
 
-Not a SQLite table, deliberately — everything above lives in `brain.db`, which the README calls "a disposable local cache rebuilt from JSON on startup," and an activity log that could be silently rebuilt away would defeat the point of it. Plain JSON instead, gitignored, its own small directory:
+| Table | Purpose and key fields |
+|---|---|
+| `nodes` | Code entities: `id`, `type`, `name`, `file_path`, `signature`, `description`, `aliases`, `deprecated`, `created_at`. |
+| `node_connections` | Directed edges: `source_node_id` uses `target_node_id`. |
+| `history` | Per-node metadata: `id`, `node_id`, `session_id`, timestamps. Snapshot, reasoning, and edit details are stored in `history/<id>.json`. |
+| `system_meta` | Local cache and process metadata. |
+| `node_tokens` | Derived local BM25 index for node names, descriptions, paths, and reasoning. Rebuilt when its source fingerprint changes. |
+| `node_vectors` | Semantic vectors keyed by node and model. Rebuilt locally by `devsmind embed`; vector JSON is also shared under `vectors/`. |
+| `workflows` | Workflow identity, name, description, archive flag, and timestamps. The legacy `status` column remains for database compatibility and is unused. |
+| `workflow_steps` | Ordered summaries, reasoning, touched node IDs, document paths, session ID, and timestamp. Legacy `pending_tasks` and `history_ids` columns are unused. |
+| `workflow_artifacts` | Uploaded documents and inline content attached to a workflow or step. |
+| `workflow_tokens` | Derived local BM25 index over workflow names, descriptions, and step text. Rebuilt when stale. |
 
-```
-.devsmind/local/
-  sessions.json                  -- [{ id, developer, started_at, last_active, message_ids[], label? }]
-  messages/<message_id>.json     -- one file per message, see below
-```
+`local/` is not a database table. It contains the machine-local Activity log and revert backups and is gitignored. The `node_tokens` and `workflow_tokens` tables are rebuildable; they are not synced. `node_vectors` has a local cache and a shared JSON representation so teammates can use embeddings without running inference themselves.
 
-A session row only comes into being via the `start_session` tool — no auto-mint, no time-window guessing. `label` is the optional human-readable name passed to `start_session`, shown on the Activity page.
+History JSON keeps the edit trail used by `devsmind diff` and `devsmind revert`. A history row may be updated within the one-hour grouping window, so workflow steps copy their reasoning and touched node IDs rather than joining to a history row whose contents can later change. Older history without an edit before-state cannot be reverted by DevsMind.
 
-```jsonc
-// messages/<id>.json
-{
-  "id", "session_id", "developer",
-  "created_at", "updated_at",
-  "request": "add expiry validation to coupons",  // the user's ask — REQUIRED on commit_changes
-  "summary": "Cart.applyPromo, validateCoupon",   // machine-generated fallback, always present
-  "status": "applied" | "reverted",
-  "edits": [
-    { "node_id", "file_path", "at", "before", "after" }  // the backup — nothing is deleted on revert
-  ]
-}
-```
 
-A message's `edits[]` stores `before`/`after` directly rather than pointing at a `history_ids` entry — self-contained on purpose, so a revert never depends on (or can corrupt) what the team shares in `history/*.json`. `devsmind init` writes `local/` into `.devsmind/.gitignore`; a brain that predates this release self-heals the same line the first time anything is recorded, so it can't land in a commit by accident.
 
 ### Growing the graph outside of `index`/`reindex`
 
@@ -749,10 +438,7 @@ This "grow-as-you-go" path needs zero upfront setup and is a reasonable default 
 > * `recheck_graph`: Scans code files, marks language primitives, built-ins, or nodes associated with deleted files as deprecated (removing their connections in the graph, but keeping their entries in the database).
 > * `analyze_graph`: Reports orphaned nodes — no incoming or outgoing connections, so dead code or a stale record — alongside every other health check it runs. There is no separate orphan-lookup tool.
 >
-> ⚠️ **Preservation Over Deletion**: The AI agent will never delete historical context by itself; it preserves all evolution records. The `delete_node` MCP tool is removed.
-> * Spurious or missing nodes are **deprecated** (keeping their code history and reasoning intact, but removing active connections in the graph).
-> * Use `devsmind prune` (see [Other CLI Commands](#-other-cli-commands)) for interactive manual review and permanent deletion.
-
+> **Node history is preserved by graph maintenance fixes.** They soft-deprecate stale nodes and retain history; `devsmind prune` is the explicit path for permanent node deletion. `analyze --fix` also deletes unsafe generated files and blocking directories, including invalid workflow folders, so those filesystem repairs are permanent.
 ---
 
 ## 🔌 MCP Tool Reference
@@ -764,7 +450,7 @@ DevsMind exposes **39 tools** to the AI agent, grouped below by what they're for
 > The server also declares the MCP **`prompts`** capability, a separate surface from tools — `prompts/list` returns one static prompt, `devsmind-workflow`, and `prompts/get` returns the exact same contract text sent automatically at connect (`DEVSMIND_INSTRUCTIONS`). It takes no arguments; a client that supports the capability can invoke it any time to re-assert the contract mid-conversation, the same way a slash command would. Not every client speaks `prompts` — where it isn't supported, `devsmind rule`/`devsmind memory`/`devsmind skill` remain the way to get the contract in front of the agent.
 
 ### 🚦 Category 0: Session (3.0.0)
-*   `start_session`: **Call once, before your first WRITE of the conversation** (`edit_node`/`commit_changes` and the other mutating tools). Mints a `session_id` and records it locally (optionally with a `label`, shown on the Activity page). Every WRITE call REQUIRES that exact `session_id` — it ties a request's edits together on the local Activity log and makes them revertable as a unit — and every tool response echoes it back in a plain sentence so it stays in front of the agent even across a long conversation or a context compaction. Read-only tools (`search_nodes`, `get_node_code`, `list_nodes`, and the other getters) do NOT need it — search and read freely from the very first call. There is no auto-mint fallback and no server-tracked "active session" — DevsMind is stateless by design (two agents working the same project never collide over a shared "current" id), so the session token lives entirely in the conversation and must be carried explicitly. Resuming a conversation that already called `start_session` earlier should reuse that same id rather than minting a new one.
+*   `start_session`: Call once before graph-writing tools. It creates a `session_id` used to group edits in the local Activity log and support request-level revert. Read-only tools do not require it, and `devsmind_git_sync` is also exempt because it records no graph edit and does not read the ID. Responses echo a supplied session ID so it remains available across long conversations and context compaction. There is no server-side active session; resume a conversation with its existing ID.
 
 ### 🔍 Category 1: Discovery & Search
 *   `list_nodes`: Enumerates nodes matching optional `type`/`file_path` filters — the "what exists here" call for a component, package, or directory, as opposed to `search_nodes`' "find the thing that does X". **Paged**: it answers `{nodes, total, offset}` where `total` is the true match count and `nodes` is one page (`limit`, default 100, max 500), with a `truncated` flag and a `hint` naming the exact next call. It previously had no bound of any kind, which on a real backend meant a single unfiltered call returned ~600KB across ~10,900 lines — past the client's inline limit, spilled to a file, and truncated again on read from there. A page that is still oversized falls back to id/name/type/file_path per node with a `compacted` note; `total` stays exact either way.
@@ -801,10 +487,10 @@ The AI's only job anywhere in this flow is writing descriptions, via `add_descri
 
 ### 🧹 Category 5: Optimization & Maintenance
 *   `recheck_graph`: Scans the graph to verify file existence and deprecates language primitives, builtins, and nodes associated with missing/deleted files, retaining nodes with active histories.
-*   `analyze_graph`: Runs a local, **zero-token** health check — god entities, circular dependency cycles, orphaned nodes, dangling edges, duplicate/case-collision ids, history missing developer attribution, empty code snapshots, spurious/built-in nodes, missing files, git-detected renames, and git-tracked files with zero graph nodes. Set `fix:true` to auto-apply only the safe fixes (soft-deprecate dead nodes, remove dangling edges, migrate renames); everything else is report-only since it needs a human/AI judgement call. See [`devsmind analyze`](#-other-cli-commands) below for the CLI equivalent and full detection list.
+*   `analyze_graph`: Runs a local, zero-token health check for graph issues and unsafe generated output. With `fix:true`, it also soft-deprecates stale nodes, removes dangling edges, migrates detected renames, and permanently removes unsafe output files or blocking directories. Other findings are report-only; see [`devsmind analyze`](#-other-cli-commands) for the categories.
 
 ### 🗂️ Category 6: Workflows
-A named, backward-looking log of how one piece of functionality grew across many nodes and many sessions — read it to learn how the code got this way. Nine tools; see [Workflows In Depth](#-workflows-in-depth) above for the model behind them.
+A named, backward-looking log of how one piece of functionality grew across many nodes and many sessions — read it to learn how the code got this way. Ten tools; see [Workflows In Depth](#-workflows-in-depth) above for the model behind them.
 *   `workflow_create`: Names a new thread. Does not touch anyone else's session — creating one doesn't pause anything, because there is nothing global to pause.
 *   `workflow_bind`: Attaches THIS session to a workflow; omit the id to detach. The binding is local to your session and to your machine. (`workflow_pause`/`workflow_resume` still answer as unadvertised aliases for detach/attach, so an agent working from a pre-3.0 rule doesn't hard-fail.)
 *   `workflow_list`: Lists workflows — `limit`/`offset` page, `include_archived` opts the retired ones back in. **(4.6.0)** `query` is BM25-ranked, token-based search (the same tokenizing/stemming/IDF weighting `search_nodes` uses over code, via a `workflow_tokens` index that mirrors `node_tokens` exactly — local-only, never synced, lazily rebuilt from a cheap fingerprint check) across the workflow's own `name`/`description` **and every step's `summary`/`reasoning`** — previously `query` only ever matched name/description, so a workflow's actual day-to-day substance was invisible to search. Each result may carry `matched_steps` (up to 3, best-match-first) naming the specific step(s) that caused the match. `total`/paging stay exact because one `rankWorkflows` call produces both the ranked list and its count together, the same fix `search_nodes` uses for `nodes_total`. The agent is instructed to call this before starting work that might relate to an existing thread, and to offer continuing it rather than silently starting fresh.
@@ -820,7 +506,7 @@ A named, backward-looking log of how one piece of functionality grew across many
 
 ### 🌿 Category 7: The `devsmind` branch *(4.3.0, one tool since 4.3.2)*
 Moves the churny part of the brain (`graph`/`history`/`vectors`/`workflows`) onto its own git branch, out of your code branch's diff. See [4.3.0](#430--the-devsmind-branch-devsmind-add-repo-and-workflow_add_step-can-copy-a-doc-in) for why the branch exists, [4.3.2](#432--one-devsmind_git_sync-tool-replaces-devsmind-pushpull) for why sharing it is now one tool instead of two, and [4.4.0](#440--brain-data-leaves-your-pull-requests-and-sync-gets-4x-faster) for the `.gitignore` half that was missing — until then the four directories were tracked on the `devsmind` branch *and* on your own, so the churn never actually left your diff.
-*   `devsmind_git_sync`: The whole cycle in one call — flush `brain.db` to disk, commit onto the `devsmind` branch, **3-way merge** whatever teammates pushed, push the result. **Unlike `commit_changes`, this DOES run real git commands** (commit + merge + push) — but only ever on the `devsmind` branch, via a throwaway worktree, so your actual checked-out branch is never touched. Requires a `message`, and a `session_id` like any other write. Only call it when the developer has asked to sync, not as a routine follow-up to `commit_changes`.
+*   `devsmind_git_sync`: Flushes shared brain data, commits and three-way merges it on the `devsmind` branch, then pushes through an isolated worktree. It does not change the checked-out branch and does not require a `session_id`; it requires a `message`. Before checkout it scans local and remote branch paths. Unsafe remote paths return `blocked_on_remote_paths`; removing them from the remote requires developer approval. Unsafe local-branch paths are cleaned and committed locally, not pushed. Conflict resolutions are validated before commit.
     *   On `status: "conflicted"`, git couldn't merge some files by itself. Each entry carries the file's `path` (relative to the returned `worktree`), its marker-bearing `content`, and `ours`/`theirs` showing both sides cleanly. Write each file back as valid JSON with no markers, then call again with the same `worktree` plus `resolved: true`.
     *   A resolution is **validated before anything is committed**: it must parse, keep the right shape for its tree, and retain every node/vector/step id present on *either* side. A resolution that drops one comes back as `status: "invalid_resolution"` and nothing is pushed — because `syncFromDisk` deletes a graph file's DB nodes before reinserting from the JSON, so a dropped id would be a silently deleted node in the shared brain.
 
@@ -855,24 +541,41 @@ To query the view URL programmatically from your agent, call `get_visualizer_url
 
 ## 👥 Git Collaboration Workflow
 
-You commit `.devsmind/config.json` plus the JSON trees — `graph/`, `history/`, `vectors/`, `workflows/` — and the whole team shares one brain. **`brain.db` is *not* committed**: it's a disposable local cache, gitignored, rebuilt from those JSONs by `devsmind sync` (or on server start). Sharing a SQLite binary would conflict on every merge; sharing line-oriented JSON does not.
+The code branch carries `.devsmind/config.json` and `.devsmind/.gitignore`. The dedicated `devsmind` branch carries `graph/`, `history/`, `vectors/`, and `workflows/`. Local state such as `.env`, `brain.db`, and `local/` is gitignored.
 
-Nor is `local/` — your requests, your revert backups, your feedback. That stays on your machine by design.
+Ask the connected agent to call `devsmind_git_sync` to publish and receive shared brain changes. It uses an isolated worktree, commits and merges only on the `devsmind` branch, then refreshes the local database. It does not require a DevsMind session ID. This is separate from `commit_changes`, which records graph history and activity locally but does not run Git commands.
 
-`commit_changes` (the AI's step below) and a real `git commit` (yours) are two different, separate things that happen to share the word "commit" — the AI's call writes only into `.devsmind/`'s local graph/database, never git; the actual `git commit -am`/`git push` step is **you**, the developer, deciding to commit and share, same as on any project without DevsMind:
-
-```
-       Developer A                                         Developer B
-   ───────────────────                                 ───────────────────
-   Adds expired-coupon validation                      Pulls latest code
-   AI records it via commit_changes                    AI inspects applyPromoCode
-   YOU run `git commit -am "add validator"`             Instantly sees validation logic,
-   YOU run `git push`  ───► [Shared Remote Git] ──────► why it was added, and ticket ID!
-```
-
----
+A fresh teammate checks out the code branch, runs `devsmind init` to configure machine-local paths and identity, connects the IDE, then calls `devsmind_git_sync`. Use `devsmind sync` only to import brain JSON already present on disk; it does not fetch the team branch.
 
 ## Changelog
+
+### 4.7.0 - cross-platform path safety and shorter agent replies (unreleased)
+
+#### Path safety across writers, imports, and sync
+
+A Windows sync exposed a bad filename created when `upsertNode` appended a teammate's Linux absolute path to an existing path. The combined value was later treated as a filename. Path handling now collapses entries that identify the same file under different operating-system spellings, while graph and vector writers split multi-path values and write each path separately.
+
+The shared `safe-path` rules reject Windows-invalid characters, control characters, reserved device names, trailing dots or spaces, empty segments, malformed comma-joined paths, and paths beyond the safe length. The default is 200 characters; when Windows Git long paths are unavailable, the effective limit is tightened to 259 characters minus the Git path prefix. It is a conservative default rather than a measurement of each machine. Collision checks include files, directories, file-versus-directory conflicts, case-only differences, and Unicode normalization forms.
+
+A foreign-root check catches paths whose leading slash was stripped from common operating-system roots (`home`, `Users`, `root`, `mnt`, `Volumes`, `tmp`, `var`, `usr`, `opt`, `etc`, and `srv`). It exempts a repository genuinely named after one of those roots. `isForeignAbsolutePath` takes the platform explicitly, so each platform branch can be tested on any host. Path-to-repository mapping now uses folder names only when there is evidence that a path is foreign, relative, or exists in the repository. When a folder name repeats, the repository occurrence wins. Missing native absolute paths are no longer guessed into a repository, and startup healing no longer replaces an unmappable path with the workspace root.
+
+Writers require graph and vector output to remain under a configured repository. Publishing skips unsafe paths, path collisions, collisions with files already on the branch, and foreign-root paths; imports ignore those files. `devsmind analyze` reports unsafe output files in `graph/`, `vectors/`, `history/`, and `workflows/`. With `--fix`, it removes those files and tidies empty folders. Removing a bad workflow folder is permanent.
+
+Before checkout, sync scans both `origin/devsmind` and the local `devsmind` branch. Remote problems return `blocked_on_remote_paths` with exact paths for an explicit repair. The local branch is cleaned in a temporary worktree and committed locally only; that cleanup is not pushed. The stderr parser also recognizes Git's invalid-path and unable-to-create-file errors. On Windows, sync sets `core.longpaths` only in the repository-local Git configuration and records whether the setting took effect.
+
+Repairing a remote branch required exact-name deletion because Git could reject invalid filenames before loading them, Windows rewrites backslashes in pathspecs, and case-insensitive index behavior could remove the wrong case variant. `removeRemoteBranchPaths` now lists index entries with NUL delimiters and removes the exact entries through `update-index --index-info`, without pathspecs and with `core.protectNTFS=false` and `core.ignorecase=false` scoped to that command.
+
+#### Response style and session handling
+
+The personal `devsmind style` setting is stored as `DEVSMIND_RESPONSE_STYLE` in the brain's gitignored `.env`; the process environment takes precedence and the setting is not written to committed `config.json`. The style instruction is placed first in the MCP handshake and the `/devsmind` prompt, stays under 900 characters, and begins with a bold mandatory line that applies from the first reply. While enabled, each tool result ends with a bold reminder. Code, commands, paths, errors, graph descriptions, commit reasoning, and workflow steps remain unshortened. The setting applies to new connections, so a running stdio server must be restarted.
+
+The session-exempt set was renamed from `SESSION_EXEMPT_READ_TOOLS` to `SESSION_EXEMPT_TOOLS`. `devsmind_git_sync` is exempt because a session connects graph edits to the local Activity log for revert, while Git sync does not create a graph edit or read the supplied session ID. Clients that still include one are accepted.
+
+The handshake and generated rule, skill, and memory instructions were shortened by removing text already present in each tool's description. Their contract remains intact. The 39 tool definitions still total about 83,598 characters (roughly 21,000 tokens); trimming the ten longest descriptions remains a possible follow-up.
+
+#### CI and verification limits
+
+A GitHub Actions workflow now runs the type check and `jest --ci` on Ubuntu, macOS, and Windows with Node 20. It has not run yet. The current verification is Windows-only: the type check is clean and all 65 suites / 1,580 tests pass. macOS and Linux behavior remains unverified until CI runs. Foreign-folder mapping is still heuristic, Windows-safe but incorrect remote paths are caught only when their first folder resembles an operating-system root, and models or clients may not consistently follow terse-style instructions.
 
 ### 4.4.0 — brain data leaves your pull requests, and sync gets ~4x faster
 

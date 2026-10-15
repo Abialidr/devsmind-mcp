@@ -16,6 +16,7 @@ import { handleAddRepo } from './add-repo';
 import { handleMcp } from './integrations/mcp';
 import { handleMemory } from './integrations/memory';
 import { handleSkill } from './integrations/skill';
+import { handleStyle } from './style';
 import { runBackgroundIndexing, runBackgroundReindexing } from './runner';
 import { handleDescribe } from './describe';
 import { handleEmbed } from './embed';
@@ -159,6 +160,19 @@ program
     }
   });
 
+
+program
+  .command('style [level]')
+  .description('Show or set how tersely your AI agent replies, to save tokens: normal (default), lite, or full ("caveman"). Personal to you — stored in the brain\'s gitignored .env, never shared with teammates.')
+  .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
+  .action(async (level: string | undefined, opts: { path?: string }) => {
+    try {
+      await handleStyle(level, opts);
+    } catch (err) {
+      console.error(`❌ Style failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
 
 program
   .command('git-status')

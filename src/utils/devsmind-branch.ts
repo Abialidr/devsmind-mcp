@@ -3,6 +3,32 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {
+  isWindowsUnsafePath, findCaseCollisions, isForeignRootSegment, foldCase, ancestorDirs,
+} from './safe-path';
+
+/** Extra context `syncDir` needs to judge what is safe to share. */
+interface SyncDirOptions {
+  /** Which brain subdirectory this is — graph/ and vectors/ hold `<repo-name>/...`, the others don't. */
+  kind?: string;
+  /** This brain's configured repo names, so a repo genuinely called `home` is not mistaken for a stripped `/home/...`. */
+  repoNames?: readonly string[];
+}
+
+/** False only on a Windows clone where `core.longpaths` could not be turned on — then 260 characters
+ *  is a hard limit HERE and the safe-path length check tightens to what actually fits. Set by
+ *  {@link ensureLongPaths} at the start of every sync. */
+let longPathsInEffect = true;
+
+/** Repo names from this brain's `config.json`; `[]` if it cannot be read (fewer exemptions, never a crash). */
+function readRepoNames(devmindDir: string): string[] {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(devmindDir, 'config.json'), 'utf-8'));
+    return Array.isArray(cfg?.repos) ? cfg.repos.map((r: { name?: unknown }) => String(r?.name ?? '')).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * `devsmind git-sync` — moves the churny, multi-hundred-file part of a brain (`graph/`,
@@ -157,12 +183,14 @@ const COMMIT_ARGS = (rest: string[]): string[] => ['commit', '--no-verify', '--q
  *  something ignored that env var; and `timeout` is the backstop for a stall that isn't a
  *  prompt at all (a dead network) but still isn't self-resolving. A timeout's message is chosen
  *  by whether the subcommand can reach the network at all — see NETWORK_GIT_SUBCOMMANDS. */
-function git(cwd: string, args: string[]): GitResult {
+function git(cwd: string, args: string[], input?: string): GitResult {
   const startedAt = Date.now();
   const res = spawnSync('git', args, {
     cwd,
     encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // stdin stays detached unless this one call is explicitly handed data to feed git.
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    ...(input === undefined ? {} : { input }),
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER_BYTES,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -254,13 +282,13 @@ function setUpPushWorktree(repoRoot: string, worktreeDir: string, remote: string
   // brain whose real change count was 51. `--no-checkout` belongs ONLY on the orphan path below,
   // where the tree is discarded immediately anyway.
   if (branchExistsLocally(repoRoot)) {
-    gitOrThrow(repoRoot, ['worktree', 'add', worktreeDir, DEVSMIND_BRANCH], 'devsmind git-sync: could not check out the devsmind branch');
+    gitOrThrow(repoRoot, ['-c', 'core.longpaths=true', 'worktree', 'add', worktreeDir, DEVSMIND_BRANCH], 'devsmind git-sync: could not check out the devsmind branch');
     return;
   }
   if (branchExistsOnRemote(repoRoot, remote)) {
     gitOrThrow(
       repoRoot,
-      ['worktree', 'add', '-b', DEVSMIND_BRANCH, worktreeDir, `${remote}/${DEVSMIND_BRANCH}`],
+      ['-c', 'core.longpaths=true', 'worktree', 'add', '-b', DEVSMIND_BRANCH, worktreeDir, `${remote}/${DEVSMIND_BRANCH}`],
       'devsmind git-sync: could not track the remote devsmind branch'
     );
     return;
@@ -353,13 +381,59 @@ function sameFileContent(a: string, b: string): boolean {
  * rules there too — making `git add -A` skip the very files the branch exists to hold, and push an
  * empty commit while reporting success. Copy the brain folder wholesale here and that returns.
  */
-function syncDir(source: string, target: string, deletable?: ReadonlySet<string>): boolean {
+function syncDir(source: string, target: string, deletable?: ReadonlySet<string>, opts: SyncDirOptions = {}): boolean {
   const sourceExists = fs.existsSync(source);
   const targetExists = fs.existsSync(target);
   if (!sourceExists && !targetExists) return false;
 
-  const sourceFiles = listFilesRelative(source);
+  // The last line of defence against publishing a path Windows cannot check out. Whatever put an
+  // unsafe file in the local brain (an older version, another tool, a hand edit), it never reaches
+  // the shared branch from here — one machine's bad filename must not block everyone else's sync.
+  const allSourceFiles = listFilesRelative(source);
   const targetFiles = listFilesRelative(target);
+
+  // Case-only duplicates are unsafe for the same reason as a bad character: Windows and macOS can
+  // materialize only one of `Foo.json`/`foo.json`, nor can they hold `App/` beside `app/`, or a file
+  // `foo` beside a directory `Foo/`. Held back: anything in a collision WITHIN the source (the first
+  // in code-point order wins, as it would on every other machine), and anything that clashes with
+  // what the target already holds — comparing against the target's directories as well as files.
+  const sourceCollisions = new Set(findCaseCollisions(allSourceFiles));
+  const heldFiles = new Map(targetFiles.map(t => [foldCase(t), t] as const));
+  const heldDirs = new Map<string, string>();
+  for (const t of targetFiles) for (const d of ancestorDirs(t)) heldDirs.set(foldCase(d), d);
+  const clashesWithHeld = (rel: string): boolean => {
+    const k = foldCase(rel);
+    const sameFile = heldFiles.get(k);
+    if (sameFile !== undefined && sameFile !== rel) return true;
+    if (heldDirs.has(k)) return true;
+    return ancestorDirs(rel).some(d => {
+      const hd = heldDirs.get(foldCase(d));
+      return (hd !== undefined && hd !== d) || heldFiles.has(foldCase(d));
+    });
+  };
+
+  // When core.longpaths is not in effect on this machine, the limit tightens from the conservative
+  // default to what actually fits under the directory this copy writes into.
+  const lengthOpts = longPathsInEffect ? {} : { prefixLength: path.resolve(target).length + 1 };
+  const repoNames = opts.repoNames ?? [];
+  const perRepoKind = opts.kind === 'graph' || opts.kind === 'vectors';
+  const skippedUnsafe = allSourceFiles.filter(rel =>
+    isWindowsUnsafePath(rel, lengthOpts)
+    || sourceCollisions.has(rel)
+    || clashesWithHeld(rel)
+    // The first directory under graph/ and vectors/ is a repo name; an OS root there is another
+    // machine's absolute path with its leading slash stripped — safe to write, wrong to share.
+    || (perRepoKind && isForeignRootSegment(rel.split('/')[0], repoNames))
+  );
+  if (skippedUnsafe.length > 0) {
+    console.error(
+      `[DevsMind git-sync] not publishing ${skippedUnsafe.length} file(s) that cannot be shared safely ` +
+      `(unsafe name, case-only duplicate, or another machine's absolute path; e.g. "${skippedUnsafe[0]}") — ` +
+      `run \`devsmind analyze --fix\` to remove them.`
+    );
+  }
+  const skipped = new Set(skippedUnsafe);
+  const sourceFiles = allSourceFiles.filter(rel => !skipped.has(rel));
   let changed = false;
 
   for (const rel of sourceFiles) {
@@ -636,6 +710,8 @@ function isMidMerge(worktreeDir: string): boolean {
  *  to stat — e.g. one genuinely long path 5 directories deep prints 5 of these, each naming a
  *  DIFFERENT (deeper) `.gitattributes` probe, all sharing the same too-long directory as a prefix. */
 const FILENAME_TOO_LONG_RE = /unable to access '([^']+)': Filename too long/g;
+const INVALID_PATH_RE = /(?:error|fatal): invalid path '([^']+)'/g;
+const UNABLE_TO_CREATE_RE = /unable to create file (.+?): (?:Invalid argument|Filename too long|No such file or directory)/g;
 
 /**
  * A merge can fail not because of a real conflict, but because content already committed on the
@@ -654,20 +730,94 @@ const FILENAME_TOO_LONG_RE = /unable to access '([^']+)': Filename too long/g;
  * individual (fabricated, never-committed) `.gitattributes` probe paths themselves.
  */
 function collectBlockedRemotePaths(mergeStderr: string): string[] {
+  // Other ways git reports a committed path this OS cannot materialize: an outright invalid name
+  // (`:`, `*`, reserved device names, ...) or a create failure. These name the exact path, so no
+  // prefix reconstruction is needed.
+  const exact = [
+    ...[...mergeStderr.matchAll(INVALID_PATH_RE)].map(m => m[1]),
+    ...[...mergeStderr.matchAll(UNABLE_TO_CREATE_RE)].map(m => m[1]),
+  ].filter(p => !!p);
   const probed = [...mergeStderr.matchAll(FILENAME_TOO_LONG_RE)].map(m => m[1]);
-  if (probed.length === 0) return [];
-  // Group probes by their longest shared prefix up to the last '/' before they diverge — in
-  // practice all probes from one bad commit share the single too-long ancestor path verbatim.
-  let common = probed[0];
-  for (const p of probed.slice(1)) {
-    let i = 0;
-    while (i < common.length && i < p.length && common[i] === p[i]) i++;
-    common = common.slice(0, i);
+  if (probed.length === 0) return [...new Set(exact)];
+
+  // Group probes into distinct clusters when multiple separate files or directories fail.
+  // Probes for the same file/dir share a deeper path (or comma-separated concatenated segment).
+  const clusters = new Map<string, string[]>();
+  for (const p of probed) {
+    const commaIdx = p.indexOf(',');
+    const key = commaIdx > 0 ? p.slice(0, commaIdx) : p.split(/[/\\]/).slice(0, 4).join('/');
+    if (!clusters.has(key)) clusters.set(key, []);
+    clusters.get(key)!.push(p);
   }
-  // Trim back to the last complete path segment so we don't return a truncated mid-name prefix.
-  const lastSep = Math.max(common.lastIndexOf('/'), common.lastIndexOf('\\'));
-  const trimmed = lastSep > 0 ? common.slice(0, lastSep) : common;
-  return trimmed ? [trimmed] : [];
+
+  const result: string[] = [];
+  for (const [, clusterProbes] of clusters) {
+    let common = clusterProbes[0];
+    for (const p of clusterProbes.slice(1)) {
+      let i = 0;
+      while (i < common.length && i < p.length && common[i] === p[i]) i++;
+      common = common.slice(0, i);
+    }
+    const lastSep = Math.max(common.lastIndexOf('/'), common.lastIndexOf('\\'));
+    const trimmed = lastSep > 0 ? common.slice(0, lastSep) : common;
+    if (trimmed && !result.includes(trimmed)) result.push(trimmed);
+  }
+
+  for (const p of exact) if (!result.includes(p)) result.push(p);
+  return result;
+}
+
+export { isWindowsUnsafePath, findCaseCollisions };
+
+/**
+ * Every path committed on `<remote>/devsmind` that Windows cannot materialize, found by reading
+ * the tree itself rather than waiting for a checkout to fail and parsing git's error text — the
+ * error wording differs by failure (too long / invalid path / unable to create) and by git version.
+ * `-z` keeps non-ASCII and special-character names unquoted and unambiguous.
+ */
+function findUnsafeRefPaths(repoRoot: string, ref: string, brainDir: string, repoNames: readonly string[]): string[] {
+  const listing = git(repoRoot, ['ls-tree', '-r', '-z', '--name-only', ref]);
+  if (!listing.ok || !listing.stdout) return [];
+  const all = listing.stdout.split('\0').filter(Boolean);
+  // Where a checkout of this ref would land: the throwaway worktree under the OS temp dir. Only
+  // matters when core.longpaths is not in effect here, in which case the length limit is measured
+  // against that real prefix instead of the conservative default.
+  const worktreePrefix = os.tmpdir().length + 'devsmind-branch-'.length + 36 + 1;
+  const lengthOpts = longPathsInEffect ? {} : { prefixLength: worktreePrefix };
+  const wrongButSafe = (p: string): boolean => {
+    // `<brain>/graph|vectors/<first>/...`: <first> is a repo name, never an OS root directory.
+    const parts = p.split('/');
+    return parts.length > 3 && parts[0] === brainDir && (parts[1] === 'graph' || parts[1] === 'vectors')
+      && isForeignRootSegment(parts[2], repoNames);
+  };
+  // Unsafe names, another machine's absolute path with its leading slash stripped, and the case-only
+  // duplicates a Linux machine can commit but Windows/macOS cannot check out (per collision group the
+  // first path in code-point order is kept, the rest reported).
+  return [...new Set([
+    ...all.filter(p => isWindowsUnsafePath(p, lengthOpts) || wrongButSafe(p)),
+    ...findCaseCollisions(all),
+  ])];
+}
+
+/**
+ * Windows' default 260-character path limit applies to git checkouts unless `core.longpaths` is on
+ * for THAT clone — a per-clone setting, so a teammate's clone never gets it from ours. Set it in
+ * the local (never global) config of the repo this brain lives in, on the one platform where it
+ * matters, every time a sync runs here; idempotent and silent.
+ */
+function ensureLongPaths(repoRoot: string): void {
+  if (process.platform !== 'win32') {
+    longPathsInEffect = true;
+    return;
+  }
+  const read = (): boolean => {
+    const current = git(repoRoot, ['config', '--get', 'core.longpaths']);
+    return current.ok && current.stdout.trim() === 'true';
+  };
+  if (!read()) git(repoRoot, ['config', '--local', 'core.longpaths', 'true']);
+  // Re-read rather than assume: a read-only config, or a policy that pins the value, leaves it off,
+  // and the length checks must know the 260-character limit still applies on this machine.
+  longPathsInEffect = read();
 }
 
 function finishAndPush(
@@ -782,7 +932,34 @@ export function gitSyncDevsmindBranch(
   }
 
   // ── A fresh sync ──
+  ensureLongPaths(repoRoot);
   if (remote) git(repoRoot, ['fetch', remote, DEVSMIND_BRANCH]); // best-effort, offline-safe
+
+  // Before any checkout or merge: a path already committed on the remote that this OS cannot
+  // materialize would make `worktree add` / `merge` fail midway with an opaque error. Reading the
+  // tree up front catches it deterministically, whatever wording git would have used, and hands
+  // the caller the exact paths to repair instead.
+  const brainDirForScan = brainDirName(devmindDir);
+  const repoNames = readRepoNames(devmindDir);
+  if (remote && branchExistsOnRemote(repoRoot, remote)) {
+    const unsafe = findUnsafeRefPaths(repoRoot, `${remote}/${DEVSMIND_BRANCH}`, brainDirForScan, repoNames);
+    if (unsafe.length > 0) {
+      return {
+        status: 'blocked_on_remote_paths', remote, branch: DEVSMIND_BRANCH, commit: null,
+        filesChanged: 0, repoRoot, blockedPaths: unsafe,
+      };
+    }
+  }
+  // The same scan over this machine's own branch, which the remote scan never sees. Cleaned in
+  // place without asking (see healLocalBranch) — a local branch holding an unsafe path would make
+  // the worktree checkout below fail before the sync ever reached the merge.
+  if (branchExistsLocally(repoRoot)) {
+    const localUnsafe = findUnsafeRefPaths(repoRoot, `refs/heads/${DEVSMIND_BRANCH}`, brainDirForScan, repoNames);
+    if (localUnsafe.length > 0) {
+      const cleaned = healLocalBranch(repoRoot, localUnsafe);
+      console.error(`[DevsMind git-sync] removed ${cleaned.length} unsafe path(s) from the local ${DEVSMIND_BRANCH} branch.`);
+    }
+  }
 
   const worktreeDir = uniqueWorktreeDir();
   let keepWorktree = false;
@@ -806,7 +983,7 @@ export function gitSyncDevsmindBranch(
     for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
       const localSub = path.join(devmindDir, sub);
       if (!fs.existsSync(localSub)) continue;
-      syncDir(localSub, path.join(worktreeDir, brainDir, sub), deletableOnBranch(devmindDir, sub));
+      syncDir(localSub, path.join(worktreeDir, brainDir, sub), deletableOnBranch(devmindDir, sub), { kind: sub, repoNames });
     }
     gitOrThrow(worktreeDir, ['add', '-A', brainDir], 'devsmind git-sync: staging failed');
     const status = git(worktreeDir, ['status', '--porcelain', '--', brainDir]);
@@ -907,8 +1084,9 @@ export function gitSyncDevsmindBranch(
 function copyBranchStateToBrain(worktreeDir: string, devmindDir: string): string[] {
   const brainDir = brainDirName(devmindDir);
   const synced: string[] = [];
+  const repoNames = readRepoNames(devmindDir);
   for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
-    const changed = syncDir(path.join(worktreeDir, brainDir, sub), path.join(devmindDir, sub));
+    const changed = syncDir(path.join(worktreeDir, brainDir, sub), path.join(devmindDir, sub), undefined, { kind: sub, repoNames });
     if (changed) synced.push(sub);
   }
   return synced;
@@ -1249,6 +1427,83 @@ export interface RemotePathRemovalResult {
 }
 
 /**
+ * Both settings are required, not cosmetic, and are passed per command (`-c`) rather than written
+ * to config because a worktree shares its repo's config — changing them there would change the
+ * developer's real repository.
+ *  - `core.protectNTFS=false`: on Windows git's own path validation rejects an index entry named
+ *    with `*`, `:`, `?` etc., so without it `read-tree` refuses to load the very paths a repair
+ *    exists to delete.
+ *  - `core.ignorecase=false`: Windows defaults it to true, which makes index lookups
+ *    case-insensitive — so removing the stray `foo.json` of a `Foo.json`/`foo.json` pair would also
+ *    remove `Foo.json`, deleting the one file that was supposed to survive.
+ * Safe because the index these touch is only ever written back to a tree object, never checked out.
+ */
+const REPAIR_GIT_CONFIG = ['-c', 'core.protectNTFS=false', '-c', 'core.ignorecase=false'];
+
+/**
+ * In a `--no-checkout` worktree, loads HEAD's tree into the index and removes every entry matching
+ * `paths` (each an exact path or a directory-like prefix — blockedPaths from a Filename-too-long
+ * failure can only be recovered as a prefix, see collectBlockedRemotePaths). Leaves the removal
+ * staged for the caller to commit.
+ *
+ * No git pathspec is used anywhere, deliberately. Every pathspec form fails on some of exactly the
+ * names this repairs: `*`/`?`/`[` are globs, and on Windows git rewrites a literal backslash to `/`
+ * before matching, so `a\b.json` can never be addressed by its real name. So the index is listed once
+ * (names come back NUL-separated and untouched), matched here by exact name or directory prefix, and
+ * the matches are removed by name over stdin with `update-index --index-info`, which reads paths
+ * verbatim.
+ */
+function removeEntriesFromHead(worktreeDir: string, paths: string[]): { removed: string[]; notFound: string[] } {
+  gitOrThrow(worktreeDir, [...REPAIR_GIT_CONFIG, 'read-tree', 'HEAD'], 'devsmind git-sync: could not populate index for repair');
+  const indexed = git(worktreeDir, [...REPAIR_GIT_CONFIG, 'ls-files', '-z']);
+  const allEntries = indexed.ok && indexed.stdout ? indexed.stdout.split('\0').filter(Boolean) : [];
+  const removed: string[] = [];
+  const notFound: string[] = [];
+  for (const p of paths) {
+    const dirPrefix = p.endsWith('/') ? p : `${p}/`;
+    const matches = allEntries.filter(e => e === p || e.startsWith(dirPrefix));
+    if (matches.length === 0) notFound.push(p);
+    else removed.push(...matches);
+  }
+  if (removed.length > 0) {
+    const ZERO_SHA = '0'.repeat(40);
+    const lines = [...new Set(removed)].map(e => `0 ${ZERO_SHA}\t${e}\0`).join('');
+    const res = git(worktreeDir, [...REPAIR_GIT_CONFIG, 'update-index', '-z', '--index-info'], lines);
+    if (!res.ok) throw new Error(`devsmind git-sync: could not remove ${removed.length} path(s): ${res.stderr || res.stdout}`);
+  }
+  return { removed, notFound };
+}
+
+/**
+ * Removes unsafe paths from this machine's OWN `devsmind` branch, in a throwaway worktree, and
+ * commits the removal there (never pushes). The remote repair needs a developer's go-ahead because
+ * it edits what everyone shares; the local branch is this machine's private copy of generated data,
+ * so cleaning it is automatic — leaving it dirty would make every later `worktree add` and merge
+ * fail on the very paths the remote scan already protects against.
+ */
+function healLocalBranch(repoRoot: string, paths: string[]): string[] {
+  const worktreeDir = uniqueWorktreeDir();
+  try {
+    gitOrThrow(
+      repoRoot,
+      ['-c', 'core.longpaths=true', 'worktree', 'add', '--no-checkout', worktreeDir, DEVSMIND_BRANCH],
+      'devsmind git-sync: could not open the local devsmind branch to clean it'
+    );
+    const { removed } = removeEntriesFromHead(worktreeDir, paths);
+    if (removed.length > 0) {
+      gitOrThrow(
+        worktreeDir,
+        [...REPAIR_GIT_CONFIG, ...COMMIT_ARGS(['-m', `Remove ${removed.length} unsafe path(s) from the local devsmind branch`])],
+        'devsmind git-sync: committing the local branch cleanup failed'
+      );
+    }
+    return removed;
+  } finally {
+    removeWorktree(repoRoot, worktreeDir);
+  }
+}
+
+/**
  * Removes the given path(s) directly from `<remote>/devsmind`'s tip and pushes — the repair half
  * of `blocked_on_remote_paths`. These are always disposable generated data (cached vectors/history
  * JSON), never hand-authored content, so deleting them costs nothing but a re-embed on next index;
@@ -1267,30 +1522,15 @@ export function removeRemoteBranchPaths(devmindDir: string, paths: string[]): Re
     throw new Error(`devsmind git-sync: ${remote}/${DEVSMIND_BRANCH} does not exist — nothing to repair.`);
   }
 
+  ensureLongPaths(repoRoot);
   const worktreeDir = uniqueWorktreeDir();
   try {
     gitOrThrow(
       repoRoot,
-      ['worktree', 'add', '-b', `${DEVSMIND_BRANCH}-repair-${Date.now()}`, worktreeDir, `${remote}/${DEVSMIND_BRANCH}`],
+      ['-c', 'core.longpaths=true', 'worktree', 'add', '--no-checkout', '-b', `${DEVSMIND_BRANCH}-repair-${Date.now()}`, worktreeDir, `${remote}/${DEVSMIND_BRANCH}`],
       'devsmind git-sync: could not check out the remote devsmind branch for repair'
     );
-
-    // Each entry may be an exact path or a directory-like prefix (blockedPaths from a
-    // Filename-too-long failure can only be recovered as a prefix — see collectBlockedRemotePaths).
-    // `ls-files` with the raw string as a pathspec matches both: git treats a trailing partial
-    // segment as "everything under this prefix" for `ls-files`/`rm` alike.
-    const removed: string[] = [];
-    const notFound: string[] = [];
-    for (const p of paths) {
-      const listed = git(worktreeDir, ['ls-files', '--', p]);
-      const matches = listed.ok && listed.stdout.trim() ? listed.stdout.split('\n').filter(Boolean) : [];
-      if (matches.length === 0) {
-        notFound.push(p);
-        continue;
-      }
-      gitOrThrow(worktreeDir, ['rm', '-r', '--quiet', '--', p], `devsmind git-sync: could not remove "${p}"`);
-      removed.push(...matches);
-    }
+    const { removed, notFound } = removeEntriesFromHead(worktreeDir, paths);
 
     if (removed.length === 0) {
       throw new Error(
@@ -1301,7 +1541,7 @@ export function removeRemoteBranchPaths(devmindDir: string, paths: string[]): Re
 
     gitOrThrow(
       worktreeDir,
-      COMMIT_ARGS(['-m', `Remove ${removed.length} corrupted/unreadable path(s) blocking devsmind branch merges`]),
+      [...REPAIR_GIT_CONFIG, ...COMMIT_ARGS(['-m', `Remove ${removed.length} corrupted/unreadable path(s) blocking devsmind branch merges`])],
       'devsmind git-sync: repair commit failed'
     );
     const commit = gitOrThrow(worktreeDir, ['rev-parse', 'HEAD'], 'devsmind git-sync: could not read the repair commit hash');

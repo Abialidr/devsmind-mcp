@@ -25,6 +25,7 @@ export interface AnalysisReport {
   renamed_files: { repo: string; from: string; to: string; migrated: boolean }[];
   untracked_files: { repo: string; file: string }[];
   stray_output_dirs: { file_path: string; target: string; kind: 'graph' | 'vectors' }[];
+  unsafe_output_files: { kind: 'graph' | 'vectors' | 'history' | 'workflows'; file: string }[];
 }
 
 const LAST_ANALYSIS_KEY = 'last_analysis_at';
@@ -93,8 +94,24 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
   // interleave those calls with the detection loop's own resolveRepoPath call, corrupting any
   // test (or future caller) that depends on that call happening a specific number of times.
   const stray_output_dirs = db.findStrayOutputDirs();
+  const unsafe_output_files = db.findUnsafeOutputFiles();
 
   if (fix) {
+    // Disposable generated output with a name Windows cannot check out — deleting it is safe
+    // because everything in graph/vectors/history is rebuilt from the DB, and leaving it would keep
+    // tripping teammates' syncs. Emptied directories are cleaned up so no hollow tree remains.
+    for (const u of unsafe_output_files) {
+      fs.rmSync(u.file, { force: true });
+      let dir = path.dirname(u.file);
+      try {
+        while (path.basename(dir) !== u.kind && fs.readdirSync(dir).length === 0) {
+          fs.rmdirSync(dir);
+          dir = path.dirname(dir);
+        }
+      } catch {
+        // best-effort tidy-up only
+      }
+    }
     // Migrate renames FIRST, before the missing-file deprecation pass below: a node whose file
     // was just `git mv`-ed has a file_path that no longer exists on disk, so
     // findSpuriousAndMissingFileNodes (computed above, pre-fix) already misclassified it as
@@ -146,6 +163,7 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     renamed_files: renamed_files.length,
     untracked_files: untracked_files.length,
     stray_output_dirs: stray_output_dirs.length,
+    unsafe_output_files: unsafe_output_files.length,
   };
 
   return {
@@ -163,6 +181,7 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     renamed_files,
     untracked_files,
     stray_output_dirs,
+    unsafe_output_files,
   };
 }
 

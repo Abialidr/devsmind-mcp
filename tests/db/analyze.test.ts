@@ -415,6 +415,86 @@ describe('runAnalysis (src/db/analyze.ts)', () => {
     });
   });
 
+  describe('generated files whose names Windows cannot check out', () => {
+    it('reports them, and --fix deletes only those (and their emptied folders), never the healthy output beside them', () => {
+      const fx = makeFixture();
+      try {
+        const id = '{app}/foo.ts#greet';
+        fx.db.upsertNode({ id, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        fx.db.addConnection(id, id);
+
+        // `, ` — two glued absolute paths — is legal to create on Windows but is exactly the
+        // corruption signature, so it is a faithful on-disk stand-in for the real cases.
+        const badGraph = path.join(fx.devmindPath, 'graph', 'app', 'nested', 'foo.json, home.json');
+        const badVectors = path.join(fx.devmindPath, 'vectors', 'app', 'a, b.json');
+        fs.mkdirSync(path.dirname(badGraph), { recursive: true });
+        fs.mkdirSync(path.dirname(badVectors), { recursive: true });
+        fs.writeFileSync(badGraph, '{}');
+        fs.writeFileSync(badVectors, '{}');
+        const goodGraph = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        expect(fs.existsSync(goodGraph)).toBe(true);
+        // workflows/ is covered too: a folder named like this can never be checked out on Windows.
+        const badWorkflow = path.join(fx.devmindPath, 'workflows', 'wf, x', 'workflow.json');
+        fs.mkdirSync(path.dirname(badWorkflow), { recursive: true });
+        fs.writeFileSync(badWorkflow, '{}');
+        const goodWorkflow = path.join(fx.devmindPath, 'workflows', 'wf-ok', 'workflow.json');
+        fs.mkdirSync(path.dirname(goodWorkflow), { recursive: true });
+        fs.writeFileSync(goodWorkflow, '{}');
+
+        const dry = runAnalysis(fx.db, fx.root, {});
+        expect(dry.unsafe_output_files.map(u => path.basename(u.file)).sort())
+          .toEqual(['a, b.json', 'foo.json, home.json', 'workflow.json']);
+        expect(dry.unsafe_output_files.some(u => u.kind === 'workflows')).toBe(true);
+        expect(dry.summary.unsafe_output_files).toBe(3);
+        expect(fs.existsSync(badVectors)).toBe(true); // a dry run never touches disk
+
+        const fixed = runAnalysis(fx.db, fx.root, { fix: true });
+        expect(fixed.summary.unsafe_output_files).toBe(3);
+        expect(fs.existsSync(path.dirname(badWorkflow))).toBe(false);
+        expect(fs.existsSync(goodWorkflow)).toBe(true);
+        expect(fs.existsSync(badGraph)).toBe(false);
+        expect(fs.existsSync(badVectors)).toBe(false);
+        expect(fs.existsSync(path.dirname(badGraph))).toBe(false); // emptied `nested/` is gone too
+        expect(fs.existsSync(goodGraph)).toBe(true);
+        expect(runAnalysis(fx.db, fx.root, {}).summary.unsafe_output_files).toBe(0);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
+  describe('another machine\'s absolute path with its leading slash stripped', () => {
+    it('flags graph/vectors output whose first directory is an OS root, which no character rule can see — and leaves a real repo\'s output alone', () => {
+      const fx = makeFixture();
+      try {
+        const id = '{app}/foo.ts#greet';
+        fx.db.upsertNode({ id, type: 'function', name: 'greet', file_path: repoFile(fx, 'foo.ts') });
+        fx.db.addConnection(id, id);
+
+        // `/home/u/app/x.ts` minus its leading slash: Windows-safe characters throughout.
+        const stray = path.join(fx.devmindPath, 'vectors', 'home', 'u', 'app', 'x.json');
+        const strayGraph = path.join(fx.devmindPath, 'graph', 'Users', 'me', 'y.json');
+        for (const f of [stray, strayGraph]) {
+          fs.mkdirSync(path.dirname(f), { recursive: true });
+          fs.writeFileSync(f, '{}');
+        }
+        const good = path.join(fx.devmindPath, 'graph', 'app', 'foo.json');
+        expect(fs.existsSync(good)).toBe(true);
+
+        const dry = runAnalysis(fx.db, fx.root, {});
+        expect(dry.unsafe_output_files.map(u => path.basename(u.file)).sort()).toEqual(['x.json', 'y.json']);
+
+        runAnalysis(fx.db, fx.root, { fix: true });
+        expect(fs.existsSync(stray)).toBe(false);
+        expect(fs.existsSync(strayGraph)).toBe(false);
+        expect(fs.existsSync(path.join(fx.devmindPath, 'vectors', 'home'))).toBe(false);
+        expect(fs.existsSync(good)).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
   describe('--fix behavior', () => {
     it('fix:true deprecates orphaned/spurious/missing-file nodes and deletes dangling edges, but leaves healthy nodes and unresolved categories untouched', async () => {
       const fx = makeFixture({

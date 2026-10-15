@@ -6,6 +6,7 @@ import { INIT_SCHEMA_SQL, DbNode, DbHistory, HistoryEdit, DbConnection, DbWorkfl
 import { loadProjectContext, resolveRepoPath, ProjectContext, canonicalizePath } from '../utils/config';
 import { parseNodeId, extractNodeFromFile, normalizeFsPath, locateNodeInFile, isAstParseable } from '../utils/ast';
 import { tokenizeText } from '../utils/tokenize';
+import { isWindowsUnsafePath, findCaseCollisions, isForeignAbsolutePath, isForeignRootSegment } from '../utils/safe-path';
 import {
   tokenizeNodeField, scoreCandidate, TokenField, FieldMatch, DEFAULT_FIELD_WEIGHTS, reciprocalRankFusion,
   tokenizeWorkflowField, WorkflowTokenField, DEFAULT_WORKFLOW_FIELD_WEIGHTS
@@ -914,13 +915,30 @@ export class DevMindDatabase {
     // description/signature below.
     const aliasesJson = node.aliases ? JSON.stringify(Array.from(new Set(node.aliases))) : null;
     if (existing) {
-      let finalPath = existing.file_path;
-      const paths = existing.file_path.split(',').map(p => p.trim()).filter(Boolean);
-      const incoming = canonicalFp.trim();
-      if (!paths.includes(incoming)) {
-        paths.push(incoming);
-        finalPath = paths.join(', ');
+      const incomingParts = canonicalFp.split(',').map(p => p.trim()).filter(Boolean);
+      const rawPaths = existing.file_path.split(',').map(p => p.trim()).filter(Boolean);
+      const distinctPaths: string[] = [];
+      const seenRepoRel = new Set<string>();
+
+      // Preserve incoming local paths first
+      for (const inc of incomingParts) {
+        const incRel = this.toRepoRelativePath(inc);
+        if (!seenRepoRel.has(incRel)) {
+          distinctPaths.push(inc);
+          seenRepoRel.add(incRel);
+        }
       }
+
+      // Keep genuinely different files from existing; discard cross-OS / duplicate representations of the same file
+      for (const p of rawPaths) {
+        const pRepoRel = this.toRepoRelativePath(p);
+        if (!seenRepoRel.has(pRepoRel)) {
+          distinctPaths.push(p);
+          seenRepoRel.add(pRepoRel);
+        }
+      }
+
+      const finalPath = distinctPaths.join(', ');
       pathToRewrite = finalPath;
 
       // description follows the same COALESCE idiom as signature: an unspecified description
@@ -939,14 +957,28 @@ export class DevMindDatabase {
       `);
       stmt.run(node.type, node.name, finalPath, node.signature || null, node.description || null, aliasesJson, node.id);
     } else {
+      const incomingParts = canonicalFp.split(',').map(p => p.trim()).filter(Boolean);
+      const distinctPaths: string[] = [];
+      const seenRepoRel = new Set<string>();
+      for (const inc of incomingParts) {
+        const incRel = this.toRepoRelativePath(inc);
+        if (!seenRepoRel.has(incRel)) {
+          distinctPaths.push(inc);
+          seenRepoRel.add(incRel);
+        }
+      }
+      const finalCanonicalFp = distinctPaths.join(', ');
+      pathToRewrite = finalCanonicalFp;
+
       const stmt = this.db.prepare(`
         INSERT INTO nodes (id, type, name, file_path, signature, description, aliases)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
-      stmt.run(node.id, node.type, node.name, canonicalFp, node.signature || null, node.description || null, aliasesJson ?? '[]');
+      stmt.run(node.id, node.type, node.name, finalCanonicalFp, node.signature || null, node.description || null, aliasesJson ?? '[]');
     }
     for (const p of pathToRewrite.split(',').map(s => s.trim()).filter(Boolean)) {
       this.writeGraphToDisk(p);
+      this.writeVectorsToDisk(p);
     }
   }
 
@@ -984,7 +1016,9 @@ export class DevMindDatabase {
         vector = excluded.vector
     `);
     stmt.run(node.id, EMBEDDING_MODEL_ID, EMBEDDING_DIM, descriptionHash, Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength));
-    this.writeVectorsToDisk(node.file_path);
+    for (const p of node.file_path.split(',').map(s => s.trim()).filter(Boolean)) {
+      this.writeVectorsToDisk(p);
+    }
   }
 
   getNodeVector(nodeId: string): { modelId: string; dim: number; descriptionHash: string; vector: Int8Array } | null {
@@ -4070,10 +4104,19 @@ export class DevMindDatabase {
   }
 
   public toRepoRelativePath(absolutePath: string): string {
-    if (!absolutePath || !this.context) return absolutePath;
-    const abs = canonicalizePath(absolutePath).replace(/\\/g, '/');
+    if (!absolutePath) return absolutePath;
+    const trimmed = absolutePath.trim();
+    // 1. Already in {repo}/relative portable form
+    if (/^\{[^}]+\}\//.test(trimmed)) {
+      return trimmed.replace(/\\/g, '/');
+    }
+    if (!this.context) return trimmed.replace(/\\/g, '/');
+
+    const normalizedRaw = trimmed.replace(/\\/g, '/');
+    const abs = canonicalizePath(trimmed).replace(/\\/g, '/');
     const absLower = abs.toLowerCase();
     
+    // 2. Direct match against resolved repo paths
     for (const repo of this.context.config.repos) {
       const repoPath = resolveRepoPath(this.context, repo.name);
       if (repoPath) {
@@ -4086,9 +4129,69 @@ export class DevMindDatabase {
       }
     }
     
+    // 3. Cross-OS / cross-machine match: path contains repo.name or folder name from another OS.
+    // Skipped when the path really exists on THIS machine: it is then a genuine local file outside
+    // every repo, and mapping it by a coincidental folder name (a repo called `app` or `src`)
+    // would misattribute it to that repo.
+    //
+    // A path that is missing locally is mapped by folder name only on real evidence it came from
+    // elsewhere: it looks like another platform's path, it is not absolute at all, or the mapped
+    // remainder actually exists in the repo. A native absolute path that is simply gone (a deleted
+    // file outside every repo, under a folder that happens to share a repo's name) has none of
+    // those — mapping it would invent a `{repo}/...` identity for a file that was never in the repo.
+    if (!fs.existsSync(abs)) {
+      const foreignLooking = isForeignAbsolutePath(normalizedRaw, process.platform) || !path.isAbsolute(trimmed);
+      for (const repo of this.context.config.repos) {
+        const repoPath = resolveRepoPath(this.context, repo.name);
+        const byName = this.matchRepoSuffix(normalizedRaw, repo.name, repoPath);
+        if (byName && (foreignLooking || byName.existsInRepo)) return `{${repo.name}}/${byName.rel}`;
+        if (repoPath) {
+          const base = path.basename(repoPath);
+          if (base && base.toLowerCase() !== repo.name.toLowerCase()) {
+            const byBase = this.matchRepoSuffix(normalizedRaw, base, repoPath);
+            if (byBase && (foreignLooking || byBase.existsInRepo)) return `{${repo.name}}/${byBase.rel}`;
+          }
+        }
+      }
+    }
+
     // Fallback: resolve relative to workspace root
     const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
-    return path.relative(workspaceRoot, absolutePath).replace(/\\/g, '/');
+    return path.relative(workspaceRoot, abs).replace(/\\/g, '/');
+  }
+
+  private isUnderAnyRepoRoot(absPath: string): boolean {
+    const abs = canonicalizePath(absPath).replace(/\\/g, '/').toLowerCase();
+    return this.repoRoots().some(root => {
+      const r = canonicalizePath(root).replace(/\\/g, '/').toLowerCase();
+      return abs === r || abs.startsWith(r + '/');
+    });
+  }
+
+  /**
+   * The part of `raw` after a `<folderName>/` segment, for mapping another machine's absolute path
+   * onto a local repo. The folder name can occur more than once (`/home/u/app/src/app/x.ts`), so
+   * every occurrence is a candidate; the first whose remainder actually exists under `repoPath`
+   * wins, and only when none does is the leftmost taken. Picking blindly by position mapped such
+   * paths to the wrong file.
+   */
+  private matchRepoSuffix(raw: string, folderName: string, repoPath: string | null): { rel: string; existsInRepo: boolean } | null {
+    const norm = raw.replace(/\\/g, '/');
+    const escaped = folderName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('(?:^|/)' + escaped + '/', 'gi');
+    const candidates: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(norm)) !== null) {
+      const rest = norm.slice(m.index + m[0].length);
+      if (rest) candidates.push(rest);
+      re.lastIndex = m.index + 1;
+    }
+    if (candidates.length === 0) return null;
+    if (repoPath) {
+      const existing = candidates.find(c => fs.existsSync(path.join(repoPath, c)));
+      if (existing) return { rel: existing, existsInRepo: true };
+    }
+    return { rel: candidates[0], existsInRepo: false };
   }
 
   /**
@@ -4144,6 +4247,29 @@ export class DevMindDatabase {
 
   public toAbsolutePath(repoRelativePath: string): string {
     if (!repoRelativePath) return repoRelativePath;
+    if (repoRelativePath.includes(',')) {
+      const parts = repoRelativePath.split(',').map(s => s.trim()).filter(Boolean);
+      const resolvedParts: string[] = [];
+      const seen = new Set<string>();
+      const workspaceRootCanon = canonicalizePath(path.dirname(this.dbPath));
+      let rootCollapsed: string | null = null;
+      for (const part of parts) {
+        const abs = this.toAbsolutePath(part);
+        // A part nothing could map comes back clamped to the workspace root — a directory, never a
+        // real file_path. Keep it only if every part collapsed (then it is all there is).
+        if (canonicalizePath(abs) === workspaceRootCanon) {
+          rootCollapsed = abs;
+          continue;
+        }
+        const rel = this.toRepoRelativePath(abs);
+        if (!seen.has(rel)) {
+          seen.add(rel);
+          resolvedParts.push(abs);
+        }
+      }
+      if (resolvedParts.length === 0 && rootCollapsed) resolvedParts.push(rootCollapsed);
+      return resolvedParts.join(', ');
+    }
     const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
 
     const match = repoRelativePath.match(/^\{([^}]+)\}\/(.*)$/);
@@ -4156,18 +4282,21 @@ export class DevMindDatabase {
       }
     }
 
-    // Heuristic: if it doesn't start with {repoName} but contains a configured repo name in the path
+    // Heuristic: if it doesn't start with {repoName} but contains a configured repo name or folder in the path
     if (this.context) {
       for (const repo of this.context.config.repos) {
         // Find if repo.name appears as a folder in the path, e.g. "harrir-express-backend/tests/..."
-        const escapedRepoName = repo.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp('(?:^|/|\\\\)' + escapedRepoName + '(?:/|\\\\)(.*)$', 'i');
-        const m = repoRelativePath.match(regex);
-        if (m) {
-          const repoPath = resolveRepoPath(this.context, repo.name);
-          if (repoPath) {
-            const relativePath = m[1];
-            return canonicalizePath(path.resolve(repoPath, relativePath));
+        const repoPath = resolveRepoPath(this.context, repo.name);
+        if (!repoPath) continue;
+        const byName = this.matchRepoSuffix(repoRelativePath, repo.name, repoPath);
+        if (byName) {
+          return canonicalizePath(this.clampToRoot(repoPath, path.resolve(repoPath, byName.rel)));
+        }
+        const base = path.basename(repoPath);
+        if (base && base.toLowerCase() !== repo.name.toLowerCase()) {
+          const byBase = this.matchRepoSuffix(repoRelativePath, base, repoPath);
+          if (byBase) {
+            return canonicalizePath(this.clampToRoot(repoPath, path.resolve(repoPath, byBase.rel)));
           }
         }
       }
@@ -4190,29 +4319,32 @@ export class DevMindDatabase {
     try {
       const workspaceRoot = path.dirname(this.dbPath);
 
-      // 0. Auto-heal any legacy relative path records in SQLite.
-      //
-      // Runs on every server start, so getting "already absolute" wrong is not a one-time
-      // migration slip — it recurs forever. The original check only recognized the C: drive
-      // and POSIX roots ('c:%'/'C:%'/'/%'); SQL LIKE has no character-range syntax, so it could
-      // not express "any drive letter" or a UNC path (\\server\share\...) in one pattern. Every
-      // node on a D:, E:, ... drive or a UNC path was misclassified as relative, run through
-      // toAbsolutePath() -> clampToRoot(), and silently rewritten to the workspace root — i.e.
-      // real file_paths for an entire class of valid Windows paths got destroyed on restart.
-      // path.isAbsolute() classifies all of these correctly in one call.
+      // 0. Auto-heal any legacy relative, cross-OS, or comma-concatenated path records in SQLite.
       try {
-        const legacyNodes = (this.db.prepare('SELECT id, file_path FROM nodes').all() as { id: string; file_path: string }[])
-          .filter(n => n.file_path && !path.isAbsolute(n.file_path));
-        if (legacyNodes.length > 0) {
-          const updateStmt = this.db.prepare('UPDATE nodes SET file_path = ? WHERE id = ?');
-          const healTx = this.db.transaction(() => {
-            for (const n of legacyNodes) {
-              const abs = this.toAbsolutePath(n.file_path);
+        const allNodes = (this.db.prepare('SELECT id, file_path FROM nodes').all() as { id: string; file_path: string }[]);
+        const updateStmt = this.db.prepare('UPDATE nodes SET file_path = ? WHERE id = ?');
+        const healTx = this.db.transaction(() => {
+          for (const n of allNodes) {
+            if (!n.file_path) continue;
+            const hasComma = n.file_path.includes(',');
+            const isNotAbs = !path.isAbsolute(n.file_path);
+            const fp = n.file_path;
+            // Another platform's absolute path. On macOS `/home/` and `/root/` are never real
+            // (a teammate's Linux path); on Linux `/Users/` is never real (a teammate's Mac path).
+            // Windows-style paths are foreign to both.
+            const isCrossOs = isForeignAbsolutePath(fp, process.platform);
+            if (hasComma || isNotAbs || isCrossOs) {
+              const abs = this.toAbsolutePath(fp);
+              if (!abs || abs === fp) continue;
+              // A purely cross-OS path that no configured repo can claim comes back clamped to
+              // the workspace root. Writing that over the node would turn it into a
+              // directory-typed file_path (the EISDIR / degenerate-path bug), so leave it alone.
+              if (isCrossOs && !hasComma && !isNotAbs && !this.isUnderAnyRepoRoot(abs)) continue;
               updateStmt.run(abs, n.id);
             }
-          });
-          healTx();
-        }
+          }
+        });
+        healTx();
       } catch (err) {
         // ignore legacy errors
       }
@@ -4305,7 +4437,7 @@ export class DevMindDatabase {
           return fileList;
         };
 
-        const jsonFiles = walkSync(graphDir);
+        const jsonFiles = this.dropUnsafeOutputFiles(graphDir, walkSync(graphDir));
         if (jsonFiles.length > 0) {
           const deleteNodesForFileStmt = this.db.prepare('DELETE FROM nodes WHERE file_path = ?');
           const deleteConnsForNodesStmt = this.db.prepare('DELETE FROM node_connections WHERE source_node_id = ?');
@@ -4391,7 +4523,7 @@ export class DevMindDatabase {
           return fileList;
         };
 
-        const vectorJsonFiles = walkSyncVec(vectorsDir);
+        const vectorJsonFiles = this.dropUnsafeOutputFiles(vectorsDir, walkSyncVec(vectorsDir));
         if (vectorJsonFiles.length > 0) {
           const insertVectorStmt = this.db.prepare(`
             INSERT OR REPLACE INTO node_vectors (node_id, model_id, dim, description_hash, vector)
@@ -4560,7 +4692,7 @@ export class DevMindDatabase {
    * the write, never touches the node.
    */
   private isDegenerateDiskJsonPath(containerDir: string, diskRelPath: string, targetPath: string): boolean {
-    if (!diskRelPath || diskRelPath.endsWith('/') || diskRelPath.endsWith('\\')) return true;
+    if (this.isUnsafeDiskRelPath(diskRelPath)) return true;
     const relToContainer = path.relative(containerDir, targetPath);
     if (relToContainer === '' || relToContainer.startsWith('..')) return true;
     return fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory();
@@ -4577,12 +4709,83 @@ export class DevMindDatabase {
    * Used to recognize a file_path that's structurally unfixable no matter how many times a write
    * is retried, as opposed to one that's merely blocked by removable disk cruft.
    */
+  /**
+   * The one structural check every `graph/`/`vectors/` output path goes through before it is
+   * written. A generated path is only ever legitimate in the shape `<repo-name>/<relative path>`,
+   * so beyond Windows-unsafe characters (the shared {@link isWindowsUnsafePath}) its first segment
+   * must be a configured repo — which is what shuts out another machine's absolute path
+   * (`home/user/...`) turning into a deep, valid-looking, but wrong directory tree.
+   */
+  private isUnsafeDiskRelPath(diskRelPath: string): boolean {
+    if (!diskRelPath || diskRelPath.endsWith('/') || diskRelPath.endsWith('\\')) return true;
+    if (diskRelPath.includes(',') || /^[/\\]/.test(diskRelPath)) return true;
+    if (isWindowsUnsafePath(diskRelPath)) return true;
+    if (this.context) {
+      const first = diskRelPath.split('/')[0].toLowerCase();
+      if (!this.context.config.repos.some(r => r.name.toLowerCase() === first)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Of `files` (absolute, all under `baseDir`), the ones that can never be shared safely: a name
+   * Windows cannot check out, or a case-only duplicate of another file in the set (the first in
+   * code-point order survives, matching what every other machine would keep).
+   */
+  private unsafeOutputFiles(baseDir: string, files: string[]): string[] {
+    const rel = new Map(files.map(f => [f, path.relative(baseDir, f).replace(/\\/g, '/')] as const));
+    const colliding = new Set(findCaseCollisions(rel.values()));
+    // Under graph/ and vectors/ the first segment is always a repo name. One that is an OS root
+    // directory (`home`, `Users`, ...) is another machine's absolute path with its leading slash
+    // stripped — Windows-safe, so the character rules miss it, but wrong all the same.
+    const perRepo = ['graph', 'vectors'].includes(path.basename(baseDir));
+    const repoNames = this.context ? this.context.config.repos.map(r => r.name) : [];
+    return files.filter(f => {
+      const r = rel.get(f)!;
+      return isWindowsUnsafePath(r)
+        || colliding.has(r)
+        || (perRepo && isForeignRootSegment(r.split('/')[0], repoNames));
+    });
+  }
+
+  private dropUnsafeOutputFiles(baseDir: string, files: string[]): string[] {
+    const unsafe = new Set(this.unsafeOutputFiles(baseDir, files));
+    return unsafe.size === 0 ? files : files.filter(f => !unsafe.has(f));
+  }
+
+  /**
+   * Generated `graph/`, `vectors/`, `history/` and `workflows/` files already on disk that cannot be
+   * shared safely — Windows-unsafe names, or case-only duplicates — left by an older version,
+   * another tool, or a different OS. They are generated output (the DB is the source of truth and
+   * rewrites every legitimately-named file), so `analyze --fix` deletes them; until then sync
+   * ignores them and publishing skips them, so they can do no harm in the meantime.
+   */
+  findUnsafeOutputFiles(): { kind: 'graph' | 'vectors' | 'history' | 'workflows'; file: string }[] {
+    const workspaceRoot = path.dirname(this.dbPath);
+    const found: { kind: 'graph' | 'vectors' | 'history' | 'workflows'; file: string }[] = [];
+    for (const kind of ['graph', 'vectors', 'history', 'workflows'] as const) {
+      const base = path.join(workspaceRoot, kind);
+      if (!fs.existsSync(base)) continue;
+      const all: string[] = [];
+      const walk = (dir: string): void => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else all.push(full);
+        }
+      };
+      walk(base);
+      for (const file of this.unsafeOutputFiles(base, all)) found.push({ kind, file });
+    }
+    return found;
+  }
+
   private isFilePathStructurallyDegenerate(filePath: string): boolean {
     const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
     const absPath = canonicalizePath(filePath);
     const repoRelPath = this.toRepoRelativePath(absPath);
     const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
-    if (!diskRelPath || diskRelPath.endsWith('/') || diskRelPath.endsWith('\\')) return true;
+    if (this.isUnsafeDiskRelPath(diskRelPath)) return true;
     const graphDir = path.join(workspaceRoot, 'graph');
     const relToContainer = path.relative(graphDir, path.join(graphDir, diskRelPath));
     return relToContainer === '' || relToContainer.startsWith('..');
@@ -4591,9 +4794,17 @@ export class DevMindDatabase {
   writeGraphToDisk(filePath: string) {
     try {
       if (!filePath) return;
+      const paths = filePath.split(',').map(s => s.trim()).filter(Boolean);
+      if (paths.length > 1) {
+        for (const p of paths) this.writeGraphToDisk(p);
+        return;
+      }
+      const singlePath = paths[0];
+      if (!singlePath) return;
+
       const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
       // Clean/resolve the file path
-      const absPath = canonicalizePath(filePath);
+      const absPath = canonicalizePath(singlePath);
       const repoRelPath = this.toRepoRelativePath(absPath);
 
       // E.g., "{harrir-web}/app/page.tsx" -> "graph/harrir-web/app/page.json"
@@ -4601,7 +4812,7 @@ export class DevMindDatabase {
       const graphDir = path.join(workspaceRoot, 'graph');
       const graphJsonPath = path.join(graphDir, diskRelPath);
       if (this.isDegenerateDiskJsonPath(graphDir, diskRelPath, graphJsonPath)) {
-        console.warn(`⚠️ Skipped writing graph JSON: a node's file_path resolves to a directory, not a file (${absPath}) — run \`devsmind analyze --fix\` to clean it up.`);
+        console.warn(`⚠️ Skipped writing graph JSON: a node's file_path is malformed or resolves to a directory (${absPath}) — run \`devsmind analyze --fix\` to clean it up.`);
         return;
       }
 
@@ -4673,8 +4884,16 @@ export class DevMindDatabase {
   writeVectorsToDisk(filePath: string) {
     try {
       if (!filePath) return;
+      const paths = filePath.split(',').map(s => s.trim()).filter(Boolean);
+      if (paths.length > 1) {
+        for (const p of paths) this.writeVectorsToDisk(p);
+        return;
+      }
+      const singlePath = paths[0];
+      if (!singlePath) return;
+
       const workspaceRoot = canonicalizePath(path.dirname(this.dbPath));
-      const absPath = canonicalizePath(filePath);
+      const absPath = canonicalizePath(singlePath);
       const repoRelPath = this.toRepoRelativePath(absPath);
       const diskRelPath = repoRelPath.replace(/^\{([^}]+)\}/, '$1').replace(/\.[^/.]+$/, '.json');
       const vectorsDir = path.join(workspaceRoot, 'vectors');
@@ -4682,7 +4901,7 @@ export class DevMindDatabase {
       // Same guard as writeGraphToDisk — see isDegenerateDiskJsonPath's comment for why this
       // happens and what it means.
       if (this.isDegenerateDiskJsonPath(vectorsDir, diskRelPath, vectorsJsonPath)) {
-        console.warn(`⚠️ Skipped writing vectors JSON: a node's file_path resolves to a directory, not a file (${absPath}) — run \`devsmind analyze --fix\` to clean it up.`);
+        console.warn(`⚠️ Skipped writing vectors JSON: a node's file_path is malformed or resolves to a directory (${absPath}) — run \`devsmind analyze --fix\` to clean it up.`);
         return;
       }
 

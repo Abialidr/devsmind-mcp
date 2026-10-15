@@ -38,7 +38,9 @@ describe('devsmind memory --print', () => {
     expect(out).toContain('edit_node');
     expect(out).toContain('Prefer');
     expect(out).toContain('search_nodes');
-    expect(out.indexOf('Always write files with the')).toBeLessThan(out.indexOf('Non-negotiable workflow'));
+    const contractStart = out.indexOf(DEVSMIND_INSTRUCTIONS.slice(0, 40));
+    expect(contractStart).toBeGreaterThan(-1);
+    expect(out.indexOf('Always write files with the')).toBeLessThan(contractStart);
     expect(exitSpy).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import BetterSqlite3 from 'better-sqlite3';
 import { DevMindDatabase } from '../../src/db/database';
@@ -543,6 +544,23 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
       }
     });
 
+    it('keeps a structurally valid file path when the only node for it is deprecated', () => {
+      const fx = makeFixture();
+      try {
+        const filePath = repoFile(fx, 'deprecated.ts');
+        const id = '{app}/deprecated.ts#old';
+        fx.db.upsertNode({ id, type: 'function', name: 'old', file_path: filePath });
+        fx.db.deprecateNode(id);
+
+        fx.db.syncToDisk();
+
+        const graphPath = path.join(fx.devmindPath, 'graph', 'app', 'deprecated.json');
+        expect(fs.existsSync(graphPath)).toBe(true);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
     it('stops repeating the directory-typed file_path warning on every future syncToDisk once the node is deprecated — deprecating it never clears the garbage file_path, so it used to warn forever', () => {
       // Regression test: a real production brain reported the exact same "Skipped writing graph
       // JSON: a node's file_path resolves to a directory" warning on EVERY `devsmind sync`, even
@@ -729,6 +747,285 @@ describe('DevMindDatabase — syncFromDisk / syncToDisk / resetAll', () => {
           expect(resurrectedHistory).toBeTruthy();
           expect(resurrectedHistory.code_snapshot).toBe('');
           expect(resurrectedHistory.reasoning).toContain('Resurrected from history alone.');
+        } finally {
+          db2.close();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+  });
+
+  describe('cross-OS portable paths & malformed vector filename prevention', () => {
+    it('upsertNode does not join two paths representing the same file from different OS representations', () => {
+      const fx = makeFixture();
+      try {
+        const localFoo = repoFile(fx, 'foo.ts');
+        // Seed node with a simulated teammate Linux path
+        const linuxPath = `/home/teammate/project/app/foo.ts`;
+        fx.db.upsertNode({
+          id: '{app}/foo.ts#testFunc',
+          type: 'function',
+          name: 'testFunc',
+          file_path: linuxPath,
+          description: 'A test function.'
+        });
+
+        // Now local Windows machine runs upsertNode with local absolute path
+        fx.db.upsertNode({
+          id: '{app}/foo.ts#testFunc',
+          type: 'function',
+          name: 'testFunc',
+          file_path: localFoo,
+          description: 'Updated test function description.'
+        });
+
+        const node = fx.db.getNode('{app}/foo.ts#testFunc');
+        expect(node).toBeTruthy();
+        expect(node!.file_path).not.toContain(',');
+        expect(node!.file_path).not.toContain('/home/');
+        expect(node!.file_path.toLowerCase()).toBe(localFoo.toLowerCase());
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('upsertNode collapses pre-existing comma-joined duplicate paths into a single canonical path', () => {
+      const fx = makeFixture();
+      try {
+        const localFoo = repoFile(fx, 'foo.ts');
+        const simulatedCorrupted = `${localFoo}, /home/teammate/Documents/Harrir/app/foo.ts`;
+        
+        // Directly insert corrupted row in SQLite
+        (fx.db as any).db.prepare(`
+          INSERT INTO nodes (id, type, name, file_path, description, deprecated)
+          VALUES ('{app}/foo.ts#corrupted', 'function', 'corrupted', ?, 'Test corrupted', 0)
+        `).run(simulatedCorrupted);
+
+        // Next upsertNode cleans and collapses it
+        fx.db.upsertNode({
+          id: '{app}/foo.ts#corrupted',
+          type: 'function',
+          name: 'corrupted',
+          file_path: localFoo,
+          description: 'Cleaned'
+        });
+
+        const node = fx.db.getNode('{app}/foo.ts#corrupted');
+        expect(node).toBeTruthy();
+        expect(node!.file_path.toLowerCase()).toBe(localFoo.toLowerCase());
+        expect(node!.file_path).not.toContain(',');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('writeVectorsToDisk splits comma-separated file_path into separate clean JSON files', () => {
+      const fx = makeFixture();
+      try {
+        const foo = repoFile(fx, 'foo.ts');
+        const bar = repoFile(fx, 'bar.ts');
+
+        fx.db.upsertNode({ id: '{app}/foo.ts#f1', type: 'function', name: 'f1', file_path: foo, description: 'f1' });
+        fx.db.upsertNode({ id: '{app}/bar.ts#b1', type: 'function', name: 'b1', file_path: bar, description: 'b1' });
+
+        const vec = new Int8Array(EMBEDDING_DIM).fill(1);
+        fx.db.upsertNodeVector('{app}/foo.ts#f1', vec, 'hash1');
+        fx.db.upsertNodeVector('{app}/bar.ts#b1', vec, 'hash2');
+
+        // Call writeVectorsToDisk with a comma-joined path
+        fx.db.writeVectorsToDisk(`${foo}, ${bar}`);
+
+        const vectorsDir = path.join(fx.devmindPath, 'vectors', 'app');
+        expect(fs.existsSync(path.join(vectorsDir, 'foo.json'))).toBe(true);
+        expect(fs.existsSync(path.join(vectorsDir, 'bar.json'))).toBe(true);
+
+        // Verify NO files or dirs with commas exist anywhere in vectors/
+        const allInVectors = fs.readdirSync(path.join(fx.devmindPath, 'vectors'), { recursive: true });
+        for (const item of allInVectors) {
+          expect(String(item)).not.toContain(',');
+          expect(String(item)).not.toContain('/home/');
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('writeVectorsToDisk rejects degenerate and malformed paths without creating corrupt files', () => {
+      const fx = makeFixture();
+      try {
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          fx.db.writeVectorsToDisk('/home/user/other/malformed, /opt/bad.ts');
+          fx.db.writeVectorsToDisk('C:\\invalid:path\\test*.json');
+        } finally {
+          warnSpy.mockRestore();
+        }
+
+        const vectorsDir = path.join(fx.devmindPath, 'vectors');
+        if (fs.existsSync(vectorsDir)) {
+          const files = fs.readdirSync(vectorsDir, { recursive: true });
+          for (const f of files) {
+            expect(String(f)).not.toContain('malformed');
+            expect(String(f)).not.toContain(':');
+          }
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('syncFromDisk step 0 heals comma-joined and cross-OS duplicate paths in nodes table', () => {
+      const fx = makeFixture();
+      try {
+        const localFoo = repoFile(fx, 'foo.ts');
+        const dbPath = path.join(fx.devmindPath, 'brain.db');
+
+        // Write a graph file for foo.ts
+        fs.mkdirSync(path.join(fx.devmindPath, 'graph', 'app'), { recursive: true });
+        fs.writeFileSync(path.join(fx.devmindPath, 'graph', 'app', 'foo.json'), JSON.stringify({
+          file_path: '{app}/foo.ts',
+          nodes: [{ id: '{app}/foo.ts#healed', name: 'healed', type: 'function', deprecated: 0 }]
+        }));
+
+        // Directly insert comma-joined duplicate in SQLite
+        (fx.db as any).db.prepare(`
+          INSERT INTO nodes (id, type, name, file_path, deprecated)
+          VALUES ('{app}/foo.ts#healed', 'function', 'healed', ?, 0)
+        `).run(`${localFoo}, /home/propelius/app/foo.ts`);
+
+        fx.db.close();
+
+        // New DevMindDatabase triggers syncFromDisk() step 0 auto-heal
+        const db2 = new DevMindDatabase(dbPath);
+        try {
+          const node = db2.getNode('{app}/foo.ts#healed');
+          expect(node).toBeTruthy();
+          expect(node!.file_path).not.toContain(',');
+          expect(node!.file_path).not.toContain('/home/');
+        } finally {
+          db2.close();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('syncFromDisk ignores a graph/vectors file with an unsafe name instead of importing it', () => {
+      const fx = makeFixture();
+      try {
+        const dbPath = path.join(fx.devmindPath, 'brain.db');
+        fs.mkdirSync(path.join(fx.devmindPath, 'graph', 'app'), { recursive: true });
+        fs.writeFileSync(path.join(fx.devmindPath, 'graph', 'app', 'foo.json, home.json'), JSON.stringify({
+          file_path: '{app}/foo.ts',
+          nodes: [{ id: '{app}/foo.ts#poison', name: 'poison', type: 'function', deprecated: 0 }]
+        }));
+        fs.writeFileSync(path.join(fx.devmindPath, 'graph', 'app', 'ok.json'), JSON.stringify({
+          file_path: '{app}/bar.ts',
+          nodes: [{ id: '{app}/bar.ts#fine', name: 'fine', type: 'function', deprecated: 0 }]
+        }));
+        fx.db.close();
+
+        const db2 = new DevMindDatabase(dbPath);
+        try {
+          expect(db2.getNode('{app}/foo.ts#poison')).toBeFalsy();
+          expect(db2.getNode('{app}/bar.ts#fine')).toBeTruthy();
+        } finally {
+          db2.close();
+        }
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('never writes graph/vectors output for a file that is not under a configured repo, even when it sits inside the brain folder', () => {
+      const fx = makeFixture();
+      try {
+        // Inside the workspace root, so toRepoRelativePath's fallback yields a clean `zzz/foo.ts`
+        // with no `..` — the shape that used to slip through as `graph/zzz/foo.json`.
+        const outside = path.join(fx.devmindPath, 'zzz', 'foo.ts');
+        fs.mkdirSync(path.dirname(outside), { recursive: true });
+        fs.writeFileSync(outside, 'export const a = 1;\n');
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          fx.db.upsertNode({ id: '{app}/foo.ts#stray', type: 'function', name: 'stray', file_path: outside });
+        } finally {
+          warnSpy.mockRestore();
+        }
+        expect(fs.existsSync(path.join(fx.devmindPath, 'graph', 'zzz'))).toBe(false);
+        expect(fs.existsSync(path.join(fx.devmindPath, 'vectors', 'zzz'))).toBe(false);
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('does not remap a real local file outside every repo just because a folder in its path shares a repo name', () => {
+      const fx = makeFixture();
+      const stray = fs.mkdtempSync(path.join(os.tmpdir(), 'devsmind-stray-'));
+      try {
+        // The fixture's only repo is named `app`; this file is real, local, and under a folder
+        // that happens to be called `app` — it must NOT be attributed to `{app}`.
+        const strayFile = path.join(stray, 'app', 'stray.ts');
+        fs.mkdirSync(path.dirname(strayFile), { recursive: true });
+        fs.writeFileSync(strayFile, 'export const x = 1;\n');
+        expect(fx.db.toRepoRelativePath(strayFile).startsWith('{app}/')).toBe(false);
+      } finally {
+        fs.rmSync(stray, { recursive: true, force: true });
+        fx.cleanup();
+      }
+    });
+
+    it('does not invent a repo identity for a native absolute path that is simply gone, but still maps another machine\'s path', () => {
+      const fx = makeFixture();
+      try {
+        // A native absolute path under a folder named like the repo, to a file that no longer
+        // exists: nothing says it ever belonged to `app`, so it must not be mapped there.
+        const gone = path.join(os.tmpdir(), 'devsmind-gone-xyz', 'app', 'deleted.ts');
+        expect(fs.existsSync(gone)).toBe(false);
+        expect(fx.db.toRepoRelativePath(gone).startsWith('{app}/')).toBe(false);
+
+        // Another machine's path to a file this repo does not hold locally is still recognized as
+        // foreign and mapped — that is the whole point of the cross-OS mapping.
+        const foreign = process.platform === 'win32' ? '/home/teammate/work/app/only-theirs.ts' : 'C:\\work\\app\\only-theirs.ts';
+        expect(fx.db.toRepoRelativePath(foreign)).toBe('{app}/only-theirs.ts');
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('maps a foreign path whose repo-name folder repeats to the occurrence that exists locally, not blindly the first', () => {
+      const fx = makeFixture();
+      try {
+        // `/…/app/nested/app/foo.ts`: leftmost-match would give `nested/app/foo.ts` (absent here);
+        // the occurrence that resolves to a real file in the repo is `foo.ts`.
+        const rel = fx.db.toRepoRelativePath('/home/teammate/app/nested/app/foo.ts');
+        expect(rel).toBe('{app}/foo.ts');
+        expect(fx.db.toAbsolutePath('/home/teammate/app/nested/app/foo.ts').toLowerCase())
+          .toBe(repoFile(fx, 'foo.ts').toLowerCase());
+      } finally {
+        fx.cleanup();
+      }
+    });
+
+    it('syncFromDisk heal leaves an unmappable foreign path alone instead of rewriting it to the workspace root', () => {
+      const fx = makeFixture();
+      try {
+        const dbPath = path.join(fx.devmindPath, 'brain.db');
+        // Looks foreign on every platform (Windows drive form on posix, posix root on Windows),
+        // and no configured repo can claim it.
+        const foreign = process.platform === 'win32' ? '/home/stranger/unknown/zzz.ts' : 'Z:\\stranger\\unknown\\zzz.ts';
+        (fx.db as any).db.prepare(`
+          INSERT INTO nodes (id, type, name, file_path, deprecated)
+          VALUES ('{app}/zzz.ts#ghost', 'function', 'ghost', ?, 0)
+        `).run(foreign);
+        fx.db.close();
+
+        const db2 = new DevMindDatabase(dbPath);
+        try {
+          const node = db2.getNode('{app}/zzz.ts#ghost');
+          expect(node).toBeTruthy();
+          expect(node!.file_path).toBe(foreign);
+          expect(path.resolve(node!.file_path).toLowerCase()).not.toBe(path.resolve(fx.devmindPath).toLowerCase());
         } finally {
           db2.close();
         }
