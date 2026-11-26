@@ -158,16 +158,61 @@ describe('devsmind-branch — git-sync over real git', () => {
     const result = gitSyncDevsmindBranch(devA, 'first sync');
     expect(result.status).toBe('pushed');
 
-    const worktreeAdd = spawnSyncSpy.mock.calls
+    // An ordinary sync creates no worktree at all — git reads the brain folder in
+    // place — so nothing can be materialized, the repo's source least of all.
+    const worktreeAdds = spawnSyncSpy.mock.calls
       .map(c => c[1] as string[])
-      .find(a => Array.isArray(a) && a[0] === 'worktree' && a[1] === 'add');
-    expect(worktreeAdd).toContain('--no-checkout');
+      .filter(a => Array.isArray(a) && a.includes('worktree') && a.includes('add'));
     spawnSyncSpy.mockRestore();
+    expect(worktreeAdds).toEqual([]);
 
     // And the branch itself carries only .devsmind/ — never the repo's source.
     const files = sh(repoA, 'git ls-tree -r --name-only devsmind');
     expect(files).not.toMatch('BIG_SOURCE_FILE.ts');
     expect(files).toMatch('.devsmind/graph/foo.json');
+  });
+
+  it('never touches the developer\'s own staging area, HEAD, or working files — git reads the brain in place through a private index', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    // Work in progress on the developer's own branch: one staged edit, one unstaged.
+    fs.writeFileSync(path.join(repoA, 'staged.ts'), 'export const staged = 1;\n');
+    sh(repoA, 'git add staged.ts');
+    fs.writeFileSync(path.join(repoA, 'README.md'), 'hello, edited but not staged\n');
+    const headBefore = sh(repoA, 'git rev-parse HEAD');
+    const indexBefore = fs.readFileSync(path.join(repoA, '.git', 'index'));
+
+    writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
+    expect(gitSyncDevsmindBranch(devA, 'first sync').status).toBe('pushed');
+    writeJson(devA, 'graph', 'bar.json', graphFile('{app}/bar.ts', [{ id: 'bar' }]));
+    expect(gitSyncDevsmindBranch(devA, 'second sync').status).toBe('pushed');
+
+    expect(sh(repoA, 'git rev-parse HEAD')).toBe(headBefore);
+    expect(fs.readFileSync(path.join(repoA, '.git', 'index')).equals(indexBefore)).toBe(true);
+    expect(sh(repoA, 'git diff --cached --name-only')).toBe('staged.ts');
+    expect(fs.readFileSync(path.join(repoA, 'README.md'), 'utf-8')).toBe('hello, edited but not staged\n');
+    // The private index lives in local/, which no branch tracks.
+    expect(fs.existsSync(path.join(devA, 'local', 'git-sync.index'))).toBe(true);
+    expect(sh(repoA, 'git ls-tree -r --name-only devsmind')).not.toMatch('local/');
+  });
+
+  it('a second sync with nothing changed reads no brain file — unchanged stat means git skips it', () => {
+    const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+    for (const name of ['a', 'b', 'c']) writeJson(devA, 'graph', `${name}.json`, graphFile(`{app}/${name}.ts`, [{ id: name }]));
+    gitSyncDevsmindBranch(devA, 'seed');
+
+    // If the sync copied or compared files itself, it would open every one of these.
+    const readSpy = jest.spyOn(require('fs'), 'readFileSync');
+    jest.resetModules();
+    try {
+      const fresh = require('../../src/utils/devsmind-branch');
+      expect(fresh.gitSyncDevsmindBranch(devA, 'no changes').status).toBe('nothing_to_do');
+      const brainReads = readSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes(`${path.sep}graph${path.sep}`));
+      expect(brainReads).toEqual([]);
+      // ...and the spy really sees this module's reads: it caught the one read the sync does make.
+      expect(readSpy.mock.calls.some((c: unknown[]) => String(c[0]).endsWith('config.json'))).toBe(true);
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 
   it('never runs the host repo\'s commit hooks — they have no business policing DevsMind\'s own bookkeeping commits', () => {
@@ -519,7 +564,11 @@ describe('devsmind-branch — git-sync over real git', () => {
     for (const call of spawnSyncSpy.mock.calls) {
       const [cmd, , opts] = call as [string, string[], Record<string, unknown>];
       if (cmd !== 'git') continue;
-      expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+      // stdin is detached unless this one call hands git data to read (a path list for
+      // update-index) — then it is a pipe holding exactly that data, closed at its end, so there
+      // is still nothing a prompt could wait on.
+      if (opts.input === undefined) expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+      else expect(opts.stdio).toEqual(['pipe', 'pipe', 'pipe']);
       expect(opts.timeout).toBeGreaterThan(0);
       expect((opts.env as Record<string, string>).GIT_TERMINAL_PROMPT).toBe('0');
     }
@@ -553,8 +602,8 @@ describe('devsmind-branch — git-sync over real git', () => {
     const spawnSyncSpy = jest.spyOn(require('child_process'), 'spawnSync')
       .mockImplementation((...callArgs: unknown[]) => {
         const [cmd, cmdArgs] = callArgs as [string, string[]];
-        if (cmd === 'git' && cmdArgs[0] === 'merge') {
-          return { status: 1, error: undefined, signal: null, stdout: '', stderr: REAL_INCIDENT_STDERR };
+        if (cmd === 'git' && cmdArgs.includes('merge-tree')) {
+          return { status: 128, error: undefined, signal: null, stdout: '', stderr: REAL_INCIDENT_STDERR };
         }
         return (realSpawnSync as (...a: unknown[]) => unknown)(...callArgs);
       });
@@ -566,6 +615,11 @@ describe('devsmind-branch — git-sync over real git', () => {
       gitSyncDevsmindBranch(devA, 'seed');
 
       const { devB } = makeRepoB();
+      gitSyncDevsmindBranch(devB, 'B catches up');
+      // A moves on after B's last sync, so B's next sync has a real merge to do rather than a
+      // plain push on top of the remote.
+      writeJson(devA, 'graph', 'later.json', graphFile('{app}/later.ts', [{ id: 'later' }]));
+      gitSyncDevsmindBranch(devA, 'A moves on');
       writeJson(devB, 'graph', 'bar.json', graphFile('{app}/bar.ts', [{ id: 'bar' }]));
       const result = gitSyncDevsmindBranch(devB, 'B syncs while remote merge is unreadable');
 
@@ -798,8 +852,8 @@ describe('devsmind-branch — git-sync over real git', () => {
     const spy = jest.spyOn(require('child_process'), 'spawnSync')
       .mockImplementation((...callArgs: unknown[]) => {
         const [cmd, cmdArgs] = callArgs as [string, string[]];
-        if (cmd === 'git' && cmdArgs[0] === 'merge') {
-          return { status: 1, error: undefined, signal: null, stdout: '', stderr: STDERR };
+        if (cmd === 'git' && cmdArgs.includes('merge-tree')) {
+          return { status: 128, error: undefined, signal: null, stdout: '', stderr: STDERR };
         }
         return (realSpawnSync as (...a: unknown[]) => unknown)(...callArgs);
       });
@@ -809,6 +863,11 @@ describe('devsmind-branch — git-sync over real git', () => {
       writeJson(devA, 'graph', 'foo.json', graphFile('{app}/foo.ts', [{ id: 'foo' }]));
       gitSyncDevsmindBranch(devA, 'seed');
       const { devB } = makeRepoB();
+      gitSyncDevsmindBranch(devB, 'B catches up');
+      // A moves on after B's last sync, so B's next sync has a real merge to do rather than a
+      // plain push on top of the remote.
+      writeJson(devA, 'graph', 'later.json', graphFile('{app}/later.ts', [{ id: 'later' }]));
+      gitSyncDevsmindBranch(devA, 'A moves on');
       writeJson(devB, 'graph', 'bar.json', graphFile('{app}/bar.ts', [{ id: 'bar' }]));
       const result = gitSyncDevsmindBranch(devB, 'B syncs');
       expect(result.status).toBe('blocked_on_remote_paths');
@@ -954,6 +1013,117 @@ describe('devsmind-branch — git-sync over real git', () => {
   // The copy step used to delete the whole target directory and write every file back, on both
   // legs of every sync. Correct, but it charged a full 10,000-file rewrite for the ordinary case
   // of a handful of edits — the single largest cost in a sync on a real brain.
+  describe('gitStatusDevsmindBranch', () => {
+    const counts = (status: { perSubdir: { sub: string; modified: number; added: number; deleted: number }[] }, sub: string) => {
+      const row = status.perSubdir.find(r => r.sub === sub)!;
+      return { modified: row.modified, added: row.added, deleted: row.deleted };
+    };
+
+    it('before anything is shared, reports every brain file as new', () => {
+      const { gitStatusDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      writeJson(devA, 'graph', 'a.json', graphFile('{app}/a.ts', [{ id: 'a' }]));
+      writeJson(devA, 'history', 'h.json', { id: 'h' });
+      const status = gitStatusDevsmindBranch(devA);
+      expect(status.branchExists).toBe(false);
+      expect(status.totalFiles).toBe(2);
+    });
+
+    it('right after a sync reports nothing pending, then counts exactly what changed', () => {
+      const { gitSyncDevsmindBranch, gitStatusDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      for (const name of ['keep', 'edit', 'gone']) writeJson(devA, 'graph', `${name}.json`, graphFile(`{app}/${name}.ts`, [{ id: name }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+      expect(gitStatusDevsmindBranch(devA).totalFiles).toBe(0);
+
+      writeJson(devA, 'graph', 'edit.json', graphFile('{app}/edit.ts', [{ id: 'edit', deprecated: 1 }]));
+      writeJson(devA, 'graph', 'new.json', graphFile('{app}/new.ts', [{ id: 'new' }]));
+      fs.rmSync(path.join(devA, 'graph', 'gone.json'));
+      // Fresh mtime, identical bytes: not a change.
+      fs.utimesSync(path.join(devA, 'graph', 'keep.json'), new Date(), new Date());
+
+      const status = gitStatusDevsmindBranch(devA);
+      expect(counts(status, 'graph')).toEqual({ modified: 1, added: 1, deleted: 1 });
+      expect(status.totalFiles).toBe(3);
+    });
+
+    it('a subdirectory this brain lacks is not reported as deleted — a sync would not delete it', () => {
+      const { gitSyncDevsmindBranch, gitStatusDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      writeJson(devA, 'graph', 'a.json', graphFile('{app}/a.ts', [{ id: 'a' }]));
+      writeJson(devA, 'history', 'h.json', { id: 'h' });
+      gitSyncDevsmindBranch(devA, 'seed');
+      fs.rmSync(path.join(devA, 'history'), { recursive: true });
+      expect(counts(gitStatusDevsmindBranch(devA), 'history')).toEqual({ modified: 0, added: 0, deleted: 0 });
+    });
+
+    // The bug the old hand-rolled hashing kept hitting: with autocrlf on, it had to guess whether
+    // each directory's files had been converted, and once reported 14,334 files modified when 38
+    // were. Git applies the conversion itself here, so there is nothing to guess.
+    it('is not fooled by core.autocrlf — LF files that match the branch are not "modified"', () => {
+      const { gitSyncDevsmindBranch, gitStatusDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      sh(repoA, 'git config core.autocrlf true');
+      for (const name of ['a', 'b']) writeJson(devA, 'graph', `${name}.json`, graphFile(`{app}/${name}.ts`, [{ id: name }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+      expect(gitStatusDevsmindBranch(devA).totalFiles).toBe(0);
+      writeJson(devA, 'graph', 'b.json', graphFile('{app}/b.ts', [{ id: 'b', deprecated: 1 }]));
+      expect(counts(gitStatusDevsmindBranch(devA), 'graph')).toEqual({ modified: 1, added: 0, deleted: 0 });
+    });
+
+    it('never changes the branch or the brain, and keeps its hands off the sync index while a sync holds the lock', () => {
+      const { gitSyncDevsmindBranch, gitStatusDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      const { acquireSyncLock } = require('../../src/utils/sync-lock');
+      writeJson(devA, 'graph', 'a.json', graphFile('{app}/a.ts', [{ id: 'a' }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+      writeJson(devA, 'graph', 'a.json', graphFile('{app}/a.ts', [{ id: 'a', deprecated: 1 }]));
+      const refsBefore = sh(repoA, 'git for-each-ref --format="%(refname) %(objectname)"');
+      const fileBefore = fs.readFileSync(path.join(devA, 'graph', 'a.json'), 'utf-8');
+
+      const indexFile = path.join(devA, 'local', 'git-sync.index');
+      const indexBefore = fs.readFileSync(indexFile);
+      const lock = acquireSyncLock(devA, 'a-running-sync');
+      try {
+        expect(gitStatusDevsmindBranch(devA).totalFiles).toBe(1);
+        expect(fs.readFileSync(indexFile).equals(indexBefore)).toBe(true);
+      } finally {
+        lock.release();
+      }
+
+      expect(sh(repoA, 'git for-each-ref --format="%(refname) %(objectname)"')).toBe(refsBefore);
+      expect(fs.readFileSync(path.join(devA, 'graph', 'a.json'), 'utf-8')).toBe(fileBefore);
+    });
+
+    it('with no sync index yet, the first status builds one so the next status is cheap', () => {
+      const { gitSyncDevsmindBranch, gitStatusDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      writeJson(devA, 'graph', 'a.json', graphFile('{app}/a.ts', [{ id: 'a' }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+      // As on a brain last synced by an older version: no index at all.
+      const indexFile = path.join(devA, 'local', 'git-sync.index');
+      fs.rmSync(indexFile);
+      expect(gitStatusDevsmindBranch(devA).totalFiles).toBe(0);
+      expect(fs.existsSync(indexFile)).toBe(true);
+      // And it is a sound cache: a sync from it still commits correctly.
+      writeJson(devA, 'graph', 'b.json', graphFile('{app}/b.ts', [{ id: 'b' }]));
+      const result = gitSyncDevsmindBranch(devA, 'after a status-built index');
+      expect(result.filesChanged).toBe(1);
+      expect(sh(repoA, 'git ls-tree -r --name-only devsmind')).toContain('graph/b.json');
+    });
+
+    it('opens no brain file when nothing changed since the last sync', () => {
+      const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');
+      for (const name of ['a', 'b', 'c']) writeJson(devA, 'graph', `${name}.json`, graphFile(`{app}/${name}.ts`, [{ id: name }]));
+      gitSyncDevsmindBranch(devA, 'seed');
+
+      const readSpy = jest.spyOn(require('fs'), 'readFileSync');
+      jest.resetModules();
+      try {
+        const fresh = require('../../src/utils/devsmind-branch');
+        expect(fresh.gitStatusDevsmindBranch(devA).totalFiles).toBe(0);
+        const brainReads = readSpy.mock.calls.filter((c: unknown[]) => String(c[0]).includes(`${path.sep}graph${path.sep}`));
+        expect(brainReads).toEqual([]);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+  });
+
   describe('only the files that actually changed are copied', () => {
     it('leaves an untouched file alone instead of rewriting it', () => {
       const { gitSyncDevsmindBranch } = require('../../src/utils/devsmind-branch');

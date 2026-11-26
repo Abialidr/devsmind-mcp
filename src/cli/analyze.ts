@@ -45,11 +45,12 @@ export async function handleAnalyze(opts: { path?: string; fix?: boolean; godEnt
 const SECTIONS: { key: keyof AnalysisReport['summary']; label: string; fixable: boolean }[] = [
   { key: 'god_entities', label: 'God entities (high fan-in/out)', fixable: false },
   { key: 'circular_dependencies', label: 'Circular dependency cycles', fixable: false },
-  { key: 'orphaned_nodes', label: 'Orphaned nodes (zero connections)', fixable: true },
+  { key: 'orphaned_nodes', label: 'Orphaned nodes (zero connections)', fixable: false },
   { key: 'dangling_edges', label: 'Dangling edges (broken references)', fixable: true },
   { key: 'duplicate_ids', label: 'Duplicate/case-collision node ids', fixable: false },
   { key: 'missing_developer_attribution', label: 'History missing developer attribution', fixable: false },
   { key: 'empty_code_snapshots', label: 'Empty code snapshots', fixable: false },
+  { key: 'wrongly_deprecated', label: 'Wrongly deprecated nodes (symbol still in its file; one-time repair)', fixable: true },
   { key: 'spurious_nodes', label: 'Spurious/built-in nodes', fixable: true },
   { key: 'missing_files', label: 'Nodes with missing files', fixable: true },
   { key: 'renamed_files', label: 'Renamed files (git-detected)', fixable: true },
@@ -94,7 +95,7 @@ export function printReport(report: AnalysisReport) {
   if (!report.fixed) {
     const anyFixable = SECTIONS.some(s => s.fixable && report.summary[s.key] > 0);
     if (anyFixable) {
-      console.log(`Run with --fix to soft-deprecate dead nodes, remove dangling edges, and migrate detected renames.\n`);
+      console.log(`Run with --fix to soft-deprecate nodes whose file is gone (orphaned nodes are only reported), remove dangling edges, and migrate detected renames.\n`);
     }
   }
 }
@@ -106,6 +107,7 @@ function formatRow(key: string, row: any): string {
     case 'circular_dependencies':
       return (row as string[]).join(' → ');
     case 'orphaned_nodes':
+    case 'wrongly_deprecated':
     case 'spurious_nodes':
     case 'missing_files':
       return `${row.name} (${row.id}) — ${row.file_path || 'no file'}`;

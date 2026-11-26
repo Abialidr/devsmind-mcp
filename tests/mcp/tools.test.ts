@@ -102,7 +102,9 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       // shared branch, but a session exists to tie graph EDITS to the local Activity log for
       // revert, and a git sync neither records an edit nor appears in that log (its handler never
       // reads the id), so the gate bought nothing and cost a start_session round trip.
-      'devsmind_git_sync'
+      'devsmind_git_sync',
+      // Its status companion only reads an in-memory job.
+      'devsmind_git_sync_status'
     ];
 
     it('write tools require session_id; read-only tools do not', async () => {
@@ -2119,6 +2121,72 @@ describe('MCP tools (in-process, real Server + Client over InMemoryTransport)', 
       }) as { isError: boolean; parsed: { status: string } };
       expect(second.isError).toBe(false);
       expect(second.parsed.status).toBe('nothing_to_do');
+    });
+
+    // Two agents syncing the same brain: the second must not start a second sync.
+    it('answers "busy" instead of starting a second sync while another holds the lock', async () => {
+      gitInitFixtureRoot();
+      const lockFile = path.join(fx.devmindPath, 'local', 'git-sync.lock');
+      fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+      // This very process is alive, so the lock is live, not abandoned.
+      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, host: os.hostname(), startedAt: new Date().toISOString(), jobId: 'other-job' }));
+      try {
+        const { isError, parsed } = await callToolJson(harness.client, 'devsmind_git_sync', {
+          devmind_path: fx.devmindPath, message: 'should not run'
+        }) as { isError: boolean; parsed: { status: string; job_id?: string } };
+        expect(isError).toBe(false);
+        expect(parsed.status).toBe('busy');
+        expect(parsed.job_id).toBe('other-job');
+        // Nothing ran: no devsmind branch was created.
+        expect(() => execSync('git rev-parse --verify devsmind', { cwd: fx.root, stdio: 'ignore' })).toThrow();
+      } finally {
+        fs.rmSync(lockFile, { force: true });
+      }
+
+      const status = await callToolJson(harness.client, 'devsmind_git_sync_status', { devmind_path: fx.devmindPath }) as { parsed: { status: string } };
+      expect(status.parsed.status).toBe('idle');
+    });
+
+    it('a sync that outlasts the wait returns a job id, and devsmind_git_sync_status hands back the final result', async () => {
+      gitInitFixtureRoot();
+      await stageAndCommit(fx, [{ node_id: 'greet', file_path: repoFile(fx, 'foo.ts'), code_snapshot: 'export function greet() { return 1; }', name: 'greet', type: 'function' }]);
+
+      const prev = process.env.DEVSMIND_GIT_SYNC_WAIT_MS;
+      process.env.DEVSMIND_GIT_SYNC_WAIT_MS = '0';
+      let first: { isError: boolean; parsed: { status: string; job_id?: string } };
+      try {
+        first = await callToolJson(harness.client, 'devsmind_git_sync', {
+          devmind_path: fx.devmindPath, message: 'background sync'
+        }) as typeof first;
+      } finally {
+        if (prev === undefined) delete process.env.DEVSMIND_GIT_SYNC_WAIT_MS;
+        else process.env.DEVSMIND_GIT_SYNC_WAIT_MS = prev;
+      }
+      expect(first.isError).toBe(false);
+
+      let final = first.parsed;
+      if (final.status === 'running') {
+        expect(final.job_id).toBeTruthy();
+        const polled = await callToolJson(harness.client, 'devsmind_git_sync_status', {
+          devmind_path: fx.devmindPath, job_id: final.job_id
+        }) as { isError: boolean; parsed: { status: string } };
+        expect(polled.isError).toBe(false);
+        final = polled.parsed;
+      }
+      expect(final.status).toBe('committed_local_only');
+      // The lock is gone once the job ends, so the next sync runs rather than answering busy.
+      expect(fs.existsSync(path.join(fx.devmindPath, 'local', 'git-sync.lock'))).toBe(false);
+      const again = await callToolJson(harness.client, 'devsmind_git_sync', {
+        devmind_path: fx.devmindPath, message: 'again'
+      }) as { parsed: { status: string } };
+      expect(again.parsed.status).toBe('nothing_to_do');
+    });
+
+    it('releases the lock when the sync fails, so a failure never blocks the next sync', async () => {
+      // No git repo in this fixture: the sync throws.
+      const { isError } = await callTool(harness.client, 'devsmind_git_sync', { devmind_path: fx.devmindPath, message: 'fails' });
+      expect(isError).toBe(true);
+      expect(fs.existsSync(path.join(fx.devmindPath, 'local', 'git-sync.lock'))).toBe(false);
     });
   });
 });

@@ -2,7 +2,19 @@
 
 > Full prose version with rationale for each change: [detailExplanation.md § Changelog](detailExplanation.md#changelog). This file is the scan-fast version — one line per change.
 
-## Unreleased - terse reply style, and path-safety hardening
+## 4.7.1 - git sync without copies, one sync at a time, no client timeouts, and a repair for wrongly deprecated nodes
+
+- **`devsmind_git_sync` no longer copies the brain.** It used to check the `devsmind` branch out into a temp worktree, copy every brain file into it, merge there, copy everything back, and delete the worktree: seven passes over every file, whatever changed. Git now reads `.devsmind/` in place through a private index (`.devsmind/local/git-sync.index`), builds the commit with plumbing, merges with `git merge-tree` inside the object store, and writes back only the files that differ. On a 10,000-file test brain, a sync after editing 20 files went from 188s to 9s, and the first sync from 255s to 58s.
+- **Your branch is untouched, as before.** The brain files stay gitignored on your branch, and the sync never uses your `.git/index`, never moves HEAD, and never touches staged or working files. The `devsmind` branch has the same layout, so teammates on older versions keep syncing against it.
+- **Same safety rules.** Deletions are still limited to files this brain had, unsafe and case-colliding names are still held back, and a repaired path that reappears is still auto-resolved. A real conflict still falls back to a worktree, so you resolve files on disk and resume as before.
+- **One sync per brain at a time.** A lock file (`.devsmind/local/git-sync.lock`) makes a second agent get `status: "busy"` (with the running job's id) instead of starting a second sync. A sync cannot be stopped part-way, and the lock is released however it ends. A lock whose process died, or that is over 2 hours old, is taken over.
+- **`analyze --fix` no longer deprecates orphaned nodes.** A node with no connections was treated as dead code and deprecated, but edges exist only where the extractor resolved a reference, so most live variables, constants, types and interfaces never get one. On one real brain this had marked over 9,000 nodes deprecated whose symbol was still in its file. Orphans are now report-only; `--fix` deprecates a node only when its file is gone or it is a built-in false positive. Nodes deprecated this way earlier stay deprecated until restored.
+- **`analyze --fix` repairs wrongly deprecated nodes once.** On a brain hit by the old orphan rule, `analyze` now lists deprecated nodes whose file exists and still contains their name (whole word), and `--fix` restores them first, in one transaction, before its other fixes. It runs once per brain (recorded in system meta), so a node an agent deprecates on purpose is never revived. Connections and vectors dropped at deprecation are not recovered; re-index and `embed` rebuild them.
+- **No more tool-call timeouts.** The git work runs on a worker thread. A sync that is still going after a minute returns `status: "running"` with a `job_id`, and the new **`devsmind_git_sync_status`** tool waits on it (up to a minute per call) and returns the final result. `DEVSMIND_GIT_SYNC_WAIT_MS` overrides the wait.
+- **Conflicts are still slow.** A real merge conflict still falls back to a temporary worktree and the full copy-back path, which was not optimized. One sync with 13 conflicts took about 25 minutes.
+- **Docs aligned.** README and detailExplanation describe the in-place sync, the lock, the background job and `devsmind_git_sync_status`, say that initial indexing needs no `devsmind sync`, list every indexing provider, and drop removed and deprecated commands and flags from the body.
+
+## 4.7.0 - terse reply style, and path-safety hardening
 
 ### Terse replies (`devsmind style`)
 - **New `devsmind style [normal|lite|full]`** - makes your agent's chat replies shorter to save tokens. `full` is "caveman" (fragments, no articles, answer first); `lite` just cuts filler and hedging. Off by default; `on`/`off`/`caveman` work as aliases.

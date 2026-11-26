@@ -6,6 +6,7 @@ import * as path from 'path';
 import {
   isWindowsUnsafePath, findCaseCollisions, isForeignRootSegment, foldCase, ancestorDirs,
 } from './safe-path';
+import { acquireSyncLock } from './sync-lock';
 
 /** Extra context `syncDir` needs to judge what is safe to share. */
 interface SyncDirOptions {
@@ -43,12 +44,15 @@ function readRepoNames(devmindDir: string): string[] {
  * merged, it only copied the remote tip over your files. `gitSyncDevsmindBranch` commits your
  * side FIRST (so git has a common ancestor), then 3-way merges theirs in, then pushes.
  *
- * Implemented via a throwaway `git worktree`, never a checkout of the caller's actual branch:
- * the working tree, HEAD, and index the user is looking at are never touched. A stash-based
- * "stash → checkout → pop → checkout back" approach was considered and rejected — it mutates
- * the user's real working directory mid-flight, and any interruption (crash, conflict on pop)
- * leaves the repo straddling two branches with a stash floating around. A worktree can't do
- * that: it's a separate directory, cleaned up in a `finally`, and the real branch never moves.
+ * Never a checkout of the caller's actual branch: the working tree, HEAD, and index the user is
+ * looking at are never touched. Git reads the brain folder IN PLACE through a private index and
+ * builds the commits with plumbing (see {@link syncInPlace}), so the cost of a sync follows the
+ * number of files that changed rather than the size of the brain. An earlier version did the work
+ * in a throwaway `git worktree` — a full checkout, a copy of every file in, a copy of every file
+ * back out, and a full delete, every sync — which took over half an hour on a large brain. A
+ * worktree is still used for one case only: a real merge conflict, where the caller needs the
+ * conflicted files on disk to resolve them. A stash-based "stash → checkout → pop → checkout
+ * back" approach was rejected long ago: it mutates the user's real working directory mid-flight.
  */
 
 export const DEVSMIND_BRANCH = 'devsmind';
@@ -123,6 +127,9 @@ interface GitResult {
   ok: boolean;
   stdout: string;
   stderr: string;
+  /** Git's exit code; null when it never exited normally (timeout, missing binary). Needed where
+   *  exit 1 means something specific — `merge-tree` reports "conflicts" with 1 and real failure above. */
+  code?: number | null;
 }
 
 /** Hard ceiling on any single git call. Push/fetch are the only ones that touch the network,
@@ -183,8 +190,12 @@ const COMMIT_ARGS = (rest: string[]): string[] => ['commit', '--no-verify', '--q
  *  something ignored that env var; and `timeout` is the backstop for a stall that isn't a
  *  prompt at all (a dead network) but still isn't self-resolving. A timeout's message is chosen
  *  by whether the subcommand can reach the network at all — see NETWORK_GIT_SUBCOMMANDS. */
-function git(cwd: string, args: string[], input?: string): GitResult {
+function git(cwd: string, args: string[], input?: string, extraEnv?: Record<string, string>): GitResult {
   const startedAt = Date.now();
+  // The subcommand, skipping leading `-c key=value` pairs — so `-c core.x=y push` is still a push.
+  let subIdx = 0;
+  while (args[subIdx] === '-c') subIdx += 2;
+  const sub = args[subIdx] ?? '';
   const res = spawnSync('git', args, {
     cwd,
     encoding: 'utf-8',
@@ -193,14 +204,14 @@ function git(cwd: string, args: string[], input?: string): GitResult {
     ...(input === undefined ? {} : { input }),
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER_BYTES,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    env: { ...process.env, ...(extraEnv ?? {}), GIT_TERMINAL_PROMPT: '0' },
   });
   // Anything this slow is worth naming while it is happening rather than only in a post-mortem:
   // on a large repo a single `add`/`commit`/`merge` can run for a long time, and silence for
   // minutes is indistinguishable from a hang. Stderr is safe here even in stdio mode.
   const elapsedMs = Date.now() - startedAt;
   if (elapsedMs > 5_000) {
-    console.error(`[DevsMind git-sync] git ${args[0]} took ${Math.round(elapsedMs / 1000)}s`);
+    console.error(`[DevsMind git-sync] git ${sub} took ${Math.round(elapsedMs / 1000)}s`);
   }
   if (res.error) {
     // spawnSync sets this on a timeout kill (or the git binary not being found) rather than a
@@ -211,13 +222,14 @@ function git(cwd: string, args: string[], input?: string): GitResult {
       ok: false,
       stdout: (res.stdout || '').toString().trim(),
       stderr: timedOut
-        ? (NETWORK_GIT_SUBCOMMANDS.has(args[0])
-            ? `git ${args[0]} timed out after ${seconds}s — it reaches the network, so this is most likely a credential or host-key prompt with nothing to answer it. Configure a credential helper (git config credential.helper) or an SSH key with no passphrase prompt, then retry.`
-            : `git ${args[0]} timed out after ${seconds}s. This command is purely local — it never contacts a remote — so this is not a credentials problem. On a very large repository it may simply need longer, or another git process may be holding the repository's index lock.`)
+        ? (NETWORK_GIT_SUBCOMMANDS.has(sub)
+            ? `git ${sub} timed out after ${seconds}s — it reaches the network, so this is most likely a credential or host-key prompt with nothing to answer it. Configure a credential helper (git config credential.helper) or an SSH key with no passphrase prompt, then retry.`
+            : `git ${sub} timed out after ${seconds}s. This command is purely local — it never contacts a remote — so this is not a credentials problem. On a very large repository it may simply need longer, or another git process may be holding the repository's index lock.`)
         : res.error.message,
+      code: null,
     };
   }
-  return { ok: res.status === 0, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim() };
+  return { ok: res.status === 0, stdout: (res.stdout || '').trim(), stderr: (res.stderr || '').trim(), code: res.status };
 }
 
 function gitOrThrow(cwd: string, args: string[], errPrefix: string): string {
@@ -345,6 +357,62 @@ function sameFileContent(a: string, b: string): boolean {
 }
 
 /**
+ * The subset of `sourceFiles` that may be published onto the shared branch, given what the
+ * destination already holds (`heldFiles`, same relative form). The last line of defence against
+ * publishing a path Windows cannot check out: whatever put an unsafe file in the local brain (an
+ * older version, another tool, a hand edit), it never reaches the shared branch from here — one
+ * machine's bad filename must not block everyone else's sync. Logs what it held back.
+ *
+ * Case-only duplicates are unsafe for the same reason as a bad character: Windows and macOS can
+ * materialize only one of `Foo.json`/`foo.json`, nor can they hold `App/` beside `app/`, or a file
+ * `foo` beside a directory `Foo/`. Held back: anything in a collision WITHIN the source (the first
+ * in code-point order wins, as it would on every other machine), and anything that clashes with
+ * what the destination already holds — comparing against its directories as well as files.
+ *
+ * `prefixLength` is the length of the absolute directory these paths land under; it only matters
+ * when core.longpaths is off here, where the 260-character limit is measured against it.
+ */
+function publishableFiles(
+  sourceFiles: string[], heldFiles: string[], prefixLength: number, opts: SyncDirOptions = {}
+): string[] {
+  const sourceCollisions = new Set(findCaseCollisions(sourceFiles));
+  const held = new Map(heldFiles.map(t => [foldCase(t), t] as const));
+  const heldDirs = new Map<string, string>();
+  for (const t of heldFiles) for (const d of ancestorDirs(t)) heldDirs.set(foldCase(d), d);
+  const clashesWithHeld = (rel: string): boolean => {
+    const k = foldCase(rel);
+    const sameFile = held.get(k);
+    if (sameFile !== undefined && sameFile !== rel) return true;
+    if (heldDirs.has(k)) return true;
+    return ancestorDirs(rel).some(d => {
+      const hd = heldDirs.get(foldCase(d));
+      return (hd !== undefined && hd !== d) || held.has(foldCase(d));
+    });
+  };
+
+  const lengthOpts = longPathsInEffect ? {} : { prefixLength };
+  const repoNames = opts.repoNames ?? [];
+  const perRepoKind = opts.kind === 'graph' || opts.kind === 'vectors';
+  const skippedUnsafe = sourceFiles.filter(rel =>
+    isWindowsUnsafePath(rel, lengthOpts)
+    || sourceCollisions.has(rel)
+    || clashesWithHeld(rel)
+    // The first directory under graph/ and vectors/ is a repo name; an OS root there is another
+    // machine's absolute path with its leading slash stripped — safe to write, wrong to share.
+    || (perRepoKind && isForeignRootSegment(rel.split('/')[0], repoNames))
+  );
+  if (skippedUnsafe.length > 0) {
+    console.error(
+      `[DevsMind git-sync] not publishing ${skippedUnsafe.length} file(s) that cannot be shared safely ` +
+      `(unsafe name, case-only duplicate, or another machine's absolute path; e.g. "${skippedUnsafe[0]}") — ` +
+      `run \`devsmind analyze --fix\` to remove them.`
+    );
+  }
+  const skipped = new Set(skippedUnsafe);
+  return sourceFiles.filter(rel => !skipped.has(rel));
+}
+
+/**
  * Makes `target` hold exactly what `source` holds, touching ONLY the files that actually differ.
  * Returns whether anything changed at all.
  *
@@ -386,54 +454,11 @@ function syncDir(source: string, target: string, deletable?: ReadonlySet<string>
   const targetExists = fs.existsSync(target);
   if (!sourceExists && !targetExists) return false;
 
-  // The last line of defence against publishing a path Windows cannot check out. Whatever put an
-  // unsafe file in the local brain (an older version, another tool, a hand edit), it never reaches
-  // the shared branch from here — one machine's bad filename must not block everyone else's sync.
   const allSourceFiles = listFilesRelative(source);
   const targetFiles = listFilesRelative(target);
-
-  // Case-only duplicates are unsafe for the same reason as a bad character: Windows and macOS can
-  // materialize only one of `Foo.json`/`foo.json`, nor can they hold `App/` beside `app/`, or a file
-  // `foo` beside a directory `Foo/`. Held back: anything in a collision WITHIN the source (the first
-  // in code-point order wins, as it would on every other machine), and anything that clashes with
-  // what the target already holds — comparing against the target's directories as well as files.
-  const sourceCollisions = new Set(findCaseCollisions(allSourceFiles));
-  const heldFiles = new Map(targetFiles.map(t => [foldCase(t), t] as const));
-  const heldDirs = new Map<string, string>();
-  for (const t of targetFiles) for (const d of ancestorDirs(t)) heldDirs.set(foldCase(d), d);
-  const clashesWithHeld = (rel: string): boolean => {
-    const k = foldCase(rel);
-    const sameFile = heldFiles.get(k);
-    if (sameFile !== undefined && sameFile !== rel) return true;
-    if (heldDirs.has(k)) return true;
-    return ancestorDirs(rel).some(d => {
-      const hd = heldDirs.get(foldCase(d));
-      return (hd !== undefined && hd !== d) || heldFiles.has(foldCase(d));
-    });
-  };
-
   // When core.longpaths is not in effect on this machine, the limit tightens from the conservative
   // default to what actually fits under the directory this copy writes into.
-  const lengthOpts = longPathsInEffect ? {} : { prefixLength: path.resolve(target).length + 1 };
-  const repoNames = opts.repoNames ?? [];
-  const perRepoKind = opts.kind === 'graph' || opts.kind === 'vectors';
-  const skippedUnsafe = allSourceFiles.filter(rel =>
-    isWindowsUnsafePath(rel, lengthOpts)
-    || sourceCollisions.has(rel)
-    || clashesWithHeld(rel)
-    // The first directory under graph/ and vectors/ is a repo name; an OS root there is another
-    // machine's absolute path with its leading slash stripped — safe to write, wrong to share.
-    || (perRepoKind && isForeignRootSegment(rel.split('/')[0], repoNames))
-  );
-  if (skippedUnsafe.length > 0) {
-    console.error(
-      `[DevsMind git-sync] not publishing ${skippedUnsafe.length} file(s) that cannot be shared safely ` +
-      `(unsafe name, case-only duplicate, or another machine's absolute path; e.g. "${skippedUnsafe[0]}") — ` +
-      `run \`devsmind analyze --fix\` to remove them.`
-    );
-  }
-  const skipped = new Set(skippedUnsafe);
-  const sourceFiles = allSourceFiles.filter(rel => !skipped.has(rel));
+  const sourceFiles = publishableFiles(allSourceFiles, targetFiles, path.resolve(target).length + 1, opts);
   let changed = false;
 
   for (const rel of sourceFiles) {
@@ -821,13 +846,16 @@ function ensureLongPaths(repoRoot: string): void {
 }
 
 function finishAndPush(
+  /** Any directory inside the repository — the conflict worktree, or the repo root. */
   worktreeDir: string,
   repoRoot: string,
   remote: string | null,
   message: string,
   filesChanged: number
 ): GitSyncResult {
-  const commit = gitOrThrow(worktreeDir, ['rev-parse', 'HEAD'], 'devsmind git-sync: could not read the commit hash');
+  // The branch ref, not HEAD: the in-place sync runs from the repo root, whose HEAD is the
+  // developer's own branch. Inside a worktree checked out to devsmind the two are the same thing.
+  const commit = gitOrThrow(worktreeDir, ['rev-parse', `refs/heads/${DEVSMIND_BRANCH}`], 'devsmind git-sync: could not read the commit hash');
 
   // Nothing new locally AND already level with the remote is the only true no-op. Anything else
   // still pushes — an earlier run may have committed successfully but failed to push (a network
@@ -961,38 +989,28 @@ export function gitSyncDevsmindBranch(
     }
   }
 
+  const inPlace = syncInPlace(devmindDir, repoRoot, remote, message);
+  if (inPlace.kind === 'done') return inPlace.result;
+
+  // Real conflicts — the one case that still needs files on disk, because the caller resolves
+  // them by editing files and resuming. Our side is already committed on the local branch by
+  // now, so this only checks it out and runs the merge there. Rare by design: different files
+  // and different fields of the same file both merge cleanly without ever getting here.
+  return mergeInWorktree(devmindDir, repoRoot, remote!, message, inPlace.filesChanged);
+}
+
+/**
+ * The conflict path: checks the (already committed) local devsmind branch out into a throwaway
+ * worktree, merges the remote there, and either finishes the sync or hands back the conflicts
+ * with the worktree retained for the caller to resolve and resume.
+ */
+function mergeInWorktree(devmindDir: string, repoRoot: string, remote: string, message: string, filesChanged: number): GitSyncResult {
+  const brainDir = brainDirName(devmindDir);
   const worktreeDir = uniqueWorktreeDir();
   let keepWorktree = false;
   try {
     setUpPushWorktree(repoRoot, worktreeDir, remote);
-
-    // 1. Our side, as a real commit — without this there is no ancestor for git to merge against,
-    //    which is exactly why the old pull could only overwrite.
-    //
-    //    Only subdirs this brain ACTUALLY HAS are mirrored. A teammate syncing for the first time
-    //    has no local `graph/` yet, and mirroring that absence would commit a deletion of
-    //    everyone else's graph before the merge ever ran. An absent subdir means "I have nothing
-    //    to contribute here", not "remove it".
-    //
-    //    A real deletion still propagates, but only for files this brain HAD. `deletableOnBranch`
-    //    is the intersection of what the branch holds with what this brain last received, so
-    //    "I deleted this node" and "I have never seen this node" stop looking identical — they
-    //    are indistinguishable from local state alone, and treating the second as the first let
-    //    one developer's push wipe a file another had added moments earlier.
-    const brainDir = brainDirName(devmindDir);
-    for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
-      const localSub = path.join(devmindDir, sub);
-      if (!fs.existsSync(localSub)) continue;
-      syncDir(localSub, path.join(worktreeDir, brainDir, sub), deletableOnBranch(devmindDir, sub), { kind: sub, repoNames });
-    }
-    gitOrThrow(worktreeDir, ['add', '-A', brainDir], 'devsmind git-sync: staging failed');
-    const status = git(worktreeDir, ['status', '--porcelain', '--', brainDir]);
-    const filesChanged = status.stdout ? status.stdout.split('\n').filter(Boolean).length : 0;
-    if (filesChanged > 0) {
-      gitOrThrow(worktreeDir, COMMIT_ARGS(['-m', message]), 'devsmind git-sync: commit failed');
-    }
-
-    // 2. Their side, 3-way merged in. Only meaningful once a remote branch actually exists.
+    // Their side, 3-way merged in.
     if (remote && branchExistsOnRemote(repoRoot, remote)) {
       // `--no-verify` for the same reason the commits carry it: a clean merge creates a commit,
       // which would otherwise fire the host repo's pre-commit/commit-msg hooks.
@@ -1066,14 +1084,261 @@ export function gitSyncDevsmindBranch(
     }
 
     const result = finishAndPush(worktreeDir, repoRoot, remote, message, filesChanged);
-    // 3. Bring whatever the merge pulled in back down into the real brain folder.
     copyBranchStateToBrain(worktreeDir, devmindDir);
-    // AFTER the brain reflects the branch: this is the state a future sync compares against to
-    // tell a real local deletion from a teammate's file it has simply never seen.
     recordSyncedManifest(devmindDir);
     return result;
   } finally {
     if (!keepWorktree) removeWorktree(repoRoot, worktreeDir);
+  }
+}
+
+// ─── In-place sync (no worktree, no copies) ─────────────────────────────────
+
+/**
+ * This machine's private index for the in-place sync. Under `local/`, which is gitignored on
+ * every branch, and kept BETWEEN syncs on purpose: git stores each file's size and mtime in the
+ * index, so a file whose stat still matches is never read or hashed again. The developer's real
+ * index (`.git/index`) is never used — that one belongs to their own branch.
+ */
+function syncIndexPath(devmindDir: string): string {
+  return path.join(devmindDir, 'local', 'git-sync.index');
+}
+
+interface BrainGit {
+  run(args: string[], input?: string): GitResult;
+  /** `run` with some of the environment overridden — e.g. a different index file. */
+  runWith(args: string[], env: Record<string, string>, input?: string): GitResult;
+  must(args: string[], errPrefix: string, input?: string): string;
+}
+
+/**
+ * Git pointed straight at the brain folder: the repo's object store and refs, the brain folder's
+ * parent as the work tree, and the private sync index. Commits are built with plumbing
+ * (`write-tree`/`commit-tree`/`update-ref`), so nothing ever checks out a branch, moves HEAD, or
+ * touches the developer's working tree or staging area.
+ *
+ * `core.ignorecase=false` keeps index lookups exact. Windows defaults it to true, under which
+ * `foo.json` on disk would silently update an existing `Foo.json` entry — publishing one
+ * teammate's file under another's name. Case clashes are filtered out before git sees them
+ * (publishableFiles), and this keeps git from second-guessing that.
+ */
+function brainGit(repoRoot: string, devmindDir: string): BrainGit {
+  const gitDir = gitOrThrow(repoRoot, ['rev-parse', '--absolute-git-dir'], 'devsmind git-sync: could not locate the git directory');
+  const workRoot = path.dirname(path.resolve(devmindDir));
+  fs.mkdirSync(path.join(devmindDir, 'local'), { recursive: true });
+  const env = { GIT_DIR: gitDir, GIT_WORK_TREE: workRoot, GIT_INDEX_FILE: syncIndexPath(devmindDir) };
+  const base = ['-c', 'core.ignorecase=false', '-c', 'core.longpaths=true'];
+  const run = (args: string[], input?: string) => git(workRoot, [...base, ...args], input, env);
+  return {
+    run,
+    runWith: (args, overrides, input) => git(workRoot, [...base, ...args], input, { ...env, ...overrides }),
+    must(args, errPrefix, input) {
+      const res = run(args, input);
+      if (!res.ok) throw new Error(`${errPrefix}: ${res.stderr || res.stdout || `git ${args.join(' ')} failed`}`);
+      return res.stdout;
+    },
+  };
+}
+
+function nulList(stdout: string): string[] {
+  return stdout ? stdout.split('\0').filter(Boolean) : [];
+}
+
+/**
+ * Loads `tree` into the sync index. `read-tree -m` with a single tree keeps the stored stat info
+ * of every entry whose content is unchanged — that is what lets the next `update-index` skip the
+ * thousands of files nobody touched. Falls back to a plain read when there is no usable index yet.
+ */
+function loadSyncIndex(bg: BrainGit, devmindDir: string, tree: string | null): void {
+  if (!tree) {
+    bg.must(['read-tree', '--empty'], 'devsmind git-sync: could not reset the sync index');
+    return;
+  }
+  if (fs.existsSync(syncIndexPath(devmindDir)) && bg.run(['read-tree', '-m', tree]).ok) return;
+  bg.must(['read-tree', tree], 'devsmind git-sync: could not load the devsmind branch into the sync index');
+}
+
+const ZERO_OID = '0'.repeat(40);
+
+type InPlaceOutcome =
+  | { kind: 'done'; result: GitSyncResult }
+  /** The merge hit real conflicts. Our side is committed on the local branch; the caller merges
+   *  in a worktree so the conflicted files exist on disk to be resolved. */
+  | { kind: 'conflicts'; filesChanged: number };
+
+/**
+ * The whole sync without a worktree:
+ *
+ *  1. Load the branch tip into the sync index, then hand git the brain's own files directly
+ *     (`update-index`, which skips any file whose stat is unchanged). Deletions stay bounded by
+ *     {@link deletableOnBranch}, and unsafe names by {@link publishableFiles} — the same rules the
+ *     copy-based sync used.
+ *  2. `write-tree` + `commit-tree` + `update-ref`: our side becomes a commit on `devsmind`.
+ *  3. `merge-tree --write-tree` merges the remote inside the object store — nothing is written to
+ *     disk. Fast-forwards and already-merged states skip it.
+ *  4. Push.
+ *  5. Write back only what differs: load the final tree into the index, and let git name the
+ *     files whose content on disk no longer matches (`diff-files`) or that the branch no longer
+ *     has (`ls-files --others`). Untouched files are never opened.
+ *
+ * Cost scales with the number of files that CHANGED, not with the size of the brain — the copy
+ * approach paid for every file twice over plus a full checkout and a full delete.
+ */
+function syncInPlace(devmindDir: string, repoRoot: string, remote: string | null, message: string): InPlaceOutcome {
+  const bg = brainGit(repoRoot, devmindDir);
+  const brainDir = brainDirName(devmindDir);
+  const repoNames = readRepoNames(devmindDir);
+  const localRef = `refs/heads/${DEVSMIND_BRANCH}`;
+  const remoteRef = remote ? `refs/remotes/${remote}/${DEVSMIND_BRANCH}` : null;
+  const hadLocal = branchExistsLocally(repoRoot);
+  const hasRemote = !!remote && branchExistsOnRemote(repoRoot, remote);
+  const revParse = (ref: string) => gitOrThrow(repoRoot, ['rev-parse', '--verify', ref], `devsmind git-sync: could not resolve ${ref}`);
+  // A teammate's first sync has no local branch yet: build on the remote tip, exactly as the
+  // worktree flow did by tracking it.
+  const tip = hadLocal ? revParse(localRef) : hasRemote ? revParse(remoteRef!) : null;
+
+  // ── 1. Our side, into the sync index ──
+  loadSyncIndex(bg, devmindDir, tip);
+  const indexed = nulList(bg.must(['ls-files', '-z'], 'devsmind git-sync: could not read the sync index'));
+  const toAdd: string[] = [];
+  const toRemove: string[] = [];
+  for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
+    const localSub = path.join(devmindDir, sub);
+    // An absent subdir means "nothing to contribute here", never "delete it" — a teammate's
+    // first sync must not commit away everyone else's graph.
+    if (!fs.existsSync(localSub)) continue;
+    const prefix = `${brainDir}/${sub}/`;
+    const held = indexed.filter(p => p.startsWith(prefix)).map(p => p.slice(prefix.length));
+    const onDisk = listFilesRelative(localSub);
+    const publish = new Set(publishableFiles(onDisk, held, path.resolve(localSub).length + 1, { kind: sub, repoNames }));
+    for (const rel of publish) toAdd.push(prefix + rel);
+    // Only files this brain is known to have HAD may be deleted — see deletableOnBranch.
+    const deletable = deletableOnBranch(devmindDir, sub);
+    for (const rel of held) if (!publish.has(rel) && deletable.has(rel)) toRemove.push(prefix + rel);
+  }
+  if (toAdd.length > 0) {
+    bg.must(['update-index', '--add', '--replace', '-z', '--stdin'], 'devsmind git-sync: staging failed', toAdd.join('\0') + '\0');
+  }
+  if (toRemove.length > 0) {
+    bg.must(['update-index', '-z', '--index-info'], 'devsmind git-sync: staging deletions failed',
+      toRemove.map(p => `0 ${ZERO_OID}\t${p}\0`).join(''));
+  }
+
+  // ── 2. Commit it ──
+  const ourTree = bg.must(['write-tree'], 'devsmind git-sync: could not write the tree');
+  const tipTree = tip ? revParse(`${tip}^{tree}`) : null;
+  let filesChanged = 0;
+  if (ourTree !== tipTree) {
+    filesChanged = tip
+      ? nulList(gitOrThrow(repoRoot, ['diff-tree', '-r', '--no-renames', '--name-only', '-z', tip, ourTree], 'devsmind git-sync: could not count changes')).length
+      : nulList(gitOrThrow(repoRoot, ['ls-tree', '-r', '--name-only', '-z', ourTree], 'devsmind git-sync: could not count files')).length;
+  }
+  let head = tip;
+  if (filesChanged > 0) {
+    head = gitOrThrow(repoRoot, ['commit-tree', ourTree, ...(tip ? ['-p', tip] : []), '-m', message], 'devsmind git-sync: commit failed');
+  }
+  if (!head) {
+    // No branch anywhere and nothing to put on one.
+    return { kind: 'done', result: { status: 'nothing_to_do', remote, branch: DEVSMIND_BRANCH, commit: null, filesChanged: 0, repoRoot } };
+  }
+  if (head !== tip || !hadLocal) {
+    gitOrThrow(repoRoot, ['update-ref', localRef, head, hadLocal ? tip! : ZERO_OID], 'devsmind git-sync: could not update the devsmind branch');
+  }
+
+  // ── 3. Their side, merged inside the object store ──
+  if (hasRemote) {
+    const theirs = revParse(remoteRef!);
+    const isAncestor = (a: string, b: string) => git(repoRoot, ['merge-base', '--is-ancestor', a, b]).ok;
+    if (theirs !== head && !isAncestor(theirs, head)) {
+      if (isAncestor(head, theirs)) {
+        gitOrThrow(repoRoot, ['update-ref', localRef, theirs, head], 'devsmind git-sync: could not fast-forward the devsmind branch');
+        head = theirs;
+      } else {
+        const mt = git(repoRoot, ['merge-tree', '--write-tree', '-z', '--name-only', head, theirs]);
+        if (mt.code !== 0 && mt.code !== 1) {
+          // Not a conflict — git could not merge at all. Same structured answer as before when
+          // the cause is content on the remote this machine cannot read.
+          const blockedPaths = collectBlockedRemotePaths(mt.stderr);
+          if (blockedPaths.length > 0) {
+            return { kind: 'done', result: { status: 'blocked_on_remote_paths', remote, branch: DEVSMIND_BRANCH, commit: null, filesChanged, repoRoot, blockedPaths } };
+          }
+          throw new Error(`devsmind git-sync: merging ${remote}/${DEVSMIND_BRANCH} failed: ${mt.stderr || mt.stdout}`);
+        }
+        // `-z --name-only` output: <tree>\0<conflicted path>\0...\0\0<messages>
+        const sections = mt.stdout.split('\0\0');
+        const [mergedTreeRaw, ...conflictedRaw] = (sections[0] ?? '').split('\0');
+        let mergedTree = mergedTreeRaw;
+        const conflicted = [...new Set(conflictedRaw.filter(Boolean))];
+        if (conflicted.length > 0) {
+          // A path already approved for removal, re-added by a teammate's stale branch, is a
+          // modify/delete conflict git will not settle itself. Settle it for the delete — the same
+          // rule the worktree merge applies. Anything else is a real conflict for the caller.
+          const repaired = new Set(readRepairedPaths(devmindDir).map(p => `${brainDir}/${p}`));
+          const oursLacks = (p: string) => !git(repoRoot, ['cat-file', '-e', `${head}:${p}`]).ok;
+          if (!conflicted.every(p => repaired.has(p) && oursLacks(p))) {
+            return { kind: 'conflicts', filesChanged };
+          }
+          mergedTree = treeWithout(repoRoot, mergedTree, conflicted);
+        }
+        const mergeCommit = gitOrThrow(
+          repoRoot,
+          ['commit-tree', mergedTree, '-p', head, '-p', theirs, '-m', `Merge remote-tracking branch '${remote}/${DEVSMIND_BRANCH}' into ${DEVSMIND_BRANCH}`],
+          'devsmind git-sync: could not record the merge'
+        );
+        gitOrThrow(repoRoot, ['update-ref', localRef, mergeCommit, head], 'devsmind git-sync: could not update the devsmind branch');
+        head = mergeCommit;
+      }
+    }
+  }
+
+  // ── 4. Push ──
+  const result = finishAndPush(repoRoot, repoRoot, remote, message, filesChanged);
+
+  // ── 5. Bring the merged state down — only the files that differ ──
+  writeBackChanged(bg, devmindDir, head);
+  recordSyncedManifest(devmindDir);
+  return { kind: 'done', result };
+}
+
+/** `tree` with `paths` removed, built in a throwaway index so the sync index is not disturbed. */
+function treeWithout(repoRoot: string, tree: string, paths: string[]): string {
+  const tmpIndex = path.join(os.tmpdir(), `devsmind-index-${crypto.randomUUID()}`);
+  const env = { GIT_INDEX_FILE: tmpIndex };
+  try {
+    const run = (args: string[], input?: string) => {
+      const res = git(repoRoot, [...REPAIR_GIT_CONFIG, ...args], input, env);
+      if (!res.ok) throw new Error(`devsmind git-sync: could not auto-resolve a previously-repaired path: ${res.stderr || res.stdout}`);
+      return res.stdout;
+    };
+    run(['read-tree', tree]);
+    run(['update-index', '-z', '--index-info'], paths.map(p => `0 ${ZERO_OID}\t${p}\0`).join(''));
+    return run(['write-tree']);
+  } finally {
+    fs.rmSync(tmpIndex, { force: true });
+  }
+}
+
+/**
+ * Makes the brain folder match `commit`, touching only what differs. The sync index is loaded
+ * with the commit's tree (keeping stat info for unchanged entries), refreshed so a file whose
+ * mtime moved but whose bytes did not is not mistaken for a change, and then git itself names the
+ * stale files (`diff-files`) and the ones the branch no longer has (`ls-files --others`).
+ * `checkout-index -u` records the fresh stat info, so the next sync skips these files too.
+ */
+function writeBackChanged(bg: BrainGit, devmindDir: string, commit: string): void {
+  const brainDir = brainDirName(devmindDir);
+  loadSyncIndex(bg, devmindDir, commit);
+  bg.run(['update-index', '-q', '--refresh']); // exits 1 when something is stale — expected
+  const scope = ['--', ...DEVSMIND_BRANCH_SUBDIRS.map(sub => `${brainDir}/${sub}`)];
+  const stale = nulList(bg.must(['diff-files', '--name-only', '-z', ...scope], 'devsmind git-sync: could not compare the brain with the branch'));
+  if (stale.length > 0) {
+    bg.must(['checkout-index', '-f', '-u', '-z', '--stdin'], 'devsmind git-sync: could not write merged files into the brain', stale.join('\0') + '\0');
+  }
+  const extra = nulList(bg.must(['ls-files', '--others', '-z', ...scope], 'devsmind git-sync: could not list local-only files'));
+  const workRoot = path.dirname(path.resolve(devmindDir));
+  for (const rel of extra) fs.rmSync(path.join(workRoot, rel), { force: true });
+  if (extra.length > 0) {
+    for (const sub of DEVSMIND_BRANCH_SUBDIRS) pruneEmptyDirs(path.join(devmindDir, sub));
   }
 }
 
@@ -1166,180 +1431,90 @@ export function gitStatusDevsmindBranch(
     };
   }
 
-  // Whether git converted line endings is decided PER SUBDIRECTORY, from a file in that
-  // subdirectory. Deciding it once for the whole brain is wrong and quietly so: these trees are
-  // written by different code paths, and a brain was observed with LF graph files beside history
-  // files that were not — one sample then applied the wrong rule to thousands of files and
-  // reported 14,334 of them as modified when 38 had changed.
-  const autocrlf = repoConvertsLineEndings(repoRoot);
-  const perSubdir: SubdirStatus[] = [];
-  for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
-    onProgress(`comparing ${sub}/...`);
-    const normalizeCrlf = autocrlf && subdirHasCrlf(path.join(devmindDir, sub));
-    perSubdir.push(diffSubdirAgainstBranch(repoRoot, devmindDir, brainDir, sub, ref, normalizeCrlf));
-  }
-  return {
-    remote, branch: DEVSMIND_BRANCH, branchExists: true, offline,
-    perSubdir, totalFiles: perSubdir.reduce((n, s) => n + s.modified + s.added + s.deleted, 0),
-  };
-}
-
-/**
- * A file's git blob id, computed the way git computes it: SHA-1 over `blob <bytelength>\0` followed
- * by the raw contents. Matching git's own algorithm is what lets a local file be compared directly
- * against the id recorded in a tree listing, with no index and no temp files in between.
- *
- * Done in-process rather than by shelling out to `git hash-object`, which is the obvious approach
- * and the wrong one at this scale: it is one process spawn per file, and a brain with 16,000
- * history entries turns a status check into 16,000 spawns — minutes of pure overhead for a command
- * whose entire value is being fast enough to run before deciding whether to sync.
- */
-function gitBlobSha(absPath: string, normalizeCrlf: boolean): string | null {
+  // Git does the comparison, through a throwaway COPY of the sync index (see syncIndexPath). That
+  // index already holds each file's size and mtime from the last sync, so after loading the
+  // branch's tree into it git re-reads only files whose stat moved — every untouched file costs a
+  // stat call and nothing more. Line endings are git's own business here too: it applies the
+  // repo's autocrlf/attributes exactly as a sync would, so there is no guessing per directory.
+  //
+  // A copy, because status must change nothing: the real index belongs to the sync, which may be
+  // running right now under the lock. No index yet (this brain has never synced with this version)
+  // just means git hashes everything once, in C, instead of us doing it file by file in JS.
+  onProgress('comparing the brain with the branch...');
+  const bg = brainGit(repoRoot, devmindDir);
+  const realIndex = syncIndexPath(devmindDir);
+  const tmpIndex = path.join(os.tmpdir(), `devsmind-status-index-${crypto.randomUUID()}`);
+  const env = { GIT_INDEX_FILE: tmpIndex };
+  const run = (args: string[]) => bg.runWith(args, env);
   try {
-    const raw = fs.readFileSync(absPath);
-    const data = normalizeCrlf ? crlfToLf(raw) : raw;
-    return crypto.createHash('sha1')
-      .update(`blob ${data.length}\0`)
-      .update(data)
-      .digest('hex');
-  } catch {
-    return null;
-  }
-}
-
-/** CRLF → LF over raw bytes (no string round-trip, which would corrupt anything non-UTF-8). */
-function crlfToLf(buf: Buffer): Buffer {
-  const out = Buffer.allocUnsafe(buf.length);
-  let n = 0;
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] === 0x0d && buf[i + 1] === 0x0a) continue; // drop CR of a CRLF pair
-    out[n++] = buf[i];
-  }
-  return out.subarray(0, n);
-}
-
-/** Whether this repo is configured to rewrite line endings at all. Cheap, and false here means no
- *  subdirectory needs sampling. */
-function repoConvertsLineEndings(repoRoot: string): boolean {
-  const cfg = git(repoRoot, ['config', '--get', 'core.autocrlf']);
-  if (!cfg.ok) return false;
-  const value = cfg.stdout.trim().toLowerCase();
-  return value === 'true' || value === 'input';
-}
-
-/**
- * Whether files in this ONE subdirectory actually carry CRLF, sampled from its first file.
- *
- * The config saying git MAY convert is not the same as these files BEING converted, and the
- * difference is expensive: under conversion a byte length can only be compared one-directionally,
- * so every same-size file falls through to a full read and hash. That turned a directory of 1,164
- * small files — 63ms to read and hash outright — into an 11.5-second stage.
- *
- * Sampled per subdirectory rather than per brain because the trees are written by different code
- * paths and do differ: one brain had pure-LF graph files beside history files that were not.
- * Guessing from a single sample across all four reported 14,334 files as modified when 38 were.
- *
- * Unreadable or empty sample means "assume converted", which is merely slower, never wrong.
- */
-function subdirHasCrlf(dir: string): boolean {
-  const rel = listFilesRelative(dir)[0];
-  if (!rel) return false;
-  try {
-    const buf = fs.readFileSync(path.join(dir, rel));
-    for (let i = 1; i < buf.length; i++) {
-      if (buf[i] === 0x0a && buf[i - 1] === 0x0d) return true;
-    }
-    return false;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * One subdirectory's added/modified/deleted counts against `ref`, by hashing what is on disk and
- * comparing to the tree the branch recorded.
- *
- * Hashing is used rather than `git diff` because the brain files are NOT tracked on the developer's
- * own branch — that is the entire point of the 4.4.0 gitignore change — so there is no index here
- * for `git diff` to read them through.
- */
-function diffSubdirAgainstBranch(
-  repoRoot: string,
-  devmindDir: string,
-  brainDir: string,
-  sub: string,
-  ref: string,
-  normalizeCrlf: boolean
-): SubdirStatus {
-  // `-l` asks for each blob's SIZE alongside its id, which is what makes the comparison below
-  // able to rule most files out without reading them. Getting the sizes any other way means a
-  // second pass over every object (`cat-file --batch-check`), and that measured SLOWER than simply
-  // reading all 19,000 files — 3.2s against 2.2s — so the cheap way has to be the same call.
-  const prefix = `${brainDir}/${sub}/`;
-  const onBranch = new Map<string, { sha: string; size: number }>();
-  const listing = git(repoRoot, ['ls-tree', '-r', '-l', ref, prefix]);
-  if (listing.ok && listing.stdout) {
-    for (const line of listing.stdout.split('\n')) {
-      // `<mode> <type> <sha> <size>\t<path>`
-      const tab = line.indexOf('\t');
-      if (tab < 0) continue;
-      const [, , sha, size] = line.slice(0, tab).trim().split(/\s+/);
-      const filePath = line.slice(tab + 1).trim();
-      if (!sha || !filePath.startsWith(prefix)) continue;
-      // A submodule entry reports "-" rather than a byte count; treat that as "size unknown"
-      // rather than 0, which would wrongly claim every such file differs.
-      const parsed = Number(size);
-      onBranch.set(filePath.slice(prefix.length), {
-        sha,
-        size: Number.isFinite(parsed) ? parsed : -1,
-      });
-    }
-  }
-
-  const localDir = path.join(devmindDir, sub);
-  const localFiles = listFilesRelative(localDir);
-  let modified = 0, added = 0;
-
-  for (const rel of localFiles) {
-    const recorded = onBranch.get(rel);
-    if (recorded === undefined) { added++; continue; }
-
-    // A byte length that cannot match rules the file out without reading it — the thing that keeps
-    // this fast on a brain of tens of thousands of files.
-    //
-    // What "cannot match" means depends on line endings. Normally it is plain inequality. Under
-    // `core.autocrlf` the working copy may hold CRLF where the blob holds LF, so an identical file
-    // is legitimately LONGER on disk by one byte per line and never shorter — the test narrows to
-    // `localSize < blobSize` there, which stays sound.
-    //
-    // Note that `core.autocrlf` being set does NOT mean these files were converted: DevsMind
-    // writes its JSON with LF, and on the brain this was profiled against every graph file was
-    // pure LF despite autocrlf being on. Treating the config flag alone as "sizes are useless"
-    // gave up the fast path for nothing and left the command opening 19,410 files needlessly.
-    if (recorded.size >= 0) {
-      let localSize: number | null = null;
+    let loaded = false;
+    if (fs.existsSync(realIndex)) {
       try {
-        localSize = fs.statSync(path.join(localDir, rel)).size;
+        fs.copyFileSync(realIndex, tmpIndex);
+        loaded = run(['read-tree', '-m', ref]).ok;
       } catch {
-        localSize = null;
+        loaded = false;
       }
-      if (localSize !== null) {
-        if (normalizeCrlf ? localSize < recorded.size : localSize !== recorded.size) {
-          modified++;
-          continue;
+    }
+    if (!loaded) {
+      const fresh = run(['read-tree', ref]);
+      if (!fresh.ok) throw new Error(`devsmind git-status: could not read ${ref}: ${fresh.stderr || fresh.stdout}`);
+    }
+    run(['update-index', '-q', '--refresh']); // exits 1 when something differs — expected
+    saveWarmIndex(devmindDir, tmpIndex, realIndex);
+
+    const perSubdir: SubdirStatus[] = [];
+    for (const sub of DEVSMIND_BRANCH_SUBDIRS) {
+      const scope = ['--', `${brainDir}/${sub}`];
+      let modified = 0, deleted = 0;
+      if (fs.existsSync(path.join(devmindDir, sub))) {
+        const changed = run(['diff-files', '--name-status', '-z', ...scope]);
+        if (!changed.ok) throw new Error(`devsmind git-status: comparing ${sub}/ failed: ${changed.stderr || changed.stdout}`);
+        // `-z --name-status`: <status>\0<path>\0 pairs.
+        const parts = changed.stdout.split('\0');
+        for (let i = 0; i + 1 < parts.length; i += 2) {
+          if (parts[i] === 'D') deleted++;
+          else if (parts[i]) modified++;
         }
       }
+      // An absent subdirectory is not a deletion — a sync contributes nothing from it, so the
+      // branch's files there are not about to be removed. Mirrors syncInPlace.
+      const others = fs.existsSync(path.join(devmindDir, sub)) ? run(['ls-files', '--others', '-z', ...scope]) : null;
+      const added = others && others.ok ? nulList(others.stdout).length : 0;
+      perSubdir.push({ sub, modified, added, deleted });
     }
-    // A file we cannot hash is reported as modified rather than skipped: under-reporting a pending
-    // change is the one outcome that makes this command actively misleading.
-    if (gitBlobSha(path.join(localDir, rel), normalizeCrlf) !== recorded.sha) modified++;
+    return {
+      remote, branch: DEVSMIND_BRANCH, branchExists: true, offline,
+      perSubdir, totalFiles: perSubdir.reduce((n, s) => n + s.modified + s.added + s.deleted, 0),
+    };
+  } finally {
+    fs.rmSync(tmpIndex, { force: true });
   }
+}
 
-  const localSet = new Set(localFiles);
-  let deleted = 0;
-  for (const rel of onBranch.keys()) if (!localSet.has(rel)) deleted++;
-
-  return { sub, modified, added, deleted };
+/**
+ * Keeps the file stats status just gathered, so the NEXT status (and the next sync) only re-reads
+ * what changed after this. Without it every status before the first sync re-hashes the whole
+ * brain — tens of seconds on a 30,000-file brain — and learns nothing for next time.
+ *
+ * Safe because the sync index is a per-machine cache under `local/`, never shared, and a sync
+ * reloads the branch into it before using it: what it holds can only make a later run faster,
+ * never change what it commits. Skipped while a sync holds the lock (it owns the index then), and
+ * best-effort — failing to save costs speed, never correctness. Written to a side file and renamed
+ * into place, so a reader never sees half an index.
+ */
+function saveWarmIndex(devmindDir: string, tmpIndex: string, realIndex: string): void {
+  const lock = acquireSyncLock(devmindDir);
+  if (!lock.acquired) return;
+  try {
+    const side = `${realIndex}.${process.pid}.tmp`;
+    fs.copyFileSync(tmpIndex, side);
+    fs.renameSync(side, realIndex);
+  } catch {
+    // best-effort only
+  } finally {
+    lock.release();
+  }
 }
 
 // ─── Repairing a brain still tracked on the developer's own branch ───────────

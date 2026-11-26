@@ -496,7 +496,7 @@ describe('runAnalysis (src/db/analyze.ts)', () => {
   });
 
   describe('--fix behavior', () => {
-    it('fix:true deprecates orphaned/spurious/missing-file nodes and deletes dangling edges, but leaves healthy nodes and unresolved categories untouched', async () => {
+    it('fix:true deprecates spurious/missing-file nodes and deletes dangling edges, but only REPORTS orphans and leaves healthy nodes untouched', async () => {
       const fx = makeFixture({
         skipDefaultFiles: true,
         extraFiles: {
@@ -539,7 +539,9 @@ describe('runAnalysis (src/db/analyze.ts)', () => {
         // fix:true — applies only the documented safe fixes.
         const fixReport = runAnalysis(fx.db, fx.root, { fix: true });
         expect(fixReport.fixed).toBe(true);
-        expect(fx.db.getNode(orphanId)?.deprecated).toBe(1);
+        // An orphan is reported, never deprecated: having no edges is not evidence of dead code.
+        expect(fixReport.orphaned_nodes.map(n => n.id)).toContain(orphanId);
+        expect(fx.db.getNode(orphanId)?.deprecated).toBe(0);
         expect(fx.db.getNode(reqId)?.deprecated).toBe(1);
         expect(fx.db.getNode(goneId)?.deprecated).toBe(1);
         expect(fx.db.getDanglingEdges()).toEqual([]);

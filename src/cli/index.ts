@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { INDEX_PROVIDERS } from './index-providers';
 
 import { Command } from 'commander';
 import { handleInit } from './init';
@@ -207,7 +208,7 @@ program
   .command('analyze')
   .description('Local, zero-AI graph health check (god entities, cycles, orphans, dangling edges, renames, and more)')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .option('--fix', 'Apply safe automatic fixes (deprecate dead nodes, delete dangling edges, migrate renames)')
+  .option('--fix', 'Apply safe automatic fixes (deprecate nodes whose file is gone or built-in false positives, delete dangling edges, migrate renames)')
   .option('--god-entity-threshold <n>', 'Degree threshold for god-entity detection (default 15)')
   .action(async (opts: { path?: string; fix?: boolean; godEntityThreshold?: string }) => {
     try {
@@ -222,16 +223,16 @@ program
   .command('describe')
   .description('Backfill natural-language descriptions for existing nodes that predate the description requirement — what search_nodes needs to find code by natural language. Always safe to re-run (work queue is just "nodes with no description yet"); new nodes going forward get described via commit_changes\' gate + add_description instead, not this command.')
   .option('-p, --path <devmind_path>', 'Explicit path to the .devmind directory (auto-detected from cwd by default)')
-  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
-  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
-  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
-  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .option('--provider <provider>', `Indexing provider (${INDEX_PROVIDERS.join(', ')})`, 'gemini')
+  .option('--model <name>', 'Model ID (provider default when omitted, required for Bedrock unless BEDROCK_MODEL_ID is set)')
+  .option('--key <api_key>', 'API key or Vertex service account path (overrides provider environment credentials)')
+  .option('--url <url>', 'Ollama endpoint or OpenAI-compatible API base URL')
   .option('--rpm <number>', 'Max LLM requests per minute, proactively paced (default: unthrottled)')
   .option('--batch-size <number>', 'Nodes described per LLM call (default: 25)')
   .option('--dry-run', 'List pending nodes without calling the LLM or writing anything')
   .action(async (opts: {
     path?: string;
-    provider: 'gemini' | 'vertex' | 'ollama';
+    provider: string;
     model?: string;
     key?: string;
     url?: string;
@@ -377,11 +378,11 @@ program
   .command('index')
   .description('Kick off the first-time graph indexing of all configured repos')
   .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
-  .option('--run', 'Start/resume background indexing using a local or cloud LLM')
-  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
-  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
-  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
-  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .option('--run', 'Start or resume unattended indexing using an API, local model, or agent CLI')
+  .option('--provider <provider>', `Indexing provider (${INDEX_PROVIDERS.join(', ')})`, 'gemini')
+  .option('--model <name>', 'Model ID (provider default when omitted, required for Bedrock unless BEDROCK_MODEL_ID is set)')
+  .option('--key <api_key>', 'API key or Vertex service account path (overrides provider environment credentials)')
+  .option('--url <url>', 'Ollama endpoint or OpenAI-compatible API base URL')
   .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: off — whole file in one call). Set this for very large files or smaller-context models.')
   .option('--chunk-overlap <lines>', 'Overlap lines between chunks, only used when --chunk-size is set (default: 50)')
   .option('--local-edges', '[Deprecated] Connections are always resolved locally via AST now — this flag is a no-op, kept for backward compatibility.')
@@ -396,7 +397,7 @@ program
   .action(async (opts: {
     path?: string;
     run?: boolean;
-    provider: 'gemini' | 'vertex' | 'ollama';
+    provider: string;
     model?: string;
     key?: string;
     url?: string;
@@ -463,6 +464,7 @@ program
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY`);
       console.log(`   devsmind index --run --provider gemini --model gemini-2.5-flash --key YOUR_GEMINI_KEY --chunk-size 1500 --chunk-overlap 100`);
       console.log(`   devsmind index --run --provider ollama --model qwen2.5-coder`);
+      console.log(`   devsmind index --run --provider codex-cli`);
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --nodes-only`);
       console.log(`   devsmind index --run --edges-only`);
       console.log(`   devsmind index --run --provider gemini --key YOUR_GEMINI_KEY --from-scratch`);
@@ -475,10 +477,10 @@ program
   .command('add-repo')
   .description('Standalone mode only: add one repo to an existing brain and index just that repo')
   .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
-  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
-  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
-  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
-  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .option('--provider <provider>', `Indexing provider (${INDEX_PROVIDERS.join(', ')})`, 'gemini')
+  .option('--model <name>', 'Model ID (provider default when omitted, required for Bedrock unless BEDROCK_MODEL_ID is set)')
+  .option('--key <api_key>', 'API key or Vertex service account path (overrides provider environment credentials)')
+  .option('--url <url>', 'Ollama endpoint or OpenAI-compatible API base URL')
   .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: off — whole file in one call). Set this for very large files or smaller-context models.')
   .option('--chunk-overlap <lines>', 'Overlap lines between chunks, only used when --chunk-size is set (default: 50)')
   .option('--describe-batch-size <number>', 'Nodes described per LLM call during Phase 3 (default: 25)')
@@ -506,10 +508,10 @@ program
   .command('reindex')
   .description('Synchronize the graph with manual changes (incremental parsing of modified/new files)')
   .option('-p, --path <devmind_path>', 'Path to the .devmind directory (default: .devmind in cwd)')
-  .option('--provider <provider>', 'LLM provider: "gemini", "vertex", or "ollama"', 'gemini')
-  .option('--model <name>', 'Model identifier (default: "gemini-2.0-flash", "gemini-1.5-flash", or "qwen2.5-coder")')
-  .option('--key <api_key>', 'API Key or Service Account file path (overrides GEMINI_API_KEY / GOOGLE_APPLICATION_CREDENTIALS)')
-  .option('--url <url>', 'Ollama server endpoint (default: "http://localhost:11434")')
+  .option('--provider <provider>', `Indexing provider (${INDEX_PROVIDERS.join(', ')})`, 'gemini')
+  .option('--model <name>', 'Model ID (provider default when omitted, required for Bedrock unless BEDROCK_MODEL_ID is set)')
+  .option('--key <api_key>', 'API key or Vertex service account path (overrides provider environment credentials)')
+  .option('--url <url>', 'Ollama endpoint or OpenAI-compatible API base URL')
   .option('--chunk-size <lines>', 'Max lines per chunk sent to the LLM (default: off — whole file in one call). Set this for very large files or smaller-context models.')
   .option('--chunk-overlap <lines>', 'Overlap lines between chunks, only used when --chunk-size is set (default: 50)')
   .option('--local-edges', '[Deprecated] Connections are always resolved locally via AST now — this flag is a no-op, kept for backward compatibility.')
@@ -517,7 +519,7 @@ program
   .option('--fill-gaps', 'Instead of the normal mtime-based diff, back-fill only files that currently have zero graph nodes (never indexed, or dropped by a prior crashed run). Per-file failures are skipped (not fatal) and edges are rebuilt across the whole graph afterward. Safe to re-run repeatedly until no gaps remain.')
   .action(async (opts: {
     path?: string;
-    provider: 'gemini' | 'vertex' | 'ollama';
+    provider: string;
     model?: string;
     key?: string;
     url?: string;

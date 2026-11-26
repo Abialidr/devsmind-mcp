@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { makeHttpRequest, sleep, getVertexTokenCached } from './runner';
 import { safeJsonParse } from '../utils/json';
+import { type IndexProvider, isIndexAgent, runIndexAgent, sendBedrockPrompt } from './index-providers';
 
 /**
  * A general-purpose "send a prompt, get text back" client, separate from `runner.ts`'s
@@ -13,7 +14,7 @@ import { safeJsonParse } from '../utils/json';
  * working code that has its own, more elaborate (ProgressDisplay-coupled) retry logic already.
  */
 
-export type LlmProvider = 'gemini' | 'vertex' | 'ollama';
+export type LlmProvider = IndexProvider;
 
 export interface LlmCredentials {
   provider: LlmProvider;
@@ -34,6 +35,26 @@ export interface LlmCredentials {
  * inside a function with no return value.
  */
 export function resolveLlmCredentials(opts: { provider: LlmProvider; model?: string; key?: string; url?: string }): LlmCredentials {
+  if (isIndexAgent(opts.provider)) {
+    if (opts.model && !/^[a-zA-Z0-9][a-zA-Z0-9._:/@+-]*$/.test(opts.model)) {
+      throw new Error('Invalid CLI model identifier.');
+    }
+    return { provider: opts.provider, model: opts.model || '' };
+  }
+  if (opts.provider === 'bedrock') {
+    const model = opts.model || process.env.BEDROCK_MODEL_ID;
+    if (!model) throw new Error('Bedrock requires a model or inference profile ID. Pass --model or set BEDROCK_MODEL_ID.');
+    return { provider: opts.provider, model };
+  }
+  if (opts.provider === 'claude' || opts.provider === 'openai') {
+    const claude = opts.provider === 'claude';
+    const envName = claude ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+    const apiKey = opts.key || process.env[envName];
+    const url = claude ? undefined : opts.url || process.env.OPENAI_BASE_URL;
+    if (!apiKey && !url) throw new Error(`Pass --key or set ${envName}.`);
+    const model = opts.model || (claude ? 'claude-haiku-4-5' : 'gpt-4.1-mini');
+    return { provider: opts.provider, model, apiKey, url };
+  }
   if (opts.provider === 'gemini') {
     const model = opts.model || 'gemini-2.0-flash';
     const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
@@ -87,6 +108,30 @@ export function resolveLlmCredentials(opts: { provider: LlmProvider; model?: str
  * for a raw JSON response (no markdown fences) — callers parse with `safeJsonParse`, which
  * already tolerates a fenced or slightly truncated response if a provider ignores that ask. */
 export async function sendPrompt(creds: LlmCredentials, systemPrompt: string, userPrompt: string): Promise<string> {
+  if (isIndexAgent(creds.provider)) return runIndexAgent(creds.provider, creds.model, systemPrompt, userPrompt);
+  if (creds.provider === 'bedrock') return sendBedrockPrompt(creds, systemPrompt, userPrompt);
+  if (creds.provider === 'claude') {
+    const raw = await makeHttpRequest('https://api.anthropic.com/v1/messages', 'POST', {
+      'Content-Type': 'application/json', 'x-api-key': creds.apiKey!, 'anthropic-version': '2023-06-01'
+    }, JSON.stringify({
+      model: creds.model, max_tokens: 8192, system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }]
+    }));
+    const response = JSON.parse(raw) as { content?: { type: string; text?: string }[] };
+    return response.content?.filter(part => part.type === 'text').map(part => part.text).join('') || '';
+  }
+  if (creds.provider === 'openai') {
+    const base = (creds.url || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (creds.apiKey) headers.Authorization = `Bearer ${creds.apiKey}`;
+    const raw = await makeHttpRequest(`${base}/chat/completions`, 'POST', headers, JSON.stringify({
+      model: creds.model,
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      response_format: { type: 'json_object' }
+    }));
+    const response = JSON.parse(raw) as { choices?: { message?: { content?: string } }[] };
+    return response.choices?.[0]?.message?.content || '';
+  }
   if (creds.provider === 'gemini') {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${creds.model}:generateContent?key=${creds.apiKey}`;
     const payload = {
@@ -342,7 +387,10 @@ export async function sendConversationTurn(
     const token = creds.vertexToken || await getVertexTokenCached(creds.vertexSaData);
     return sendVertexTurn(creds.model, token, creds.vertexProjectId!, creds.vertexLocation!, systemPrompt, messages, tools);
   }
-  return sendOllamaTurn(creds.url || 'http://localhost:11434', creds.model, systemPrompt, messages, tools);
+  if (creds.provider === 'ollama') {
+    return sendOllamaTurn(creds.url || 'http://localhost:11434', creds.model, systemPrompt, messages, tools);
+  }
+  throw new Error(`${creds.provider} uses structured indexing prompts.`);
 }
 
 /** `sendConversationTurn` with the same retry/backoff shape as `sendPromptWithRetry`. */

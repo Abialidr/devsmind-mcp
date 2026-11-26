@@ -1149,6 +1149,30 @@ export class DevMindDatabase {
     }
   }
 
+  /**
+   * Un-deprecate nodes in one pass: one transaction, then each affected file's graph JSON is
+   * rewritten ONCE (not once per node). Edges and vectors dropped by deprecateNode() are NOT
+   * recovered here -- the next `devsmind index`/`embed` run rebuilds them.
+   */
+  restoreNodes(ids: string[]): number {
+    if (ids.length === 0) return 0;
+    const getStmt = this.db.prepare('SELECT file_path FROM nodes WHERE id = ? AND deprecated = 1');
+    const updStmt = this.db.prepare('UPDATE nodes SET deprecated = 0 WHERE id = ?');
+    const files = new Set<string>();
+    let n = 0;
+    this.db.transaction(() => {
+      for (const id of ids) {
+        const row = getStmt.get(id) as { file_path: string } | undefined;
+        if (!row) continue;
+        updStmt.run(id);
+        files.add(row.file_path);
+        n++;
+      }
+    })();
+    for (const f of files) this.writeGraphToDisk(f);
+    return n;
+  }
+
   /** `newFilePath`: pass when the rename is a file move (analyze's rename migration), leave undefined for a pure symbol-id rename where the file itself is unchanged. */
   renameNode(oldId: string, newId: string, newName?: string, newFilePath?: string) {
     const node = this.getNode(oldId);

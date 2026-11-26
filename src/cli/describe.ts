@@ -1,3 +1,4 @@
+import { resolveIndexProvider } from './index-providers';
 import * as path from 'path';
 import { DevMindDatabase } from '../db/database';
 import { resolveDevmindDir } from '../utils/config';
@@ -111,7 +112,10 @@ export async function describePendingNodes(
     }
 
     const parsed = safeJsonParse<{ descriptions?: { node_id: string; description: string }[] }>(raw, {});
-    const byId = new Map((parsed.descriptions || []).map(it => [it.node_id, it.description]));
+    const entries = Array.isArray(parsed?.descriptions) ? parsed.descriptions : [];
+    const byId = new Map(entries
+      .filter(it => typeof it?.node_id === 'string' && typeof it.description === 'string')
+      .map(it => [it.node_id, it.description]));
 
     // Accumulated across this batch and flushed as ONE embedding call below, after the
     // description-write loop — batching matters far more for ONNX inference than it did for
@@ -163,7 +167,7 @@ export async function describePendingNodes(
 
 export async function handleDescribe(opts: {
   path?: string;
-  provider: 'gemini' | 'vertex' | 'ollama';
+  provider: string;
   model?: string;
   key?: string;
   url?: string;
@@ -197,7 +201,7 @@ export async function handleDescribe(opts: {
   // Credentials are only resolved past this point — --dry-run above never needs them at all.
   let creds;
   try {
-    creds = resolveLlmCredentials({ provider: opts.provider, model: opts.model, key: opts.key, url: opts.url });
+    creds = resolveLlmCredentials({ provider: resolveIndexProvider(opts.provider), model: opts.model, key: opts.key, url: opts.url });
   } catch (err) {
     console.error(`❌ ${(err as Error).message}`);
     db.close();

@@ -77,7 +77,7 @@ export async function handleAddRepo(opts: {
 
   const indexOpts = {
     devmindPath: devmindDir,
-    provider: (opts.provider as 'gemini' | 'vertex' | 'ollama') ?? 'gemini',
+    provider: opts.provider ?? 'gemini',
     model: opts.model,
     key: opts.key,
     url: opts.url,

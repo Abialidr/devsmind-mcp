@@ -4,6 +4,7 @@ import { DevMindDatabase } from './database';
 import { resolveRepoPath, canonicalizePath } from '../utils/config';
 import { getRenamedFilesSince, getChangedFilesSince } from '../utils/git';
 import { INDEXABLE_EXTENSIONS } from '../utils/scanner';
+import { planRestore, applyRestore } from './restore';
 
 export interface AnalysisOptions {
   fix?: boolean;
@@ -20,6 +21,7 @@ export interface AnalysisReport {
   duplicate_ids: { lower_id: string; ids: string[] }[];
   missing_developer_attribution: { id: string; node_id: string; updated_at: string }[];
   empty_code_snapshots: { id: string; node_id: string; updated_at: string }[];
+  wrongly_deprecated: { id: string; name: string; file_path: string }[];
   spurious_nodes: { id: string; name: string; file_path: string }[];
   missing_files: { id: string; name: string; file_path: string }[];
   renamed_files: { repo: string; from: string; to: string; migrated: boolean }[];
@@ -29,12 +31,15 @@ export interface AnalysisReport {
 }
 
 const LAST_ANALYSIS_KEY = 'last_analysis_at';
+/** Set once the one-time repair of nodes wrongly deprecated by the old orphan rule has run. */
+const RESTORE_DONE_KEY = 'restored_wrongly_deprecated_at';
 const DEFAULT_LOOKBACK_DAYS = 30;
 
 /**
  * Runs every local, zero-AI health check against the graph and — when `fix` is true —
- * applies only the safe/reversible fixes (soft-deprecate dead nodes, delete dangling
- * edges, migrate renames). Everything else is report-only: god entities, cycles,
+ * applies only the safe/reversible fixes (soft-deprecate nodes whose file is gone or that
+ * are built-in false positives, delete dangling edges, migrate renames). Everything else is
+ * report-only: orphaned nodes (no edges is not proof of dead code), god entities, cycles,
  * duplicate ids, missing developer attribution, empty snapshots, and untracked files
  * all need human/AI judgement a mechanical fixer shouldn't make on its own.
  */
@@ -50,6 +55,14 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
   const missing_developer_attribution = db.getHistoryMissingDeveloper();
   const empty_code_snapshots = db.getEmptyCodeSnapshots();
   const { spurious: spurious_nodes, missingFile: missing_files } = db.findSpuriousAndMissingFileNodes(workspaceRoot);
+
+  // One-time repair: older `--fix` runs deprecated every node with no connections, including live
+  // code. Until the repair has run once on this brain, report deprecated nodes whose file exists
+  // and still contains their name; `--fix` restores them FIRST (before renames/deprecations).
+  // After that the check is skipped, so a node an agent deprecated on purpose is never revived.
+  const restoreDone = db.getSystemMeta(RESTORE_DONE_KEY) !== null;
+  const restorePlan = restoreDone ? null : planRestore(db);
+  const wrongly_deprecated = (restorePlan?.restorable ?? []).map(n => ({ id: n.id, name: n.name, file_path: n.file_path }));
 
   const lastAnalysisAt = db.getSystemMeta(LAST_ANALYSIS_KEY);
   const lookbackIso = lastAnalysisAt || new Date(Date.now() - DEFAULT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -97,6 +110,10 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
   const unsafe_output_files = db.findUnsafeOutputFiles();
 
   if (fix) {
+    if (restorePlan) {
+      applyRestore(db, restorePlan);
+      db.setSystemMeta(RESTORE_DONE_KEY, new Date().toISOString());
+    }
     // Disposable generated output with a name Windows cannot check out — deleting it is safe
     // because everything in graph/vectors/history is rebuilt from the DB, and leaving it would keep
     // tripping teammates' syncs. Emptied directories are cleaned up so no hollow tree remains.
@@ -126,7 +143,14 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
         r.migrated = migrated;
       }
     }
-    for (const n of [...orphaned_nodes, ...spurious_nodes, ...missing_files]) {
+    // Orphaned nodes are deliberately NOT deprecated here — they are report-only. "No
+    // connections" is not evidence that code is dead: edges exist only where the extractor
+    // resolved a reference, and most variables, constants, types and interfaces never get one
+    // even while in active use. Deprecating on that signal alone marked live code dead in bulk —
+    // on one real brain, over 9,000 deprecated nodes whose symbol was still in its file. A node
+    // is only deprecated here when there is direct evidence: its file is gone, or it is a
+    // built-in the extractor should never have recorded.
+    for (const n of [...spurious_nodes, ...missing_files]) {
       db.deprecateNode(n.id);
     }
     for (const e of dangling_edges) {
@@ -158,6 +182,7 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     duplicate_ids: duplicate_ids.length,
     missing_developer_attribution: missing_developer_attribution.length,
     empty_code_snapshots: empty_code_snapshots.length,
+    wrongly_deprecated: wrongly_deprecated.length,
     spurious_nodes: spurious_nodes.length,
     missing_files: missing_files.length,
     renamed_files: renamed_files.length,
@@ -176,6 +201,7 @@ export function runAnalysis(db: DevMindDatabase, workspaceRoot: string, opts: An
     duplicate_ids,
     missing_developer_attribution,
     empty_code_snapshots,
+    wrongly_deprecated,
     spurious_nodes,
     missing_files,
     renamed_files,

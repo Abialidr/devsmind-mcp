@@ -38,7 +38,7 @@ This separation makes the supported scope clear: TypeScript and JavaScript get t
 
 A project brain lives in `.devsmind/`. Graph data, indexed context, and workflows are shared through a dedicated `devsmind` Git branch. The local SQLite cache, credentials, and personal activity log remain on each machine.
 
-Your agent uses `devsmind_git_sync` to fetch, merge, and publish brain changes in an isolated worktree. This keeps brain updates separate from the checked-out code branch. Git remains the source control for your application code; DevsMind syncs the project context layer.
+Your agent uses `devsmind_git_sync` to fetch, merge, and publish brain changes. Git works on `.devsmind/` where it already is, through a private index, so a sync copies no files and never touches your checked-out branch, HEAD, or staged changes. Only files that teammates changed are written back. One sync runs per brain at a time; a long sync keeps running in the background and the agent follows it with `devsmind_git_sync_status`, so a client tool timeout cannot interrupt it. Git remains the source control for your application code; DevsMind syncs the project context layer.
 
 ## Quick start
 
@@ -63,6 +63,30 @@ Optionally index the codebase to create the initial graph:
 ```bash
 devsmind index --run --provider gemini --key YOUR_GEMINI_KEY
 ```
+
+For unattended initial indexing or incremental updates, choose a provider with
+`devsmind index --run --provider <name>` or `devsmind reindex --provider <name>`.
+The same choices are available in `devsmind describe` and `devsmind add-repo`.
+
+| Provider | Setup |
+| --- | --- |
+| `claude-cli`, `codex-cli`, `agy-cli` | Install and authenticate Claude Code, Codex, or Antigravity CLI. Make the executable available on `PATH`. Pass `--model` to override the CLI's default. |
+| `claude` | Set `ANTHROPIC_API_KEY` or pass `--key`. |
+| `openai` | Set `OPENAI_API_KEY` or pass `--key`. For another OpenAI-compatible Chat Completions service, set `OPENAI_BASE_URL` or pass its API base with `--url`, and pass its model ID with `--model`. |
+| `bedrock` | Configure AWS credentials and region, for example with `AWS_PROFILE` and `AWS_REGION`. Pass a Converse-capable model or inference profile ID with `--model`, or set `BEDROCK_MODEL_ID`. |
+| `gemini`, `vertex`, `ollama` | Use your Gemini API key, Vertex credentials, or local Ollama endpoint. |
+
+```bash
+devsmind index --run --provider codex-cli
+devsmind reindex --provider claude-cli
+```
+
+DevsMind handles file discovery, parsing, checkpoints, and graph writes.
+It sends candidate code and imports to the selected provider for curation, and
+sends code snapshots in batches for description generation. The CLI agents run
+headlessly outside the repository. Use `--rpm` to pace provider requests.
+
+Indexing writes straight into your local brain, so there is nothing to import first and no `devsmind sync` step in setup. Share the finished graph with `devsmind_git_sync`.
 
 Commit `.devsmind/config.json` and `.devsmind/.gitignore` to your project branch. Then ask your connected agent to sync the team brain; `devsmind_git_sync` will initialize and publish the shared `devsmind` branch.
 
@@ -90,12 +114,14 @@ The DevsMind MCP tools give a connected agent a focused set of project capabilit
 
 | Command | What it does |
 |---|---|
-| `devsmind_git_sync` (MCP) | Fetches, merges, and publishes shared brain data using an isolated worktree. No DevsMind session ID is needed. |
+| `devsmind_git_sync` (MCP) | Fetches, merges, and publishes shared brain data without copying the brain. Runs one sync per brain at a time and continues in the background if it takes long. No DevsMind session ID is needed. |
+| `devsmind_git_sync_status` (MCP) | Waits for a running or busy sync and returns its final result. Read-only. |
 | `devsmind git-status` | Shows local brain files waiting to sync. Read-only. |
-| `devsmind sync` | Imports on-disk JSON into the local SQLite cache. It does not fetch from Git. |
+| `devsmind sync` | Rarely needed. Re-imports brain JSON already on disk into the local SQLite cache, for example after files were changed by hand. `devsmind_git_sync` already refreshes the cache and indexing writes it directly. It does not fetch from Git. |
 | `devsmind index --run` / `devsmind reindex` | Builds or refreshes the code graph. |
 | `devsmind describe` / `devsmind embed` | Adds node descriptions or local semantic vectors. |
-| `devsmind analyze [--fix]` | Checks graph health and can repair supported issues. |
+| `devsmind analyze [--fix]` | Checks graph health and can repair supported issues. Nodes with no connections are only reported. On a brain that older versions damaged, the first `--fix` also restores nodes that were wrongly marked deprecated. |
+| `devsmind prune` | Interactive review and permanent deletion of nodes and history, including every deprecated node. |
 | `devsmind view` | Opens the local graph and activity viewer. |
 | `devsmind workflow` | Lists and inspects multi-session work. |
 | `devsmind style [normal\|lite\|full]` | Sets a personal response style for connected agents; off by default. |

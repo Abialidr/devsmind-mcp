@@ -1,6 +1,7 @@
 import { ExtractionCandidate, enumerateFileCandidates, listFileImports } from '../utils/ast';
-import { LlmCredentials, LlmTool, LlmConversationMessage, sendConversationTurnWithRetry } from './llm-client';
+import { LlmCredentials, LlmTool, LlmConversationMessage, sendConversationTurnWithRetry, sendPromptWithRetry } from './llm-client';
 import { throttleRpm } from './runner';
+import { safeJsonParse } from '../utils/json';
 
 /**
  * Agentic node-extraction curation — the judgment half of Phase D. `enumerateFileCandidates`
@@ -70,7 +71,7 @@ function buildTools(): LlmTool[] {
   ];
 }
 
-function buildSystemPrompt(): string {
+function curationInstructions(): string {
   return [
     'You are curating a list of code-graph node CANDIDATES for one source file.',
     "These candidates were found deterministically by parsing the file's AST — every one of them genuinely exists in the code, at the exact line numbers given. Nothing about their EXISTENCE is in question here.",
@@ -80,9 +81,6 @@ function buildSystemPrompt(): string {
     '- "drop" — trivial noise (e.g. a tiny inline callback, a throwaway local) not worth tracking on its own.',
     '- "merge" — this is really part of another candidate\'s concept, not a distinct entity (give merge_into).',
     "- \"rename\" — the extractor's name is wrong, unclear, or anonymous and you have a genuinely better one (give rename_to).",
-    '',
-    `Call ${GET_IMPORTS_TOOL_NAME} if the file's imports would help you judge significance — as many times as you like, though it never changes between calls.`,
-    `When you have a decision for EVERY candidate, call ${SUBMIT_TOOL_NAME} exactly once with the full list. Keep any "reason" to one short sentence. Do not respond with plain text instead of a tool call.`
   ].join('\n');
 }
 
@@ -145,10 +143,28 @@ export async function curateAmbiguousCandidates(
 ): Promise<CurationResult> {
   if (candidates.length === 0) return { decisions: [], timedOut: false };
 
-  const maxTurns = opts.maxTurns ?? 4;
   const tools = buildTools();
-  const systemPrompt = buildSystemPrompt();
-  const messages: LlmConversationMessage[] = [{ role: 'user', content: buildInitialUserMessage(filePath, candidates) }];
+  const initialMessage = buildInitialUserMessage(filePath, candidates);
+  if (creds.provider !== 'gemini' && creds.provider !== 'vertex' && creds.provider !== 'ollama') {
+    const schema = tools.find(tool => tool.name === SUBMIT_TOOL_NAME)!.parameters;
+    const system = `${curationInstructions()}\nReturn one JSON object with a decision for every candidate, matching this schema: ${JSON.stringify(schema)}`;
+    const user = `${initialMessage}\n\nFile imports: ${JSON.stringify(listFileImports(filePath))}`;
+    await throttleRpm(opts.rpm);
+    const raw = await sendPromptWithRetry(creds, system, user, { onRetry: opts.onTurn });
+    const result = safeJsonParse<Record<string, unknown>>(raw, {});
+    if (!Array.isArray(result?.decisions)) throw new Error(`${creds.provider} returned invalid curation decisions.`);
+    const decisions = parseDecisions(result, candidates);
+    opts.onTurn?.(`  ${creds.provider} returned ${decisions.length} curation decision(s)`);
+    return { decisions, timedOut: false };
+  }
+
+  const maxTurns = opts.maxTurns ?? 4;
+  const systemPrompt = [
+    curationInstructions(),
+    `Call ${GET_IMPORTS_TOOL_NAME} if the file's imports would help you judge significance.`,
+    `When you have a decision for EVERY candidate, call ${SUBMIT_TOOL_NAME} exactly once with the full list. Keep any "reason" to one short sentence. Do not respond with plain text instead of a tool call.`
+  ].join('\n');
+  const messages: LlmConversationMessage[] = [{ role: 'user', content: initialMessage }];
   const log = opts.onTurn ?? (() => {});
 
   for (let turn = 1; turn <= maxTurns; turn++) {

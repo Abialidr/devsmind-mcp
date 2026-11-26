@@ -12,7 +12,9 @@ import {
   SearchNodesResult, CompactSearchNodesResult
 } from '../db/database';
 import { loadProjectContext, findBrainDir, brainDirOrDefault, isStandaloneMode, StandaloneRepoConfig } from '../utils/config';
-import { gitSyncDevsmindBranch, repairBrainTracking, removeRemoteBranchPaths, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
+import { repairBrainTracking, removeRemoteBranchPaths, DEVSMIND_BRANCH } from '../utils/devsmind-branch';
+import { runGitSyncOffThread } from '../utils/git-sync-runner';
+import { acquireSyncLock, readSyncLock, describeBusy, SyncLockHolder } from '../utils/sync-lock';
 import { ensureDevmindGitignore } from '../cli/init';
 import { getViewHtml, ASSETS_DIR, DEVSMIND_TOKEN } from './visualizer';
 import { diffEdits, renderUnifiedDiff, diffSnapshots } from '../utils/diff';
@@ -403,6 +405,106 @@ export function cleanup() {
   dbCache.clear();
 }
 
+// ─── devsmind_git_sync background jobs ──────────────────────────────────────
+
+/**
+ * A sync started by `devsmind_git_sync`. Kept in memory for this server process only: a job id
+ * means nothing to another process, which is why the cross-process guard is the lock file
+ * (utils/sync-lock), not this map.
+ */
+interface GitSyncJob {
+  id: string;
+  devmindPath: string;
+  state: 'running' | 'done' | 'failed';
+  /** What it is doing right now — the same text the stderr progress lines carry. */
+  stage: string;
+  startedAt: string;
+  finishedAt?: string;
+  /** The tool's normal result, once done. */
+  payload?: object;
+  error?: string;
+  /** Settles when the job ends, however it ends. Never rejects. */
+  done: Promise<void>;
+}
+
+const gitSyncJobs = new Map<string, GitSyncJob>();
+
+/** Finished jobs are kept this long so a late status call still gets the result. */
+const GIT_SYNC_JOB_RETENTION_MS = 60 * 60 * 1000;
+
+/**
+ * How long a call waits for a sync to finish before answering "still running". Comfortably
+ * under the shortest tool-call timeout seen in a client (about five minutes), with room for the
+ * flush that runs before the wait can be checked. Overridable for tests.
+ */
+function gitSyncWaitMs(): number {
+  const fromEnv = Number(process.env.DEVSMIND_GIT_SYNC_WAIT_MS);
+  return Number.isFinite(fromEnv) && fromEnv >= 0 ? fromEnv : 60_000;
+}
+
+const GIT_SYNC_NEXT_STEPS =
+  '\n\nDo not just report this to the developer and stop. Investigate the actual cause (read the error text above, inspect the repo/branch state with git commands as needed), fix it if it is fixable from here, and call devsmind_git_sync again. Only stop to ask the developer first if the fix would require force-pushing, rewriting shared history, or another action they need to explicitly approve — otherwise resolve it yourself and retry until it succeeds or you hit a decision that is genuinely theirs to make.';
+
+function latestGitSyncJob(devmindPath: string): GitSyncJob | undefined {
+  let latest: GitSyncJob | undefined;
+  for (const job of gitSyncJobs.values()) {
+    if (job.devmindPath !== devmindPath) continue;
+    if (!latest || job.startedAt > latest.startedAt) latest = job;
+  }
+  return latest;
+}
+
+function pruneFinishedGitSyncJobs(): void {
+  const cutoff = Date.now() - GIT_SYNC_JOB_RETENTION_MS;
+  for (const [id, job] of gitSyncJobs) {
+    if (job.state !== 'running' && job.finishedAt && Date.parse(job.finishedAt) < cutoff) gitSyncJobs.delete(id);
+  }
+}
+
+/** Resolves when `p` settles or `ms` passes, whichever is first — never keeps the process alive. */
+function settledWithin(p: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, ms);
+    p.finally(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+function gitSyncText(payload: unknown) {
+  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
+}
+
+function busyPayload(jobId: string | null, stage: string | null, startedAt: string | null, holder: SyncLockHolder | null) {
+  return {
+    status: 'busy',
+    ...(jobId ? { job_id: jobId } : {}),
+    ...(stage ? { stage } : {}),
+    ...(startedAt ? { started_at: startedAt } : {}),
+    ...(holder ? { holder } : {}),
+    message: jobId
+      ? 'A sync of this brain is already running. It cannot be stopped part-way and finishes on its own, success or error. Do not start another: call devsmind_git_sync_status with this job_id to wait for its result.'
+      : describeBusy(holder),
+  };
+}
+
+/** The answer for a job's current state: its result when done, "running" with its id otherwise. */
+function gitSyncJobResponse(job: GitSyncJob) {
+  if (job.state === 'done') return gitSyncText(job.payload);
+  if (job.state === 'failed') {
+    return { isError: true, content: [{ type: 'text', text: `Error: ${job.error}${GIT_SYNC_NEXT_STEPS}` }] };
+  }
+  return gitSyncText({
+    status: 'running',
+    job_id: job.id,
+    stage: job.stage,
+    started_at: job.startedAt,
+    elapsed_seconds: Math.round((Date.now() - Date.parse(job.startedAt)) / 1000),
+    message: 'The sync is still running in the background — nothing is wrong. Call devsmind_git_sync_status with this job_id to wait for the result; it waits up to a minute per call. Do not call devsmind_git_sync again meanwhile.'
+  });
+}
+
 /**
  * Tools that DON'T require a session_id: the read-only ones, plus `devsmind_git_sync` (see its entry
  * below). A session exists to tie a request's writes
@@ -446,7 +548,9 @@ const SESSION_EXEMPT_TOOLS = new Set<string>([
   // git sync neither records an edit nor appears in that log — its handler never reads the id. The
   // gate it used to carry bought nothing and cost a start_session round trip on a tool that only
   // moves the shared branch.
-  'devsmind_git_sync'
+  'devsmind_git_sync',
+  // Its status companion is a pure read of an in-memory job.
+  'devsmind_git_sync_status'
 ]);
 
 /**
@@ -1043,7 +1147,7 @@ export function createMcpServer(): Server {
         {
           name: 'analyze_graph',
           description:
-            'Run a local, zero-token health check on the graph: god entities (high fan-in/out), circular dependency cycles, orphaned nodes, dangling edges, duplicate/case-collision ids, history missing developer attribution, empty code snapshots, spurious/built-in nodes, missing files, git-detected renames, and git-tracked code files with zero graph nodes. Purely local SQLite/filesystem/git queries — no LLM calls. Call this periodically (or when the graph feels stale/wrong) instead of guessing why context looks off. Set fix:true to auto-apply only the SAFE fixes (soft-deprecate dead nodes, remove dangling edges, migrate detected renames) — everything else is report-only and needs a human or agent decision.',
+            'Run a local, zero-token health check on the graph: god entities (high fan-in/out), circular dependency cycles, orphaned nodes, dangling edges, duplicate/case-collision ids, history missing developer attribution, empty code snapshots, spurious/built-in nodes, missing files, git-detected renames, and git-tracked code files with zero graph nodes. Purely local SQLite/filesystem/git queries — no LLM calls. Call this periodically (or when the graph feels stale/wrong) instead of guessing why context looks off. Set fix:true to auto-apply only the SAFE fixes (soft-deprecate nodes whose file is gone or that are built-in false positives, remove dangling edges, migrate detected renames). Orphaned nodes (zero connections) are reported, never deprecated: most live variables, types and constants have no edges — everything else is report-only and needs a human or agent decision.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1224,7 +1328,11 @@ export function createMcpServer(): Server {
         },
         {
           name: 'devsmind_git_sync',
-          description: `Share the brain with the team: flush brain.db to disk, commit graph/history/vectors/workflows onto the dedicated '${DEVSMIND_BRANCH}' branch, 3-way MERGE whatever teammates pushed, and push the result — one operation, in that order. UNLIKE commit_changes, this DOES run real git commands (commit + merge + push), but only ever on the '${DEVSMIND_BRANCH}' branch via a throwaway worktree, so the developer's actual checked-out branch is never touched, moved, or committed to. This is the ONLY tool for sharing the brain — there is no separate push or pull; syncing is always this one call, because a pull that overwrites cannot be safely composed with a push that can be rejected. Only call it when the developer has asked to sync/push, not as a routine follow-up to commit_changes. Requires a commit message.
+          description: `Share the brain with the team: flush brain.db to disk, commit graph/history/vectors/workflows onto the dedicated '${DEVSMIND_BRANCH}' branch, 3-way MERGE whatever teammates pushed, and push the result — one operation, in that order. UNLIKE commit_changes, this DOES run real git commands (commit + merge + push), but only ever on the '${DEVSMIND_BRANCH}' branch — git reads the brain folder in place through a private index and builds the commits directly, so the developer's checked-out branch, HEAD and staged files are never touched, moved, or committed to. This is the ONLY tool for sharing the brain — there is no separate push or pull; syncing is always this one call, because a pull that overwrites cannot be safely composed with a push that can be rejected. Only call it when the developer has asked to sync/push, not as a routine follow-up to commit_changes. Requires a commit message.
+
+IF THE RESULT IS status:"running": nothing is wrong — the sync is long and continues in the background so this call could return before a client timeout. Call devsmind_git_sync_status with the returned "job_id" (each call waits up to a minute) until it gives the final result, then treat that result exactly as described below. Do NOT call devsmind_git_sync again while it runs.
+
+IF THE RESULT IS status:"busy": another sync of this brain is already running (another agent, or another window). Only one runs at a time and it cannot be stopped part-way — it always finishes, success or error. Do not retry in a loop: if a "job_id" is given, wait on it with devsmind_git_sync_status; otherwise wait for it to finish and call this tool again.
 
 ANY NON-"pushed"/"committed_local_only"/"nothing_to_do" RESULT NEEDS ACTION FROM YOU, NOT JUST A REPORT: read the specific guidance below for the status you got, take the fix it describes, and call this tool again. Do not just paste the error/result back to the developer and stop — that leaves them to ask you to actually fix it, which defeats the point of handing you the structured detail in the first place. The only time to pause and ask first is when the fix itself needs the developer's judgment (removing remote paths, or anything that would force-push/rewrite shared history) — those cases say so explicitly below.
 
@@ -1248,6 +1356,18 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
               }
             },
             required: ['devmind_path', 'message']
+          }
+        },
+        {
+          name: 'devsmind_git_sync_status',
+          description: 'Wait for, and get the result of, a devsmind_git_sync that answered status:"running" (or "busy" with a job_id). Waits up to a minute for the sync to finish before answering, so call it again while it still says "running". When finished it returns exactly what devsmind_git_sync itself would have returned — handle that result as the devsmind_git_sync description says. Read-only; it never starts, stops or changes a sync. Omit job_id to ask about the latest sync of this brain.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              devmind_path: { type: 'string', description: 'Absolute path to the .devmind directory' },
+              job_id: { type: 'string', description: 'The "job_id" a devsmind_git_sync result returned.' }
+            },
+            required: ['devmind_path']
           }
         }
     ];
@@ -3560,93 +3680,156 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
           const resuming = args.resolved === true && !!args.worktree;
           const db = getDatabase(devmindPath);
 
-          // Stage-by-stage progress on stderr (safe in stdio mode — it never touches the protocol
-          // stream). This is a genuinely long operation on a large brain: the DB flush below
-          // rewrites a graph AND vectors JSON for every file path it knows about, which is
-          // thousands of files before git is even involved. Without these lines the whole thing
-          // is silent for minutes and indistinguishable from a hang, which is exactly how it was
-          // reported. Each line names the stage and, where known, the size of the work.
+          // One sync per brain at a time. A second request never starts a second sync: it gets
+          // "busy" plus the running job's id, and can wait on that job instead.
+          const inFlight = latestGitSyncJob(devmindPath);
+          if (inFlight && inFlight.state === 'running') {
+            return gitSyncText(busyPayload(inFlight.id, inFlight.stage, inFlight.startedAt, null));
+          }
+          const jobId = crypto.randomUUID();
+          const lock = acquireSyncLock(devmindPath, jobId);
+          if (!lock.acquired) {
+            return gitSyncText(busyPayload(lock.holder?.jobId ?? null, null, lock.holder?.startedAt ?? null, lock.holder));
+          }
+
+          pruneFinishedGitSyncJobs();
+          const job: GitSyncJob = {
+            id: jobId, devmindPath, state: 'running', stage: 'starting',
+            startedAt: new Date().toISOString(), done: Promise.resolve()
+          };
+          gitSyncJobs.set(jobId, job);
+
+          // Stage-by-stage progress, both on stderr (safe in stdio mode — it never touches the
+          // protocol stream) and on the job, where devsmind_git_sync_status reports it.
           const startedAt = Date.now();
-          const stage = (msg: string) => console.error(`[DevsMind git-sync] ${msg} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+          const stage = (msg: string) => {
+            job.stage = msg;
+            console.error(`[DevsMind git-sync] ${msg} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+          };
 
-          // Repair leg, BEFORE the sync's own flush/merge: the caller confirmed removal of
-          // paths a previous call reported as "blocked_on_remote_paths". This is a real push to
-          // the remote branch's tip, independent of whatever local state this brain has, which
-          // is why it runs through its own function rather than gitSyncDevsmindBranch's merge.
-          if (Array.isArray(args.remove_remote_paths) && args.remove_remote_paths.length > 0) {
-            const toRemove = args.remove_remote_paths.map((p: unknown) => String(p));
-            stage(`removing ${toRemove.length} blocked path(s) from the remote devsmind branch before syncing`);
-            const repairResult = removeRemoteBranchPaths(devmindPath, toRemove);
-            stage(`repair pushed (${repairResult.commit.slice(0, 8)}), continuing with sync`);
-          }
+          const work = async (): Promise<object> => {
+            // One tick first, so the wait timer below is already running when the synchronous
+            // flush starts.
+            await new Promise(resolve => setImmediate(resolve));
 
-          // Anything the sync had to fix about the repo itself, rather than about the brain's
-          // contents. Returned alongside the sync result so the agent can tell the developer —
-          // `needsCommit` especially, since staged-but-uncommitted deletions are silently
-          // discarded by the next merge or checkout and the problem simply comes back.
-          const repair: {
-            gitignoreAdded?: string[];
-            untrackedFiles?: number;
-            untrackedSubdirs?: string[];
-            needsCommit?: boolean;
-            untrackError?: string;
-          } = {};
+            // Repair leg, BEFORE the sync's own flush/merge: the caller confirmed removal of
+            // paths a previous call reported as "blocked_on_remote_paths". This is a real push to
+            // the remote branch's tip, independent of whatever local state this brain has, which
+            // is why it runs through its own function rather than gitSyncDevsmindBranch's merge.
+            if (Array.isArray(args.remove_remote_paths) && args.remove_remote_paths.length > 0) {
+              const toRemove = args.remove_remote_paths.map((p: unknown) => String(p));
+              stage(`removing ${toRemove.length} blocked path(s) from the remote devsmind branch before syncing`);
+              const repairResult = removeRemoteBranchPaths(devmindPath, toRemove);
+              stage(`repair pushed (${repairResult.commit.slice(0, 8)}), continuing with sync`);
+            }
 
-          // Flush brain.db OUT to disk before the branch work: syncToDisk is what actually
-          // materializes the DB into graph/vectors/workflows JSON, and gitSyncDevsmindBranch
-          // reads those files off disk. Skipping this (as the old push_devsmind_branch did)
-          // meant anything committed to the graph but not yet written out never got shared.
-          // Not on the resume leg — the files there are the caller's own resolution, and
-          // re-flushing would overwrite it.
-          if (!resuming) {
-            const counts = db.getCounts();
-            stage(`flushing brain.db to disk — ${counts.nodes} nodes, ${counts.workflows} workflows; this is the slow part on a large brain`);
+            // Anything the sync had to fix about the repo itself, rather than about the brain's
+            // contents. Returned alongside the sync result so the agent can tell the developer —
+            // `needsCommit` especially, since staged-but-uncommitted deletions are silently
+            // discarded by the next merge or checkout and the problem simply comes back.
+            const repair: {
+              gitignoreAdded?: string[];
+              untrackedFiles?: number;
+              untrackedSubdirs?: string[];
+              needsCommit?: boolean;
+              untrackError?: string;
+            } = {};
+
+            // Flush brain.db OUT to disk before the branch work: syncToDisk is what actually
+            // materializes the DB into graph/vectors/workflows JSON, and the sync reads those
+            // files off disk. It writes only files whose content changed, so their mtimes stay
+            // honest and git's stat check skips everything else. Not on the resume leg — the
+            // files there are the caller's own resolution, and re-flushing would overwrite it.
+            if (!resuming) {
+              const counts = db.getCounts();
+              stage(`flushing brain.db to disk — ${counts.nodes} nodes, ${counts.workflows} workflows`);
+              db.syncFromDisk();
+              db.syncToDisk();
+              stage('flush complete, starting git work');
+
+              // Self-repair for a brain predating 4.4.0, or one a teammate on an older version keeps
+              // re-committing: the four shared-brain directories must be ignored on the developer's
+              // own branch and tracked only on `devsmind`. Both halves are needed and neither is
+              // sufficient alone — an ignore rule is never consulted for an already-tracked file, and
+              // untracking without the ignore rule just lets the next sync re-add them.
+              const ignoreFix = ensureDevmindGitignore(devmindPath);
+              if (ignoreFix.changed) {
+                stage(`.gitignore repaired — added ${ignoreFix.added.join(', ')}`);
+                repair.gitignoreAdded = ignoreFix.added;
+              }
+              const trackingFix = repairBrainTracking(devmindPath);
+              if (trackingFix?.error) {
+                stage(`could not untrack brain files: ${trackingFix.error}`);
+                repair.untrackError = trackingFix.error;
+              } else if (trackingFix) {
+                stage(`untracked ${trackingFix.filesUntracked} brain file(s) from your branch — STAGED, not committed`);
+                repair.untrackedFiles = trackingFix.filesUntracked;
+                repair.untrackedSubdirs = trackingFix.untracked;
+                repair.needsCommit = true;
+              }
+            } else {
+              stage('resuming after conflict resolution');
+            }
+
+            stage('committing, merging and pushing the devsmind branch');
+            const result = await runGitSyncOffThread(devmindPath, message, {
+              worktree: args.worktree ? String(args.worktree) : undefined,
+              resolved: args.resolved === true
+            });
+
+            const withRepair = <T extends object>(payload: T) =>
+              Object.keys(repair).length ? { ...payload, repo_repair: repair } : payload;
+
+            if (result.status === 'conflicted' || result.status === 'invalid_resolution' || result.status === 'blocked_on_remote_paths') {
+              stage(`stopped: ${result.status}`);
+              return withRepair(result);
+            }
+
+            stage(`git work done (${result.status}), re-syncing brain.db`);
+            // Pull whatever the merge brought in from teammates back into brain.db.
             db.syncFromDisk();
-            db.syncToDisk();
-            stage('flush complete, starting git work');
+            stage('finished');
+            return withRepair({ ...result, counts: db.getCounts() });
+          };
 
-            // Self-repair for a brain predating 4.4.0, or one a teammate on an older version keeps
-            // re-committing: the four shared-brain directories must be ignored on the developer's
-            // own branch and tracked only on `devsmind`. Both halves are needed and neither is
-            // sufficient alone — an ignore rule is never consulted for an already-tracked file, and
-            // untracking without the ignore rule just lets the next sync re-add them.
-            const ignoreFix = ensureDevmindGitignore(devmindPath);
-            if (ignoreFix.changed) {
-              stage(`.gitignore repaired — added ${ignoreFix.added.join(', ')}`);
-              repair.gitignoreAdded = ignoreFix.added;
-            }
-            const trackingFix = repairBrainTracking(devmindPath);
-            if (trackingFix?.error) {
-              stage(`could not untrack brain files: ${trackingFix.error}`);
-              repair.untrackError = trackingFix.error;
-            } else if (trackingFix) {
-              stage(`untracked ${trackingFix.filesUntracked} brain file(s) from your branch — STAGED, not committed`);
-              repair.untrackedFiles = trackingFix.filesUntracked;
-              repair.untrackedSubdirs = trackingFix.untracked;
-              repair.needsCommit = true;
-            }
-          } else {
-            stage('resuming after conflict resolution');
-          }
-
-          const result = gitSyncDevsmindBranch(devmindPath, message, {
-            worktree: args.worktree ? String(args.worktree) : undefined,
-            resolved: args.resolved === true
+          // The lock is released however the job ends — success, structured status, or a throw.
+          job.done = work().then(
+            payload => { job.state = 'done'; job.payload = payload; },
+            err => { job.state = 'failed'; job.error = (err as Error).message; }
+          ).finally(() => {
+            job.finishedAt = new Date().toISOString();
+            lock.release();
           });
 
-          const withRepair = <T extends object>(payload: T) =>
-            Object.keys(repair).length ? { ...payload, repo_repair: repair } : payload;
+          // Most syncs finish well inside the wait and answer this call directly. A long one
+          // keeps running in the background and this call returns its job id, so a client with a
+          // short tool-call timeout never kills it.
+          await settledWithin(job.done, gitSyncWaitMs());
+          return gitSyncJobResponse(job);
+        }
 
-          if (result.status === 'conflicted' || result.status === 'invalid_resolution' || result.status === 'blocked_on_remote_paths') {
-            stage(`stopped: ${result.status}`);
-            return { content: [{ type: 'text', text: JSON.stringify(withRepair(result), null, 2) }] };
+        case 'devsmind_git_sync_status': {
+          const devmindPath = resolveDevmindPath(args.devmind_path);
+          const job = args.job_id ? gitSyncJobs.get(String(args.job_id)) : latestGitSyncJob(devmindPath);
+          if (!job) {
+            const holder = readSyncLock(devmindPath);
+            if (holder) {
+              return gitSyncText({
+                status: 'running_elsewhere', holder,
+                message: 'A sync of this brain is running in another process on this machine. It will finish on its own; call this again, or call devsmind_git_sync once it has finished.'
+              });
+            }
+            return gitSyncText({
+              status: args.job_id ? 'unknown_job' : 'idle',
+              message: args.job_id
+                ? 'No such sync job here — the server may have restarted since. No sync of this brain is running now; call devsmind_git_sync to start one if it is still needed.'
+                : 'No sync of this brain is running.'
+            });
           }
-
-          stage(`git work done (${result.status}), re-syncing brain.db`);
-          // Pull whatever the merge brought in from teammates back into brain.db.
-          db.syncFromDisk();
-          stage('finished');
-          return { content: [{ type: 'text', text: JSON.stringify(withRepair({ ...result, counts: db.getCounts() }), null, 2) }] };
+          // A long poll: wait a while for a running job to finish before answering, so an agent
+          // needs a handful of calls rather than dozens.
+          if (job.state === 'running') await settledWithin(job.done, gitSyncWaitMs());
+          return gitSyncJobResponse(job);
         }
 
         // NOTE: `workflow_pause` and `workflow_resume` are retained as thin aliases for
@@ -3714,9 +3897,7 @@ ANY OTHER ERROR (a thrown message, not one of the statuses above): this is a rea
       // and retry is the default; only fall back to reporting when the fix needs the developer's
       // own judgment (e.g. it would touch shared history, or the cause genuinely isn't fixable
       // from here).
-      const nextSteps = name === 'devsmind_git_sync'
-        ? '\n\nDo not just report this to the developer and stop. Investigate the actual cause (read the error text above, inspect the repo/branch state with git commands as needed), fix it if it is fixable from here, and call devsmind_git_sync again. Only stop to ask the developer first if the fix would require force-pushing, rewriting shared history, or another action they need to explicitly approve — otherwise resolve it yourself and retry until it succeeds or you hit a decision that is genuinely theirs to make.'
-        : '';
+      const nextSteps = name === 'devsmind_git_sync' || name === 'devsmind_git_sync_status' ? GIT_SYNC_NEXT_STEPS : '';
       result = {
         isError: true,
         content: [{ type: 'text', text: `Error: ${(err as Error).message}${nextSteps}` }]

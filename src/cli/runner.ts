@@ -12,7 +12,8 @@ import { safeJsonParse } from '../utils/json';
 import { resolveConnectionsLocally, extractNodeFromFile, MissingRef } from '../utils/ast';
 import { MissingAgg, finalizeMissingNodes, applyDeterministicAliases } from '../db/edges';
 import { extractFileWithCuration } from './extract-agent';
-import type { LlmCredentials } from './llm-client';
+import { resolveLlmCredentials, type LlmCredentials } from './llm-client';
+import { resolveIndexProvider } from './index-providers';
 import { describePendingNodes } from './describe';
 
 interface ExtractedNode {
@@ -372,7 +373,7 @@ export async function getVertexTokenCached(saData: any): Promise<string> {
 
 export async function runBackgroundIndexing(opts: {
   devmindPath: string;
-  provider: 'gemini' | 'vertex' | 'ollama';
+  provider: string;
   model?: string;
   key?: string;
   url?: string;
@@ -484,78 +485,12 @@ export async function runBackgroundIndexing(opts: {
   }
   console.log(`   Rate limit      : ${rpm ? `${rpm} req/min` : 'unthrottled'}`);
 
-  let modelName = opts.model || '';
-  let vertexSaData: any = null;
-  let vertexToken: string | null = null;
-  let vertexProjectId = '';
-  let vertexLocation = 'us-central1';
-
-  // --edges-only never calls the LLM (Phase 1 is skipped entirely), so it shouldn't
-  // require provider credentials at all.
-  if (!edgesOnly) {
-    if (opts.provider === 'gemini') {
-      modelName = modelName || 'gemini-2.0-flash';
-      const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
-      if (!apiKey) {
-        console.error('❌ Error: Gemini API key is required. Pass --key or set GEMINI_API_KEY environment variable.');
-        process.exit(1);
-      }
-      opts.key = apiKey;
-    } else if (opts.provider === 'vertex') {
-      modelName = modelName || 'gemini-1.5-flash';
-      const inputKey = opts.key || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY || '';
-      if (!inputKey) {
-        console.error('❌ Error: Vertex AI requires a Service Account JSON path or Bearer Token. Pass --key or set GOOGLE_APPLICATION_CREDENTIALS / VERTEX_API_KEY environment variable.');
-        process.exit(1);
-      }
-
-      try {
-        if (inputKey.trim().startsWith('{')) {
-          vertexSaData = JSON.parse(inputKey);
-        } else if (fs.existsSync(inputKey)) {
-          vertexSaData = JSON.parse(fs.readFileSync(inputKey, 'utf-8'));
-        }
-      } catch (e) {
-        // Treat as raw token
-      }
-
-      vertexProjectId = vertexSaData?.project_id || process.env.GCP_PROJECT_ID || process.env.VERTEX_PROJECT_ID || '';
-      vertexLocation = process.env.GCP_LOCATION || process.env.VERTEX_LOCATION || 'us-central1';
-
-      if (!vertexSaData && !inputKey.startsWith('ya29.')) {
-        console.error('❌ Error: Vertex key must be a valid Service Account JSON file path, inline JSON, or raw OAuth access token starting with "ya29."');
-        process.exit(1);
-      }
-
-      if (!vertexProjectId) {
-        console.error('❌ Error: Vertex Project ID could not be determined. Please set GCP_PROJECT_ID environment variable or specify it in your service account JSON.');
-        process.exit(1);
-      }
-
-      if (!vertexSaData) {
-        vertexToken = inputKey; // Raw Bearer token
-      }
-    } else {
-      modelName = modelName || 'qwen2.5-coder';
-      opts.url = opts.url || 'http://localhost:11434';
-    }
-
-    console.log(`   Model           : ${modelName}`);
-  }
-
-  // Built once here from whatever the provider-specific block above resolved — the ONE place
-  // per-file extraction needs credentials from, instead of threading five separate params
-  // through every call the way `extractNodesFromCode` used to.
-  const llmCreds: LlmCredentials = {
-    provider: opts.provider,
-    model: modelName,
-    apiKey: opts.key,
-    vertexSaData: vertexSaData || undefined,
-    vertexToken: vertexToken || undefined,
-    vertexProjectId,
-    vertexLocation,
-    url: opts.url
-  };
+  // Edge repair can run without credentials.
+  const llmCreds: LlmCredentials = edgesOnly
+    ? { provider: 'gemini', model: '' }
+    : resolveLlmCredentials({ ...opts, provider: resolveIndexProvider(opts.provider) });
+  const modelName = llmCreds.model;
+  if (!edgesOnly) console.log(`   Model           : ${modelName || 'CLI default'}`);
 
   // 1. Open DB
   const dbFile = path.join(resolvedDevmind, 'brain.db');
@@ -834,18 +769,14 @@ export async function runBackgroundIndexing(opts: {
 
       progress.completeItem(`${pad.nodes_created} node(s) found so far`);
 
-      if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
+      if (llmCreds.provider === 'gemini' || llmCreds.provider === 'vertex') await sleep(2000);
       else await sleep(200);
     }
 
     const activeNodes = db.listNodes();
     progress.finishPhase(`Phase 1 done — ${activeNodes.length} node(s) extracted from ${pad.files_done} file(s)`);
 
-    if (nodesOnly) {
-      pad.status = 'complete';
-      pad.updated_at = new Date().toISOString();
-      writeScratchpad(resolvedDevmind, pad, padFile);
-    } else {
+    if (!nodesOnly) {
       // Transition to Phase 2
       pad.phase = 2;
       pad.nodes_total = activeNodes.length;
@@ -927,6 +858,10 @@ export async function runBackgroundIndexing(opts: {
     console.log(` Phase 3: Description Backfill`);
     console.log(`${'═'.repeat(60)}\n`);
     describeResult = await describePendingNodes(db, llmCreds, { batchSize: opts.describeBatchSize, rpm });
+    if (describeResult.failed > 0) {
+      db.close();
+      throw new Error(`Description generation failed for ${describeResult.failed} node(s). Run the same index command again to resume.`);
+    }
   }
 
   // Mark indexing session as fully complete
@@ -942,14 +877,14 @@ export async function runBackgroundIndexing(opts: {
   console.log(`  ├─ Nodes created  : \x1B[33m${pad.nodes_created}\x1B[0m`);
   console.log(describeResult ? `  ├─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m` : `  └─ Connections    : \x1B[33m${pad.connections_created}\x1B[0m`);
   if (describeResult) {
-    console.log(`  └─ Described      : \x1B[33m${describeResult.described}\x1B[0m/${describeResult.pending}${describeResult.failed ? ` (${describeResult.failed} failed — re-run with --describe to retry)` : ''}`);
+    console.log(`  └─ Described      : \x1B[33m${describeResult.described}\x1B[0m/${describeResult.pending}`);
   }
   console.log('');
 }
 
 export async function runBackgroundReindexing(opts: {
   devmindPath: string;
-  provider: 'gemini' | 'vertex' | 'ollama';
+  provider: string;
   model?: string;
   key?: string;
   url?: string;
@@ -984,71 +919,9 @@ export async function runBackgroundReindexing(opts: {
   }
   console.log(`   Rate limit      : ${rpm ? `${rpm} req/min` : 'unthrottled'}`);
 
-  let modelName = opts.model || '';
-  let vertexSaData: any = null;
-  let vertexToken: string | null = null;
-  let vertexProjectId = '';
-  let vertexLocation = 'us-central1';
-
-  if (opts.provider === 'gemini') {
-    modelName = modelName || 'gemini-2.0-flash';
-    const apiKey = opts.key || process.env.GEMINI_API_KEY || '';
-    if (!apiKey) {
-      console.error('❌ Error: Gemini API key is required. Pass --key or set GEMINI_API_KEY environment variable.');
-      process.exit(1);
-    }
-    opts.key = apiKey;
-  } else if (opts.provider === 'vertex') {
-    modelName = modelName || 'gemini-1.5-flash';
-    const inputKey = opts.key || process.env.GOOGLE_APPLICATION_CREDENTIALS || process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY || '';
-    if (!inputKey) {
-      console.error('❌ Error: Vertex AI requires a Service Account JSON path or Bearer Token. Pass --key or set GOOGLE_APPLICATION_CREDENTIALS / VERTEX_API_KEY environment variable.');
-      process.exit(1);
-    }
-
-    try {
-      if (inputKey.trim().startsWith('{')) {
-        vertexSaData = JSON.parse(inputKey);
-      } else if (fs.existsSync(inputKey)) {
-        vertexSaData = JSON.parse(fs.readFileSync(inputKey, 'utf-8'));
-      }
-    } catch (e) {
-      // Treat as raw token
-    }
-
-    vertexProjectId = vertexSaData?.project_id || process.env.GCP_PROJECT_ID || process.env.VERTEX_PROJECT_ID || '';
-    vertexLocation = process.env.GCP_LOCATION || process.env.VERTEX_LOCATION || 'us-central1';
-
-    if (!vertexSaData && !inputKey.startsWith('ya29.')) {
-      console.error('❌ Error: Vertex key must be a valid Service Account JSON file path, inline JSON, or raw OAuth access token starting with "ya29."');
-      process.exit(1);
-    }
-
-    if (!vertexProjectId) {
-      console.error('❌ Error: Vertex Project ID could not be determined. Please set GCP_PROJECT_ID environment variable or specify it in your service account JSON.');
-      process.exit(1);
-    }
-
-    if (!vertexSaData) {
-      vertexToken = inputKey; // Raw Bearer token
-    }
-  } else {
-    modelName = modelName || 'qwen2.5-coder';
-    opts.url = opts.url || 'http://localhost:11434';
-  }
-
-  const llmCreds: LlmCredentials = {
-    provider: opts.provider,
-    model: modelName,
-    apiKey: opts.key,
-    vertexSaData: vertexSaData || undefined,
-    vertexToken: vertexToken || undefined,
-    vertexProjectId,
-    vertexLocation,
-    url: opts.url
-  };
-
-  console.log(`   Model           : ${modelName}`);
+  const llmCreds = resolveLlmCredentials({ ...opts, provider: resolveIndexProvider(opts.provider) });
+  const modelName = llmCreds.model;
+  console.log(`   Model           : ${modelName || 'CLI default'}`);
 
   // 1. Open DB
   const dbFile = path.join(resolvedDevmind, 'brain.db');
@@ -1147,19 +1020,6 @@ export async function runBackgroundReindexing(opts: {
       continue;
     }
 
-    // Deprecate existing nodes for this file path before parsing. Capture inbound-edge
-    // sources FIRST (deprecateNode deletes edges in both directions).
-    const oldNodes = db.getNodesByFilePath(fileObj.absolutePath);
-    for (const oldNode of oldNodes) {
-      for (const src of db.getInboundSources(oldNode.id)) inboundSourceIds.add(src);
-      db.deprecateNode(oldNode.id);
-    }
-
-    if (code.trim().length === 0) {
-      progress.skipItem('empty file');
-      continue;
-    }
-
     const fileLines = code.split('\n').length;
     progress.updateStatus(`Enumerating candidates deterministically…`);
 
@@ -1179,6 +1039,18 @@ export async function runBackgroundReindexing(opts: {
       console.error(`❌ ${(err as Error).message}`);
       db.close();
       process.exit(1);
+    }
+
+    // Replace existing nodes only after curation succeeds. Capture incoming edges first.
+    const oldNodes = db.getNodesByFilePath(fileObj.absolutePath);
+    for (const oldNode of oldNodes) {
+      for (const src of db.getInboundSources(oldNode.id)) inboundSourceIds.add(src);
+      db.deprecateNode(oldNode.id);
+    }
+
+    if (code.trim().length === 0) {
+      progress.skipItem('empty file');
+      continue;
     }
 
     let fileNodesCount = 0;
@@ -1229,7 +1101,7 @@ export async function runBackgroundReindexing(opts: {
 
     progress.completeItem(`${fileNodesCount} node(s) found`);
 
-    if (opts.provider === 'gemini' || opts.provider === 'vertex') await sleep(2000);
+    if (llmCreds.provider === 'gemini' || llmCreds.provider === 'vertex') await sleep(2000);
     else await sleep(200);
   }
 
